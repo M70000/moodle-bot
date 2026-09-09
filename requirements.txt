@@ -1,0 +1,21 @@
+# Automação Web & Moodle Scraping
+playwright>=1.49.0
+beautifulsoup4>=4.12.3
+
+# Interface de Notificação & Revisão
+discord.py>=2.4.0
+
+# Inteligência Artificial (Google Gemini SDK Oficial)
+google-genai>=1.0.0
+
+# Agendamento em Segundo Plano
+apscheduler>=3.10.4
+
+# Configuração e Tipagem
+pydantic>=2.10.0
+pydantic-settings>=2.7.0
+python-dotenv>=1.0.1
+
+# Utilitários de Terminal e I/O Assíncrono
+rich>=13.9.0
+aiofiles>=24.1.0
