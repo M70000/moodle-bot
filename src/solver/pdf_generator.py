@@ -384,11 +384,16 @@ class AcademicPDFGenerator:
             while (
                 idx < total_lines
                 and lines[idx].strip()
-                and not lines[idx].strip().startswith(("#", "```", "|", ">", "-", "*", "---"))
+                and not lines[idx].strip().startswith(("#", "```", "|", ">", "---"))
             ):
-                if re.match(r"^\d+\.\s+", lines[idx].strip()):
+                cur_stripped = lines[idx].strip()
+                # Interrompe se encontrar um item de lista (- item, * item, 1. item)
+                if re.match(r"^(\d+\.|\*|-)\s+", cur_stripped):
                     break
-                para_lines.append(lines[idx].strip())
+                # Interrompe se for linha divisória (***, ---, ___)
+                if re.match(r"^(\*{3,}|-{3,}|_{3,})$", cur_stripped):
+                    break
+                para_lines.append(cur_stripped)
                 idx += 1
 
             if para_lines:
@@ -396,6 +401,9 @@ class AcademicPDFGenerator:
                 flowables.append(
                     Paragraph(self._format_inline_markdown(full_para), self.body_style)
                 )
+            else:
+                # Salvaguarda absoluta: se nenhuma regra consumiu a linha, avança idx para evitar loop infinito
+                idx += 1
 
         return flowables
 

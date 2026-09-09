@@ -439,11 +439,15 @@ class MoodleQuizAutomator:
                                             opt_raw_text = await lbl_loc.first.inner_text()
 
                                     if not opt_raw_text.strip():
-                                        parent_loc = r_inp.locator(
-                                            "xpath=ancestor::div[contains(@class,'r0') or contains(@class,'r1') or contains(@class,'answer')] | xpath=ancestor::label"
-                                        )
-                                        if await parent_loc.count() > 0:
-                                            opt_raw_text = await parent_loc.first.inner_text()
+                                        opt_raw_text = await r_inp.evaluate(
+                                            """el => {
+                                                const lbl = el.closest('label');
+                                                if (lbl && lbl.innerText && lbl.innerText.trim()) return lbl.innerText;
+                                                const container = el.closest('.r0, .r1, .answer, [class*="answer"], div.d-flex');
+                                                if (container && container.innerText && container.innerText.trim()) return container.innerText;
+                                                return '';
+                                            }"""
+                                        ) or ""
 
                                     clean_opt = opt_raw_text.replace("\n", " ").strip()
                                     clean_opt = re.sub(r"(?i)não respondido|marcado|selecionado", "", clean_opt).strip()

@@ -6,12 +6,16 @@ para gerar rascunhos rigorosos e fundamentados academicamente.
 
 import argparse
 import asyncio
+import json
+import logging
 import os
 import re
 import sys
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+# Silencia avisos informativos internos de AFC do SDK google-genai
+logging.getLogger("google.genai.models").setLevel(logging.ERROR)
 
 from google import genai
 from google.genai import types
@@ -122,7 +126,7 @@ class GeminiSolver:
             for file_path in context_files:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
-                    uploaded = self.client.files.upload(file=str(file_path))
+                    uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
                 except Exception as up_err:
@@ -185,11 +189,13 @@ class GeminiSolver:
             for model_candidate in self.model_hierarchy:
                 try:
                     console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
-                    response = self.client.models.generate_content(
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
                         model=model_candidate,
                         contents=contents,
                         config=types.GenerateContentConfig(
                             temperature=0.2,
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
                         )
                     )
                     if response and response.text:
@@ -272,7 +278,7 @@ class GeminiSolver:
             # Limpeza dos arquivos temporários carregados na nuvem do Gemini
             for up in uploaded_gemini_files:
                 try:
-                    self.client.files.delete(name=up.name)
+                    await asyncio.to_thread(self.client.files.delete, name=up.name)
                 except Exception:
                     pass
 
@@ -304,7 +310,7 @@ class GeminiSolver:
             for file_path in context_files:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
-                    uploaded = self.client.files.upload(file=str(file_path))
+                    uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
                 except Exception:
@@ -372,10 +378,14 @@ class GeminiSolver:
             for model_candidate in self.model_hierarchy:
                 try:
                     console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
-                    response = self.client.models.generate_content(
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
                         model=model_candidate,
                         contents=contents,
-                        config=types.GenerateContentConfig(temperature=0.1)
+                        config=types.GenerateContentConfig(
+                            temperature=0.1,
+                            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
+                        )
                     )
                     if response and response.text:
                         successful_model = model_candidate
@@ -450,6 +460,7 @@ class GeminiSolver:
                     assignment_title=assignment.title
                 )
             except Exception as pdf_err:
+                console.print(f"[yellow]Aviso ao gerar PDF do quiz: {pdf_err}[/yellow]")
                 pdf_path = None
 
             return SolutionDraft(
@@ -468,7 +479,7 @@ class GeminiSolver:
         finally:
             for up in uploaded_gemini_files:
                 try:
-                    self.client.files.delete(name=up.name)
+                    await asyncio.to_thread(self.client.files.delete, name=up.name)
                 except Exception:
                     pass
 

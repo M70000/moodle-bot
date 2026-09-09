@@ -108,6 +108,31 @@ Texto de teste executado de forma não-bloqueante no event loop.
             content = f.read()
             self.assertTrue(content.startswith(b"%PDF-"))
 
+    def test_render_paragraphs_starting_with_bold_and_special_chars(self):
+        """Garante que linhas iniciando com negrito (**Resposta:**) ou símbolos não travam em loop infinito."""
+        md_text = """### Questão 1
+**Resposta:** b. Torre Eiffel
+
+---
+
+### Questão 2
+**Resposta:** c. Notre Dame
+
+* Itálico no início
+- Hífen comum
+1. Item 1 → **Seta**
+2. Item 2
+"""
+        out_pdf = self.temp_path / "teste_bold_start.pdf"
+        result_path = self.generator.render_pdf_sync(
+            markdown_text=md_text,
+            output_pdf_path=out_pdf,
+            course_name="Inglês Instrumental",
+            assignment_title="Unidade 2"
+        )
+        self.assertTrue(result_path.exists())
+        self.assertGreater(result_path.stat().st_size, 1000)
+
 
 if __name__ == "__main__":
     unittest.main()

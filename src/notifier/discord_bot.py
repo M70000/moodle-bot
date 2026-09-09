@@ -97,11 +97,16 @@ def _is_task_completed(item: Dict[str, Any]) -> bool:
     return False
 
 
+def natural_sort_key(text: str) -> List[Any]:
+    """Ordenação alfanumérica natural humana (ex: Aula 1, Aula 2 ... Aula 10 em vez de Aula 10 antes de Aula 2)."""
+    return [int(c) if c.isdigit() else c.lower() for c in re.split(r"(\d+)", text)]
+
+
 async def pending_task_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete para /resolver: exibe exclusivamente tarefas e questionários pendentes."""
+    """Autocomplete para /resolver: exibe tarefas e questionários pendentes em ordem alfabética natural (A-Z)."""
     try:
         state = DaemonState()
         assignments = state.data.get("assignments", {})
@@ -109,7 +114,7 @@ async def pending_task_autocomplete(
         candidates = []
         for aid, item in assignments.items():
             if _is_task_completed(item):
-                continue  # Oculta tarefas já concluídas para evitar poluição no menu de resolução
+                continue  # Oculta tarefas já concluídas para manter /resolver focado em pendências
 
             title = str(item.get("title") or aid).strip()
             course_raw = str(item.get("course") or "").strip()
@@ -122,15 +127,14 @@ async def pending_task_autocomplete(
 
             search_target = f"{normalize_text(title)} {normalize_text(course_raw)} {normalize_text(course_clean)} {normalize_text(aid)}"
             if not norm_curr or norm_curr in search_target:
-                has_deadline = 1 if due_str else 0
-                candidates.append((has_deadline, label, str(aid)))
+                candidates.append((label, str(aid)))
 
-        # Prioriza no menu as atividades que possuem prazo definido
-        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        # Ordena estritamente por ordem alfabética natural (A -> Z), começando das primeiras unidades
+        candidates.sort(key=lambda x: natural_sort_key(x[0]))
 
         choices = [
             app_commands.Choice(name=label, value=aid)
-            for _, label, aid in candidates[:25]
+            for label, aid in candidates[:25]
         ]
         return choices
     except Exception as err:
@@ -142,7 +146,7 @@ async def completed_task_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete para /refazer: exibe exclusivamente tarefas e questionários já concluídos."""
+    """Autocomplete para /refazer: exibe exclusivamente tarefas e questionários já concluídos em ordem alfabética natural."""
     try:
         state = DaemonState()
         assignments = state.data.get("assignments", {})
@@ -162,6 +166,9 @@ async def completed_task_autocomplete(
             search_target = f"{normalize_text(title)} {normalize_text(course_raw)} {normalize_text(course_clean)} {normalize_text(aid)}"
             if not norm_curr or norm_curr in search_target:
                 candidates.append((label, str(aid)))
+
+        # Ordena estritamente por ordem alfabética natural (A -> Z)
+        candidates.sort(key=lambda x: natural_sort_key(x[0]))
 
         choices = [
             app_commands.Choice(name=label, value=aid)
@@ -887,7 +894,11 @@ async def _execute_solve_flow(
             )
 
         notifier = MoodleDiscordNotifier()
-        await notifier.send_assignment_review(assign_obj, draft)
+        sent = await notifier.send_assignment_review(assign_obj, draft)
+        if sent:
+            await send_func(f"✔ Resolução de **{assign_obj.title}** enviada no canal de revisão com sucesso!")
+        else:
+            await send_func(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card de revisão no Discord. Verifique os logs.")
 
     except Exception as e:
         await send_func(f"❌ Erro ao gerar resolução: {e}")

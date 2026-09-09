@@ -244,7 +244,9 @@ class MoodleDaemon:
             self.run_cycle,
             "interval",
             minutes=settings.CHECK_INTERVAL_MINUTES,
-            id="moodle_sync_job"
+            id="moodle_sync_job",
+            misfire_grace_time=600,
+            coalesce=True
         )
 
         # 3. Agenda o monitor de timeline / contagem regressiva (a cada 60s)
@@ -252,7 +254,9 @@ class MoodleDaemon:
             self.timeline_watcher,
             "interval",
             seconds=60,
-            id="timeline_watcher_job"
+            id="timeline_watcher_job",
+            misfire_grace_time=300,
+            coalesce=True
         )
 
         self.scheduler.start()
