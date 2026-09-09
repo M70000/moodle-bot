@@ -131,6 +131,18 @@ class Assignment(BaseModel):
         return True
 
 
+class CourseAnnouncement(BaseModel):
+    """Representa um comunicado ou aviso publicado pelo professor no fórum da disciplina."""
+    id: str
+    course_id: str
+    course_name: str
+    title: str
+    author: str = ""
+    date: str = ""
+    url: str
+    message: str = ""
+
+
 class MoodleScraper:
     """Scraper automatizado para Moodle UFMG Virtual."""
 
@@ -557,14 +569,142 @@ class MoodleScraper:
 
         return assignments
 
+    async def get_course_announcements(
+        self,
+        course: Course,
+        context: BrowserContext,
+        page: Page,
+        known_ids: Optional[set] = None
+    ) -> List[CourseAnnouncement]:
+        """Varre o fórum de 'Avisos' da turma e retorna comunicados publicados pelo professor."""
+        announcements: List[CourseAnnouncement] = []
+        try:
+            await page.goto(course.url, wait_until="domcontentloaded", timeout=25000)
+
+            # Localiza links para fóruns de notícias/avisos
+            forum_links = await page.evaluate('''() => {
+                const list = [];
+                document.querySelectorAll("a[href*='mod/forum/view.php']").forEach(a => {
+                    const title = a.innerText.trim();
+                    list.push({
+                        title: title,
+                        url: a.href
+                    });
+                });
+                return list;
+            }''')
+
+            target_forums = [
+                f for f in forum_links
+                if any(k in f["title"].lower() for k in ["aviso", "notícia", "noticia", "comunicado", "mural", "geral"])
+            ]
+            if not target_forums and forum_links:
+                target_forums = [forum_links[0]]
+
+            for forum in target_forums:
+                await page.goto(forum["url"], wait_until="domcontentloaded", timeout=25000)
+
+                # Extrai as discussões da tabela
+                discussions_data = await page.evaluate('''() => {
+                    const items = [];
+                    document.querySelectorAll("table.forumheaderlist tr.discussion, .discussion-list tr, table.discussion-list tr, .forumpost").forEach(el => {
+                        const link = el.querySelector("th a, td.topic a, a.discussion-title, a[href*='discuss.php?d=']");
+                        const author = el.querySelector(".author, td.author, td.starter, .user-name");
+                        const date = el.querySelector(".lastpost, td.lastpost, .time, .post-date, td.created");
+                        if (link && link.href && link.href.includes("discuss.php?d=")) {
+                            const dMatch = link.href.match(/d=(\\d+)/);
+                            if (dMatch) {
+                                items.push({
+                                    id: dMatch[1],
+                                    title: link.innerText.trim(),
+                                    url: link.href,
+                                    author: author ? author.innerText.trim().replace(/\\s+/g, ' ') : "",
+                                    date: date ? date.innerText.trim().replace(/\\s+/g, ' ') : ""
+                                });
+                            }
+                        }
+                    });
+                    return items;
+                }''')
+
+                for d in discussions_data:
+                    d_id = d["id"]
+                    if known_ids and d_id in known_ids:
+                        announcements.append(CourseAnnouncement(
+                            id=d_id,
+                            course_id=course.id,
+                            course_name=course.name,
+                            title=d["title"],
+                            author=d.get("author", "Professor"),
+                            date=d.get("date", ""),
+                            url=d["url"],
+                            message=""
+                        ))
+                        continue
+
+                    try:
+                        await page.goto(d["url"], wait_until="networkidle", timeout=15000)
+                        post_info = await page.evaluate('''() => {
+                            const post = document.querySelector("article.forumpost, div.forumpost");
+                            const authorEl = document.querySelector(".header a[href*='user/view.php'], .author, [data-region='author-name']");
+                            const timeEl = document.querySelector("time, .time");
+                            const contentEl = document.querySelector(".post-content-container, .post-message, .content, .message");
+                            const mainEl = document.querySelector("#region-main, [role='main']");
+
+                            return {
+                                author: authorEl ? authorEl.innerText.trim() : "",
+                                time: timeEl ? timeEl.innerText.trim() : "",
+                                message: contentEl ? contentEl.innerText.trim() : (mainEl ? mainEl.innerText.trim() : "")
+                            };
+                        }''')
+
+                        author_final = post_info.get("author") or d.get("author") or "Professor"
+                        date_final = post_info.get("time") or d.get("date") or ""
+                        msg_final = post_info.get("message") or ""
+
+                        msg_final = re.sub(r"(?i)Link direto.*", "", msg_final).strip()
+                        msg_final = re.sub(r"(?i)Responder.*", "", msg_final).strip()
+
+                        ann = CourseAnnouncement(
+                            id=d_id,
+                            course_id=course.id,
+                            course_name=course.name,
+                            title=d["title"],
+                            author=author_final,
+                            date=date_final,
+                            url=d["url"],
+                            message=msg_final
+                        )
+                        announcements.append(ann)
+                    except Exception as err:
+                        console.print(f"  [yellow]Erro ao ler aviso '{d['title']}': {err}[/yellow]")
+                        announcements.append(CourseAnnouncement(
+                            id=d_id,
+                            course_id=course.id,
+                            course_name=course.name,
+                            title=d["title"],
+                            author=d.get("author", "Professor"),
+                            date=d.get("date", ""),
+                            url=d["url"],
+                            message=""
+                        ))
+
+        except Exception as e:
+            console.print(f"[yellow]Não foi possível verificar avisos em {course.name}: {e}[/yellow]")
+
+        return announcements
+
     async def scan_all(
         self,
         semester_prefix: Optional[str] = None,
-        sync_materials: bool = True
-    ) -> Tuple[List[Course], List[Assignment]]:
+        sync_materials: bool = True,
+        sync_announcements: bool = True,
+        known_announcement_ids: Optional[set] = None
+    ) -> Tuple[List[Course], List[Assignment], List[CourseAnnouncement]]:
         """Executa a varredura completa de todas as disciplinas ativas."""
         courses = await self.list_courses(semester_prefix=semester_prefix)
         all_assignments: List[Assignment] = []
+        all_announcements: List[CourseAnnouncement] = []
 
         console.print(f"[bold green]Disciplinas localizadas no semestre ({len(courses)}):[/bold green]")
         for c in courses:
@@ -588,10 +728,19 @@ class MoodleScraper:
                     console.print(f"  → Tarefas encontradas: [bold]{len(assignments)}[/bold]")
                     all_assignments.extend(assignments)
 
+                    # 3. Coleta comunicados e avisos da turma
+                    if sync_announcements:
+                        announcements = await self.get_course_announcements(
+                            course, context, page, known_ids=known_announcement_ids
+                        )
+                        if announcements:
+                            console.print(f"  → Avisos catalogados: [bold]{len(announcements)}[/bold]")
+                            all_announcements.extend(announcements)
+
             finally:
                 await browser.close()
 
-        return courses, all_assignments
+        return courses, all_assignments, all_announcements
 
 
 async def main():
@@ -602,7 +751,7 @@ async def main():
     args = parser.parse_args()
 
     scraper = MoodleScraper()
-    courses, assignments = await scraper.scan_all(
+    courses, assignments, announcements = await scraper.scan_all(
         semester_prefix=args.semester,
         sync_materials=not args.no_materials
     )

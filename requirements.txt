@@ -19,3 +19,6 @@ python-dotenv>=1.0.1
 # Utilitários de Terminal e I/O Assíncrono
 rich>=13.9.0
 aiofiles>=24.1.0
+
+# Geração de PDFs Acadêmicos
+reportlab>=4.2.0

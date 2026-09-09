@@ -217,12 +217,30 @@ class MoodleSubmitter:
         if res.get("success"):
             if res.get("already_completed"):
                 return True, "Questionário já se encontra finalizado no Moodle."
+            if res.get("draft_saved"):
+                return True, "Respostas inseridas e salvas como rascunho no Moodle! A tentativa está aberta para conferência."
             grade_info = res.get("grade_info", {})
             grade_str = f" (Nota: {grade_info.get('gradeText')})" if grade_info.get("gradeText") else ""
             msg = f"Questionário preenchido e enviado com sucesso no Moodle!{grade_str}"
             return True, msg
         else:
             return False, res.get("error", "Erro desconhecido ao submeter questionário.")
+
+    async def finalize_quiz(
+        self,
+        quiz_url: str
+    ) -> Tuple[bool, str]:
+        """Finaliza e envia definitivamente uma tentativa previamente preenchida no Moodle."""
+        from src.scraper.moodle_quiz import MoodleQuizAutomator
+        automator = MoodleQuizAutomator(auth=self.auth)
+        res = await automator.finalize_submitted_quiz(quiz_url=quiz_url)
+        if res.get("success"):
+            grade_info = res.get("grade_info", {})
+            grade_str = f" (Nota: {grade_info.get('gradeText')})" if grade_info.get("gradeText") else ""
+            msg = f"Questionário finalizado e entregue com sucesso no Moodle!{grade_str}"
+            return True, msg
+        else:
+            return False, res.get("error", "Erro ao finalizar questionário no Moodle.")
 
 
 async def main():

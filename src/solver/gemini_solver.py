@@ -314,29 +314,45 @@ class GeminiSolver:
             for q in questions_data:
                 q_txt = q.get("fullTextWithTokens", "").strip()
                 if q_txt:
-                    formatted_questions.append(f"### {q.get('qNumberText', 'Questão')}\n{q_txt}")
+                    if q.get("isInfoOnly"):
+                        formatted_questions.append(f"[TEXTO DE CONTEXTO / LEITURA]\n{q_txt}")
+                    else:
+                        formatted_questions.append(f"### {q.get('qNumberText', 'Questão')}\n{q_txt}")
 
             questions_body = "\n\n".join(formatted_questions)
 
             system_instruction = (
-                "Você é um estudante universitário preenchendo um questionário no Moodle.\n"
-                "Abaixo está o texto REAL extraído da tela do questionário, contendo marcadores pontuais [[CAMPO_1]], [[CAMPO_2]]... "
-                "que representam os campos a serem preenchidos.\n\n"
-                "DIRETRIZES OBRIGATÓRIAS:\n"
-                "1. PREENCHA CADA MARCADOR: Você DEVE fornecer uma resposta para cada marcador [[CAMPO_X]] presente no texto.\n"
-                "2. REGRA DE OURO - PALAVRA ÚNICA E NATURAL: NUNCA USE BARRAS (como 'filha/irmã/mãe' ou 'gato/cachorro'). "
-                "Escolha APENAS UMA palavra simples, coerente e natural que complete a frase com sentido perfeito em português.\n"
-                "3. COERÊNCIA GRAMATICAL: Leia a frase completa ao redor de cada marcador e respeite concordância de gênero, número e tempo verbal.\n"
-                "4. FORMATO DE SAÍDA:\n"
-                "Inicie sua resposta obrigatoriamente com o bloco JSON mapeando cada marcador:\n"
+                "Você é um estudante universitário da UFMG realizando uma atividade avaliativa no Moodle.\n"
+                "Abaixo está o conteúdo extraído da tela do questionário, contendo questões avaliativas que podem conter:\n"
+                "- Marcadores pontuais [[CAMPO_1]], [[CAMPO_2]]... que representam lacunas ou caixas de texto a serem preenchidas;\n"
+                "- Questões de múltipla escolha com alternativas (ex: a, b, c, d).\n\n"
+                "DIRETRIZES DE RESOLUÇÃO:\n"
+                "1. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]] e para cada questão de múltipla escolha (Q1, Q2, etc.).\n"
+                "2. ALTERNATIVAS DE MÚLTIPLA ESCOLHA: Para garantir precisão caso o Moodle embaralhe a ordem das alternativas, sempre indique a letra E o texto completo da alternativa escolhida (ex: 'c. de instruções para o uso correto de algo').\n"
+                "3. ADEQUAÇÃO AO CONTEXTO: Responda com a máxima precisão e coerência conforme o enunciado e as regras da matéria.\n"
+                "4. COERÊNCIA GRAMATICAL: Respeite a concordância gramatical, sintaxe e tempo verbal.\n\n"
+                "FORMATO OBRIGATÓRIO DE SAÍDA:\n"
+                "Sua resposta deve conter DUAS PARTES:\n\n"
+                "PARTE 1: Bloco JSON estruturado (no início, usado pelo robô para preenchimento automático no Moodle):\n"
                 "```json:answers\n"
                 "{\n"
-                '  "CAMPO_1": "casa",\n'
-                '  "CAMPO_2": "marido",\n'
-                '  "CAMPO_3": "filha"\n'
+                '  "CAMPO_1": "resposta da lacuna 1",\n'
+                '  "Q1": "letra e texto completo da alternativa escolhida (ex: c. de instruções para o uso correto de algo)",\n'
+                '  "Q2": "letra e texto completo da alternativa escolhida (ex: b. a pessoa utilizando o produto)"\n'
                 "}\n"
                 "```\n\n"
-                "E logo abaixo do bloco JSON, escreva o texto final com as respostas preenchidas de forma limpa para conferência do aluno."
+                "PARTE 2: Folha de Respostas Acadêmica (renderizada no PDF do estudante):\n"
+                "Logo abaixo do bloco JSON, escreva uma folha de respostas limpa, elegante e organizada para leitura:\n"
+                "- Separe estritamente por questão avaliativa (ex: '### Questão 1', '### Questão 2').\n"
+                "- Para questões com lacunas ou listas de palavras, liste as respostas de forma limpa e numerada:\n"
+                "  1. **palavra 1**\n"
+                "  2. **palavra 2**\n"
+                "- Para questões discursivas ou de múltipla escolha:\n"
+                "  - **Resposta:** [letra e texto completo da alternativa]\n"
+                "- PROIBIÇÃO ESTRITA DE RUÍDOS DE TELA:\n"
+                "  * NUNCA inclua seções como '### Informação' ou blocos de texto introdutórios.\n"
+                "  * NUNCA reproduza lixo do Moodle como 'Texto da questão', 'Texto informativo', 'Resposta 1 Questão 1', 'Verificar Questão', 'Feedback' ou botões.\n"
+                "  * O PDF final deve conter exclusivamente a resolução elegante das questões, pronta para entrega acadêmica."
             )
 
             prompt_content = [
@@ -382,6 +398,36 @@ class GeminiSolver:
                     pass
 
             clean_markdown = re.sub(r"```(?:json:answers|json)\s*\n.*?\n```", "", full_text, flags=re.DOTALL).strip()
+
+            # Pós-processamento de limpeza cirúrgica de resíduos do Moodle
+            clean_markdown = re.sub(r"(?i)texto (?:informativo|da questão)", "", clean_markdown)
+            clean_markdown = re.sub(r"(?i)resposta \d+\s*questão \d+", "", clean_markdown)
+            clean_markdown = re.sub(r"(?i)verificar questão \d+", "", clean_markdown)
+            clean_markdown = re.sub(r"### Informação\s*\n.*?(?=### Questão|\Z)", "", clean_markdown, flags=re.DOTALL)
+            clean_markdown = re.sub(r"\n{3,}", "\n\n", clean_markdown).strip()
+
+            # Fallback inteligente: se o bloco JSON estiver ausente ou incompleto, extrai do Markdown gerado
+            if not isinstance(structured_dict, dict):
+                structured_dict = {}
+
+            q_matches = list(re.finditer(r"###\s*(?:Quest[ãa]o|Q)\s*(\d+)\s*\n+(.*?)(?=\n###|\Z)", clean_markdown, re.DOTALL | re.IGNORECASE))
+            for m in q_matches:
+                q_num = m.group(1)
+                q_body = m.group(2).strip()
+                ans_key = f"Q{q_num}"
+                if ans_key not in structured_dict:
+                    # Captura "- **Resposta:** c. ..." ou "**Resposta:** c. ..."
+                    resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*(.+)", q_body, re.IGNORECASE)
+                    if resp_m:
+                        structured_dict[ans_key] = resp_m.group(1).strip()
+                    else:
+                        # Captura listas numeradas 1. **palavra**
+                        items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
+                        if items:
+                            for idx_sub, sub_val in enumerate(items, 1):
+                                clean_val = sub_val.strip("* ").strip()
+                                if clean_val:
+                                    structured_dict[f"Q{q_num}_{idx_sub}"] = clean_val
 
             summary_lines = [l for l in clean_markdown.splitlines() if l.strip() and not l.startswith("#")]
             summary = "\n".join(summary_lines[:8]) if summary_lines else clean_markdown[:400]

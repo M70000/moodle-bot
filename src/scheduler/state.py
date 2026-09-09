@@ -108,3 +108,28 @@ class DaemonState:
             return datetime.now() < until_dt
         except Exception:
             return False
+
+    def is_announcement_seen(self, announcement_id: str) -> bool:
+        """Verifica se o aviso já foi registrado anteriormente."""
+        return str(announcement_id) in self.data.get("announcements", {})
+
+    def mark_announcement_seen(self, announcement):
+        """Registra um aviso da turma como notificado/conhecido."""
+        if "announcements" not in self.data:
+            self.data["announcements"] = {}
+
+        self.data["announcements"][str(announcement.id)] = {
+            "id": str(announcement.id),
+            "course_id": announcement.course_id,
+            "course_name": announcement.course_name,
+            "title": announcement.title,
+            "author": getattr(announcement, "author", ""),
+            "date": getattr(announcement, "date", ""),
+            "url": announcement.url,
+            "notified_at": datetime.now().isoformat()
+        }
+        self.save()
+
+    def get_known_announcement_ids(self) -> set:
+        """Retorna o conjunto de IDs de avisos já conhecidos."""
+        return set(self.data.get("announcements", {}).keys())

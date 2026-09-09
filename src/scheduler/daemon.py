@@ -19,7 +19,7 @@ from rich.panel import Panel
 from config.settings import settings
 from src.auth.moodle_auth import MoodleAuth
 from src.notifier.discord_bot import MoodleDiscordNotifier
-from src.scraper.moodle_scraper import Assignment, MoodleScraper, sanitize_filename
+from src.scraper.moodle_scraper import Assignment, CourseAnnouncement, MoodleScraper, sanitize_filename
 from src.scheduler.state import DaemonState
 from src.solver.gemini_solver import GeminiSolver
 
@@ -60,10 +60,30 @@ class MoodleDaemon:
                     console.print("[red]Não foi possível restabelecer a sessão do Moodle.[/red]")
                     return
 
-            # 2. Executa a varredura das disciplinas e tarefas
-            courses, assignments = await self.scraper.scan_all(sync_materials=True)
+            known_ann_ids = self.state.get_known_announcement_ids()
+            first_ann_run = len(known_ann_ids) == 0
 
-            # 3. Processa cada atividade
+            # 2. Executa a varredura das disciplinas, tarefas e comunicados
+            courses, assignments, announcements = await self.scraper.scan_all(
+                sync_materials=True,
+                sync_announcements=True,
+                known_announcement_ids=known_ann_ids
+            )
+
+            # 3. Processa comunicados da turma dos professores
+            for ann in announcements:
+                if not self.state.is_announcement_seen(ann.id):
+                    # Na primeira execução, notifica avisos recentes (ex: do mês corrente ou últimos dias)
+                    is_recent = any(m in ann.date.lower() for m in ["set", "out", "nov", "dez", "hoje", "ontem"]) if ann.date else True
+                    if first_ann_run and not is_recent:
+                        self.state.mark_announcement_seen(ann)
+                        continue
+
+                    console.print(f"[bold yellow]📢 NOVO AVISO DETECTADO:[/bold yellow] {ann.title} ({ann.course_name})")
+                    await self.notifier.send_course_announcement(ann)
+                    self.state.mark_announcement_seen(ann)
+
+            # 4. Processa cada atividade
             for assign in assignments:
                 assign_state = self.state.get_assignment(assign.id)
 
