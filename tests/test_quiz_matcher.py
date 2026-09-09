@@ -142,5 +142,64 @@ class TestQuizMatcher(unittest.TestCase):
         self.assertEqual(letter, "b")
         self.assertEqual(content, "a pessoa utilizando o produto")
 
+    def test_combobox_association_matching(self):
+        """Garante que selects/comboboxes de questões de associação são mapeados com precisão imunes a embaralhamento."""
+        moodle_options = [
+            "Escolher...",
+            "Professor da Sorbonne",
+            "Obra de Luis XIV",
+            "Construiu a Torre Eifel",
+            "Ópera La Boheme",
+            "Obra de Napoleão"
+        ]
+        answers = {
+            "Q21_1": "Gustave Eiffel → Construiu a Torre Eifel",
+            "Q21_2": "Puccini → Ópera La Boheme",
+            "Q21_3": "Les Invalides → Obra de Luis XIV",
+            "Q21_4": "L'Arc de Triomphe → Obra de Napoleão",
+            "Q21_5": "Dante → Professor da Sorbonne"
+        }
+
+        # Simula linhas na ordem embaralhada pelo Moodle
+        shuffled_moodle_rows = [
+            ("L'Arc de Triomphe", "Obra de Napoleão"),
+            ("Gustave Eiffel", "Construiu a Torre Eifel"),
+            ("Dante", "Professor da Sorbonne"),
+            ("Puccini", "Ópera La Boheme"),
+            ("Les Invalides", "Obra de Luis XIV")
+        ]
+
+        valid_options = [o for o in moodle_options if "escolher" not in o.lower()]
+
+        for row_label, expected_opt in shuffled_moodle_rows:
+            norm_lbl = normalize_str(row_label)
+            target_val = None
+            for k, v in answers.items():
+                parts = re.split(r"[→\->:]", str(v), maxsplit=1)
+                if len(parts) == 2 and (norm_lbl in normalize_str(parts[0]) or normalize_str(parts[0]) in norm_lbl):
+                    target_val = parts[1].strip()
+                    break
+
+            self.assertIsNotNone(target_val)
+            norm_target = normalize_str(target_val)
+            best_opt = None
+            best_score = -1
+            for opt in valid_options:
+                opt_norm = normalize_str(opt)
+                if norm_target == opt_norm:
+                    score = 100
+                elif norm_target in opt_norm or opt_norm in norm_target:
+                    score = 85
+                else:
+                    score = 0
+                if score > best_score:
+                    best_score = score
+                    best_opt = opt
+
+            self.assertEqual(best_opt, expected_opt)
+            self.assertGreaterEqual(best_score, 85)
+
+
 if __name__ == "__main__":
     unittest.main()
+

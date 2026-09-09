@@ -18,7 +18,7 @@ import sys
 import time
 import unicodedata
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from playwright.async_api import async_playwright
 from rich.console import Console
@@ -43,6 +43,18 @@ def normalize_str(text: str) -> str:
     if not text:
         return ""
     return unicodedata.normalize("NFKD", text).encode("ASCII", "ignore").decode("utf-8").strip().lower()
+
+
+async def _emit_log(callback: Optional[Any], msg: str):
+    """Envia mensagem para o callback de log ao vivo de forma segura."""
+    if not callback:
+        return
+    try:
+        res = callback(msg)
+        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+            await res
+    except Exception:
+        pass
 
 
 class MoodleQuizAutomator:
@@ -162,9 +174,10 @@ class MoodleQuizAutomator:
 
         return "attempt.php" in page.url or "summary.php" in page.url
 
-    async def inspect_and_extract_quiz(self, quiz_url: str) -> Dict[str, Any]:
+    async def inspect_and_extract_quiz(self, quiz_url: str, on_log: Optional[Any] = None) -> Dict[str, Any]:
         """Acessa a tentativa do questionário e extrai os enunciados reais com marcadores pontuais."""
         console.print(f"[cyan]Inspecionando estrutura real do quiz no Moodle: {quiz_url}[/cyan]")
+        await _emit_log(on_log, "Inspecionando tentativa do questionário no Moodle...")
 
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
@@ -178,10 +191,13 @@ class MoodleQuizAutomator:
                 if "attempt.php" not in page.url:
                     opened = await self._open_or_resume_attempt(page)
                     if not opened and "attempt.php" not in page.url:
+                        await _emit_log(on_log, "❌ Não foi possível abrir ou refazer a tentativa do questionário no Moodle.")
                         return {
                             "success": False,
                             "error": "Não foi possível abrir ou refazer a tentativa do questionário no Moodle."
                         }
+
+                await _emit_log(on_log, "Extraindo enunciados, campos e lacunas das questões...")
 
                 # Extração estruturada do DOM com mapeamento pontual de campos e limpeza de ruídos de tela
                 questions_data = await page.evaluate(r'''() => {
@@ -210,10 +226,34 @@ class MoodleQuizAutomator:
                                 key: `CAMPO_${globalInputIdx}`,
                                 name: inp.getAttribute("name"),
                                 id: inp.getAttribute("id"),
-                                index: globalInputIdx
+                                index: globalInputIdx,
+                                type: "text"
                             });
                             const textNode = document.createTextNode(` ${token} `);
                             inp.parentNode.replaceChild(textNode, inp);
+                            globalInputIdx++;
+                        });
+
+                        // Menus suspensos / Comboboxes (select)
+                        const selects = clone.querySelectorAll("select");
+                        selects.forEach(sel => {
+                            const token = `[[CAMPO_${globalInputIdx}]]`;
+                            const optList = Array.from(sel.options)
+                                .map(o => o.text.trim())
+                                .filter(t => t && !t.toLowerCase().includes("escolher") && !t.toLowerCase().includes("choose") && !t.toLowerCase().includes("selecion"));
+                            
+                            inputMap.push({
+                                token: token,
+                                key: `CAMPO_${globalInputIdx}`,
+                                name: sel.getAttribute("name"),
+                                id: sel.getAttribute("id"),
+                                index: globalInputIdx,
+                                type: "select",
+                                options: optList
+                            });
+                            const optsHint = optList.length > 0 ? ` (Opções disponíveis: ${optList.join(" | ")})` : "";
+                            const textNode = document.createTextNode(` ${token}${optsHint} `);
+                            sel.parentNode.replaceChild(textNode, sel);
                             globalInputIdx++;
                         });
 
@@ -259,6 +299,7 @@ class MoodleQuizAutomator:
 
                 total_inputs = sum(q.get("inputsCount", 0) for q in questions_data)
                 console.print(f"[green]✔ Perguntas extraídas com sucesso! Total de campos/lacunas: {total_inputs}[/green]")
+                await _emit_log(on_log, f"✔ Questões extraídas com sucesso! Total de campos/lacunas: {total_inputs}")
 
                 return {
                     "success": True,
@@ -269,6 +310,7 @@ class MoodleQuizAutomator:
 
             except Exception as e:
                 console.print(f"[red]Erro ao extrair questões do quiz: {e}[/red]")
+                await _emit_log(on_log, f"❌ Erro ao extrair questões do quiz: {e}")
                 return {
                     "success": False,
                     "error": str(e)
@@ -276,15 +318,69 @@ class MoodleQuizAutomator:
             finally:
                 await browser.close()
 
+    async def _verify_all_questions_on_current_attempt(self, page, on_log: Optional[Any] = None) -> int:
+        """Clica sequencialmente no botão 'Verificar' de cada questão ativa antes de submeter a tentativa."""
+        console.print("[cyan]Verificando questões individualmente no Moodle antes do envio definitivo...[/cyan]")
+        verified_count = 0
+        max_clicks = 60
+        clicks = 0
+
+        while clicks < max_clicks:
+            if "attempt.php" not in page.url:
+                break
+
+            verify_buttons = page.locator(
+                "button.submit.btn:has-text('Verificar'):not([disabled]), "
+                "button[name$='-submit']:has-text('Verificar'):not([disabled]), "
+                "input.submit[value*='Verificar']:not([disabled]), "
+                "input[type='submit'][value*='Verificar']:not([disabled])"
+            )
+            count = await verify_buttons.count()
+            if count == 0:
+                break
+
+            btn_to_click = None
+            btn_name = ""
+            for i in range(count):
+                b = verify_buttons.nth(i)
+                if await b.is_visible() and await b.is_enabled():
+                    btn_to_click = b
+                    btn_name = (await b.get_attribute("name")) or f"btn_{i+1}"
+                    break
+
+            if not btn_to_click:
+                break
+
+            console.print(f"  ✔ [Verificar] Acionando botão da questão ({btn_name})...")
+            await _emit_log(on_log, f"Acionando botão 'Verificar' da questão ({btn_name})...")
+            try:
+                await btn_to_click.scroll_into_view_if_needed()
+                await asyncio.sleep(random.uniform(0.4, 0.8))
+                await btn_to_click.click()
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(600)
+                verified_count += 1
+                clicks += 1
+            except Exception as click_err:
+                console.print(f"  [yellow]Nota ao clicar em Verificar ({btn_name}): {click_err}[/yellow]")
+                break
+
+        console.print(f"[green]✔ Total de questões verificadas no Moodle nesta etapa: {verified_count}[/green]")
+        if verified_count > 0:
+            await _emit_log(on_log, f"✔ {verified_count} questão(ões) verificada(s) com sucesso no Moodle")
+        return verified_count
+
     async def fill_and_submit_quiz(
         self,
         quiz_url: str,
         answers: Any,
         auto_submit: bool = True,
-        min_duration_seconds: int = 180
+        min_duration_seconds: int = 180,
+        on_log: Optional[Any] = None
     ) -> Dict[str, Any]:
         """Preenche o questionário com digitação humana realista e garante tempo de tentativa seguro."""
         console.print(f"[cyan]Iniciando preenchimento humanizado do questionário: {quiz_url}[/cyan]")
+        await _emit_log(on_log, "Iniciando preenchimento do questionário no Moodle...")
         start_time = time.time()
 
         # Converte respostas para um mapa chave-valor direto com múltiplos aliases
@@ -342,6 +438,7 @@ class MoodleQuizAutomator:
                 if "attempt.php" not in page.url:
                     opened = await self._open_or_resume_attempt(page)
                     if not opened and "attempt.php" not in page.url:
+                        await _emit_log(on_log, "❌ Não foi possível abrir tentativa no Moodle.")
                         return {
                             "success": False,
                             "error": "Não foi possível abrir ou refazer a tentativa do questionário no Moodle."
@@ -395,6 +492,7 @@ class MoodleQuizAutomator:
                                 await inp.press_sequentially(target_val, delay=random.randint(40, 85))
                                 total_filled += 1
                                 console.print(f"  ✔ [{token_key}] Preenchido com cadência humana: '{target_val}'")
+                                await _emit_log(on_log, f"✔ [{token_key}] Preenchido: '{target_val[:25]}'")
                                 
                                 # Pausa natural entre preenchimentos (simulando leitura)
                                 await asyncio.sleep(random.uniform(1.2, 3.0))
@@ -508,10 +606,116 @@ class MoodleQuizAutomator:
                                         f"  ✔ [Q{q_num}] Alternativa marcada com segurança (confiança {best_score}%): "
                                         f"[{best_match['letter'] or '?'}] {best_match['content'][:40]}"
                                     )
+                                    await _emit_log(on_log, f"✔ [Q{q_num}] Marcada: [{best_match['letter'] or '?'}] {best_match['content'][:30]}")
                                 else:
                                     console.print(
                                         f"  [yellow]⚠ [Q{q_num}] Nenhuma alternativa correspondeu com segurança a: '{clean_target}' (score: {best_score}). Mantendo desmarcado para segurança.[/yellow]"
                                     )
+
+                        # 3. Menus Suspensos / Comboboxes (select) - Imune ao embaralhamento de linhas do Moodle
+                        selects = q_el.locator("select")
+                        s_count = await selects.count()
+                        for s_idx in range(s_count):
+                            sel_el = selects.nth(s_idx)
+                            token_key = f"CAMPO_{global_input_idx}"
+
+                            # Rótulo textual da linha/pergunta associada ao select
+                            clean_row_label = await sel_el.evaluate('''el => {
+                                const row = el.closest('tr, .form-inline, .row, div');
+                                if (!row) return '';
+                                const clone = row.cloneNode(true);
+                                clone.querySelectorAll('select, .accesshide, .sr-only').forEach(e => e.remove());
+                                return clone.innerText.trim();
+                            }''')
+                            clean_row_label = re.sub(r"(?i)resposta\s*\d+\s*quest[ãa]o\s*\d+", "", clean_row_label).strip()
+
+                            # Opções disponíveis no menu
+                            options_data = await sel_el.evaluate('''el => {
+                                return Array.from(el.options).map(o => ({
+                                    value: o.value,
+                                    text: o.text.trim(),
+                                    selected: o.selected
+                                }));
+                            }''')
+                            valid_opts = [
+                                o for o in options_data 
+                                if o["text"] and not any(ign in o["text"].lower() for ign in ["escolher", "choose", "selecion"])
+                            ]
+
+                            # Identifica o valor alvo no answers_dict
+                            target_val = None
+                            
+                            # 1. Se houver rótulo na linha (ex: "Gustave Eiffel"), busca no answers_dict quem associa com este rótulo
+                            if clean_row_label:
+                                norm_lbl = normalize_str(clean_row_label)
+                                for k, v in answers_dict.items():
+                                    val_str = str(v)
+                                    parts = re.split(r"[→\->:]", val_str, maxsplit=1)
+                                    if len(parts) == 2:
+                                        left = parts[0].strip()
+                                        right = parts[1].strip()
+                                        if norm_lbl == normalize_str(left) or norm_lbl in normalize_str(left) or normalize_str(left) in norm_lbl:
+                                            target_val = right
+                                            break
+                                    elif norm_lbl == normalize_str(str(k)) or norm_lbl in normalize_str(str(k)):
+                                        target_val = val_str
+                                        break
+
+                            # 2. Se não encontrou por rótulo, tenta por Q{q_num}_{s_idx+1} ou token
+                            if not target_val:
+                                target_val = (
+                                    answers_dict.get(f"Q{q_num}_{s_idx+1}") or 
+                                    answers_dict.get(token_key) or 
+                                    answers_dict.get(f"Q{q_num}")
+                                )
+
+                            # Se o target_val vier no formato "Nome → Resposta", extrai a resposta
+                            if target_val and any(sep in str(target_val) for sep in ["→", "->"]):
+                                parts = re.split(r"[→\->]", str(target_val), maxsplit=1)
+                                target_val = parts[1].strip()
+
+                            if target_val:
+                                clean_target_val = str(target_val).strip().strip("*").strip()
+                                norm_target = normalize_str(clean_target_val)
+
+                                best_opt = None
+                                best_score = -1
+                                for opt in valid_opts:
+                                    norm_opt = normalize_str(opt["text"])
+                                    if norm_target == norm_opt:
+                                        score = 100
+                                    elif norm_target in norm_opt or norm_opt in norm_target:
+                                        score = 85
+                                    else:
+                                        w_t = set(w for w in norm_target.split() if len(w) > 2)
+                                        w_o = set(w for w in norm_opt.split() if len(w) > 2)
+                                        overlap = len(w_t & w_o)
+                                        score = int((overlap / max(len(w_t), len(w_o), 1)) * 70) if (w_t and w_o) else 0
+
+                                    if score > best_score:
+                                        best_score = score
+                                        best_opt = opt
+
+                                if best_opt and best_score >= 40:
+                                    await asyncio.sleep(random.uniform(0.3, 0.7))
+                                    await sel_el.select_option(value=best_opt["value"])
+                                    await sel_el.dispatch_event("change")
+                                    total_filled += 1
+                                    console.print(
+                                        f"  ✔ [Q{q_num} | {clean_row_label or token_key}] Combobox selecionada: '{best_opt['text']}'"
+                                    )
+                                    await _emit_log(on_log, f"✔ [Q{q_num}] Selecionada: '{best_opt['text'][:30]}'")
+                                    await asyncio.sleep(random.uniform(0.8, 1.8))
+                                else:
+                                    console.print(
+                                        f"  [yellow]⚠ [Q{q_num} | {clean_row_label}] Nenhuma opção correspondeu a '{clean_target_val}'.[/yellow]"
+                                    )
+
+                            global_input_idx += 1
+
+                    # Se for submissão definitiva (auto_submit=True), aciona 'Verificar' em cada questão antes de avançar
+                    if auto_submit:
+                        await self._verify_all_questions_on_current_attempt(page, on_log=on_log)
 
                     # Avançar página ou finalizar
                     finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa')")
@@ -534,6 +738,7 @@ class MoodleQuizAutomator:
                     # Se for apenas preenchimento (auto_submit=False), salva o rascunho e retorna imediatamente
                     if not auto_submit:
                         console.print(f"[bold green]✔ Respostas salvas na tentativa no Moodle ({total_filled} campos preenchidos)![/bold green]")
+                        await _emit_log(on_log, f"✔ Rascunho salvo! {total_filled} campo(s) preenchido(s) no Moodle.")
                         return {
                             "success": True,
                             "status": "draft_saved",
@@ -558,8 +763,10 @@ class MoodleQuizAutomator:
                             wait_seconds -= step
                             if wait_seconds > 0:
                                 console.print(f"[dim]⏳ Revisando tentativa... faltam {wait_seconds}s para submissão definitiva...[/dim]")
+                                await _emit_log(on_log, f"Aguardando cadência humana: faltam {wait_seconds}s para envio seguro...")
 
                     console.print("[bold green]Confirmando envio definitivo no Moodle...[/bold green]")
+                    await _emit_log(on_log, "Confirmando 'Enviar tudo e terminar' no Moodle...")
                     submit_button = page.locator("button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar']").first
                     await submit_button.click()
                     await page.wait_for_timeout(1000)
@@ -594,6 +801,7 @@ class MoodleQuizAutomator:
                     }''')
 
                     console.print(f"[bold green]✔ Questionário submetido com sucesso no Moodle! Tempo total empregado: {total_time_str}[/bold green]")
+                    await _emit_log(on_log, f"✔ Questionário submetido com sucesso! Tempo: {total_time_str} | Nota: {grade_info.get('gradeText', 'N/A')}")
 
                     return {
                         "success": True,
@@ -613,6 +821,7 @@ class MoodleQuizAutomator:
 
             except Exception as e:
                 console.print(f"[red]Erro na automação do questionário: {e}[/red]")
+                await _emit_log(on_log, f"❌ Erro na automação do questionário: {e}")
                 return {
                     "success": False,
                     "error": str(e)
@@ -620,9 +829,10 @@ class MoodleQuizAutomator:
             finally:
                 await browser.close()
 
-    async def finalize_submitted_quiz(self, quiz_url: str) -> Dict[str, Any]:
+    async def finalize_submitted_quiz(self, quiz_url: str, on_log: Optional[Any] = None) -> Dict[str, Any]:
         """Acessa a tentativa salva e clica em 'Enviar tudo e terminar' no Moodle."""
         console.print(f"[cyan]Finalizando submissão do questionário no Moodle: {quiz_url}[/cyan]")
+        await _emit_log(on_log, "Acessando tentativa salva para finalização no Moodle...")
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context(storage_state=self.auth.cookies_path)
@@ -633,13 +843,38 @@ class MoodleQuizAutomator:
                 if "summary.php" not in page.url and "attempt.php" not in page.url:
                     await self._open_or_resume_attempt(page)
 
-                finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa')")
-                if await finish_btn.count() > 0:
-                    await finish_btn.first.click()
-                    await page.wait_for_load_state("networkidle")
+                # Se estiver na tela de resumo (summary.php), retorna à tentativa para poder verificar as questões
+                if "summary.php" in page.url:
+                    return_btn = page.locator("a:has-text('Retornar à tentativa'), button:has-text('Retornar à tentativa'), a[href*='attempt.php']").first
+                    if await return_btn.count() > 0:
+                        console.print("[dim]Retornando à tentativa para acionar 'Verificar' em cada questão pendente...[/dim]")
+                        await _emit_log(on_log, "Retornando à tentativa para acionar 'Verificar' nas questões...")
+                        await return_btn.click()
+                        await page.wait_for_load_state("networkidle")
+
+                # Na tentativa, percorre as páginas acionando 'Verificar' em todas as questões pendentes
+                if "attempt.php" in page.url:
+                    has_next_page = True
+                    while has_next_page:
+                        await self._verify_all_questions_on_current_attempt(page, on_log=on_log)
+
+                        next_page_btn = page.locator("input[type='submit'][value*='Próxima página'], button:has-text('Próxima página')")
+                        if await next_page_btn.count() > 0 and await next_page_btn.first.is_visible():
+                            console.print("[dim]Avançando para a próxima página para verificar questões...[/dim]")
+                            await next_page_btn.first.click()
+                            await page.wait_for_load_state("networkidle")
+                        else:
+                            has_next_page = False
+
+                    finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa')")
+                    if await finish_btn.count() > 0:
+                        console.print("[dim]Todas as questões verificadas. Indo para resumo da tentativa...[/dim]")
+                        await finish_btn.first.click()
+                        await page.wait_for_load_state("networkidle")
 
                 submit_button = page.locator("button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar']").first
                 if await submit_button.count() > 0:
+                    await _emit_log(on_log, "Confirmando 'Enviar tudo e terminar' no Moodle...")
                     await submit_button.click()
                     await page.wait_for_timeout(1000)
 
@@ -672,6 +907,7 @@ class MoodleQuizAutomator:
                     msg = "Questionário finalizado e submetido com sucesso no Moodle!"
                     if grade_info.get("gradeText"):
                         msg += f" (Nota: {grade_info.get('gradeText')})"
+                    await _emit_log(on_log, f"✔ {msg}")
 
                     return {
                         "success": True,
@@ -688,6 +924,7 @@ class MoodleQuizAutomator:
                 }
 
             except Exception as e:
+                await _emit_log(on_log, f"❌ Erro ao finalizar questionário: {e}")
                 return {
                     "success": False,
                     "error": str(e)

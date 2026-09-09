@@ -8,7 +8,7 @@ import argparse
 import asyncio
 import sys
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
 from rich.console import Console
@@ -30,6 +30,18 @@ if sys.platform == "win32":
 console = Console()
 
 
+async def _emit_log(callback: Optional[Any], msg: str):
+    """Envia mensagem para o callback de log ao vivo de forma segura."""
+    if not callback:
+        return
+    try:
+        res = callback(msg)
+        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+            await res
+    except Exception:
+        pass
+
+
 class MoodleSubmitter:
     """Responsável por executar a submissão formal de atividades no Moodle."""
 
@@ -41,7 +53,8 @@ class MoodleSubmitter:
         assignment_url: str,
         file_path: Path,
         text_content: Optional[str] = None,
-        dry_run: bool = False
+        dry_run: bool = False,
+        on_log: Optional[Any] = None
     ) -> Tuple[bool, str]:
         """Acessa o Moodle e submete o arquivo para a tarefa indicada.
 
@@ -76,6 +89,7 @@ class MoodleSubmitter:
             try:
                 page = await context.new_page()
                 console.print(f"[dim]Acessando {assignment_url}...[/dim]")
+                await _emit_log(on_log, f"Acessando {assignment_url}...")
                 await page.goto(assignment_url, wait_until="domcontentloaded", timeout=30000)
 
                 # 1. Proteção estrita: NUNCA usar 'Editar envio' para evitar sobrescrever trabalhos já entregues
@@ -100,6 +114,7 @@ class MoodleSubmitter:
                             action_button = elem
                             btn_text = await elem.inner_text() if hasattr(elem, "inner_text") else "Adicionar envio"
                             console.print(f"[green]✔ Botão de novo envio localizado: '{btn_text.strip()}'[/green]")
+                            await _emit_log(on_log, f"✔ Botão de envio localizado: '{btn_text.strip()}'")
                             break
                     except Exception:
                         continue
@@ -116,6 +131,7 @@ class MoodleSubmitter:
 
                 # Clica para abrir a tela de formulário de submissão
                 console.print("[cyan]Abrindo formulário de entrega no Moodle...[/cyan]")
+                await _emit_log(on_log, "Abrindo formulário de entrega no Moodle...")
                 await action_button.click()
                 await page.wait_for_load_state("domcontentloaded")
                 await asyncio.sleep(2.0)
@@ -129,6 +145,7 @@ class MoodleSubmitter:
                     try:
                         await fi.set_input_files(str(file_path))
                         console.print(f"  [green]+ Arquivo injetado via seletor direto:[/green] {file_path.name}")
+                        await _emit_log(on_log, f"✔ Arquivo anexado via seletor direto: {file_path.name}")
                         uploaded_ok = True
                         await asyncio.sleep(2.5)
                         break
@@ -139,6 +156,7 @@ class MoodleSubmitter:
                 if not uploaded_ok:
                     try:
                         console.print("  [dim]Tentando upload via modal do FilePicker...[/dim]")
+                        await _emit_log(on_log, "Tentando upload via FilePicker do Moodle...")
                         add_icon = await page.query_selector("a[title*='Adicionar'], .fp-btn-add a, a.fp-btn-add")
                         if add_icon:
                             await add_icon.click()
@@ -159,6 +177,7 @@ class MoodleSubmitter:
                                     await page.wait_for_selector(".moodle-dialogue-base", state="hidden", timeout=15000)
                                     uploaded_ok = True
                                     console.print("  [green]+ Arquivo anexado via FilePicker modal com sucesso![/green]")
+                                    await _emit_log(on_log, f"✔ Arquivo anexado via FilePicker: {file_path.name}")
                     except Exception as fp_err:
                         console.print(f"  [yellow]Nota no FilePicker: {fp_err}[/yellow]")
 
@@ -169,6 +188,7 @@ class MoodleSubmitter:
                         if online_editor:
                             await online_editor.fill(text_content)
                             console.print("  [green]+ Texto da resolução preenchido no editor online.[/green]")
+                            await _emit_log(on_log, "✔ Texto preenchido no editor online")
                     except Exception:
                         pass
 
@@ -178,6 +198,7 @@ class MoodleSubmitter:
                     return False, "Botão 'Salvar mudanças' não encontrado no formulário."
 
                 console.print("[bold yellow]Confirmando submissão ('Salvar mudanças')...[/bold yellow]")
+                await _emit_log(on_log, "Salvando mudanças no Moodle...")
                 await save_btn.click()
                 await page.wait_for_load_state("domcontentloaded")
                 await asyncio.sleep(3.0)
@@ -193,6 +214,7 @@ class MoodleSubmitter:
                 if is_success:
                     msg = f"Atividade submetida com sucesso no Moodle UFMG! Arquivo confirmado: {file_path.name}"
                     console.print(f"[bold green]✔ {msg}[/bold green]")
+                    await _emit_log(on_log, f"✔ {msg}")
                     return True, msg
                 else:
                     return False, "Submissão enviada, mas o Moodle não exibiu a confirmação padrão de avaliação."
@@ -200,6 +222,7 @@ class MoodleSubmitter:
             except Exception as e:
                 err_msg = f"Falha durante o processo de envio no Moodle: {e}"
                 console.print(f"[bold red]{err_msg}[/bold red]")
+                await _emit_log(on_log, f"❌ {err_msg}")
                 return False, err_msg
             finally:
                 await browser.close()
@@ -207,13 +230,19 @@ class MoodleSubmitter:
     async def submit_quiz(
         self,
         quiz_url: str,
-        answers: List[Dict[str, Any]],
-        auto_submit: bool = True
+        answers: Any,
+        auto_submit: bool = True,
+        on_log: Optional[Any] = None
     ) -> Tuple[bool, str]:
         """Executa o preenchimento interativo e envio do questionário no Moodle."""
         from src.scraper.moodle_quiz import MoodleQuizAutomator
         automator = MoodleQuizAutomator(auth=self.auth)
-        res = await automator.fill_and_submit_quiz(quiz_url=quiz_url, answers=answers, auto_submit=auto_submit)
+        res = await automator.fill_and_submit_quiz(
+            quiz_url=quiz_url,
+            answers=answers,
+            auto_submit=auto_submit,
+            on_log=on_log
+        )
         if res.get("success"):
             if res.get("already_completed"):
                 return True, "Questionário já se encontra finalizado no Moodle."
@@ -228,12 +257,13 @@ class MoodleSubmitter:
 
     async def finalize_quiz(
         self,
-        quiz_url: str
+        quiz_url: str,
+        on_log: Optional[Any] = None
     ) -> Tuple[bool, str]:
         """Finaliza e envia definitivamente uma tentativa previamente preenchida no Moodle."""
         from src.scraper.moodle_quiz import MoodleQuizAutomator
         automator = MoodleQuizAutomator(auth=self.auth)
-        res = await automator.finalize_submitted_quiz(quiz_url=quiz_url)
+        res = await automator.finalize_submitted_quiz(quiz_url=quiz_url, on_log=on_log)
         if res.get("success"):
             grade_info = res.get("grade_info", {})
             grade_str = f" (Nota: {grade_info.get('gradeText')})" if grade_info.get("gradeText") else ""

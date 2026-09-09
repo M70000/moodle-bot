@@ -39,6 +39,18 @@ if sys.platform == "win32":
 console = Console()
 
 
+async def _emit_log(callback: Optional[Any], msg: str):
+    """Envia mensagem para o callback de log ao vivo de forma segura."""
+    if not callback:
+        return
+    try:
+        res = callback(msg)
+        if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+            await res
+    except Exception:
+        pass
+
+
 class SolutionDraft(BaseModel):
     """Representa a resolução elaborada pela IA para a atividade."""
     assignment_id: str
@@ -100,7 +112,8 @@ class GeminiSolver:
         self,
         assignment: Assignment,
         user_notes: Optional[str] = None,
-        extra_context_files: Optional[List[Path]] = None
+        extra_context_files: Optional[List[Path]] = None,
+        on_log: Optional[Any] = None
     ) -> SolutionDraft:
         """Gera a resolução completa com fallback hierárquico (3.8-flash -> 3.7-flash -> 3.5-flash-lite)."""
         if not self.client:
@@ -111,6 +124,7 @@ class GeminiSolver:
         console.print(
             f"[cyan]Iniciando resolução para: [bold]{assignment.title}[/bold] ({assignment.course_name})...[/cyan]"
         )
+        await _emit_log(on_log, f"Iniciando resolução para '{assignment.title}'...")
 
         context_files = self._collect_context_files(assignment)
         if extra_context_files:
@@ -126,6 +140,7 @@ class GeminiSolver:
             for file_path in context_files:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
+                    await _emit_log(on_log, f"Carregando material de apoio: {file_path.name}")
                     uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
@@ -189,6 +204,7 @@ class GeminiSolver:
             for model_candidate in self.model_hierarchy:
                 try:
                     console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
+                    await _emit_log(on_log, f"Consultando modelo de IA: {model_candidate}...")
                     response = await asyncio.to_thread(
                         self.client.models.generate_content,
                         model=model_candidate,
@@ -201,6 +217,7 @@ class GeminiSolver:
                     if response and response.text:
                         successful_model = model_candidate
                         console.print(f"  [green]✔ Resolução concluída com sucesso via {model_candidate}![/green]")
+                        await _emit_log(on_log, f"✔ Resolução concluída via {model_candidate}")
                         break
                 except Exception as gen_err:
                     console.print(f"  [yellow]Aviso: Falha com {model_candidate} ({gen_err}). Acionando próximo modelo...[/yellow]")
@@ -239,6 +256,7 @@ class GeminiSolver:
             # Renderiza o documento em PDF limpo
             pdf_path = dest_dir / f"{safe_title}.pdf"
             try:
+                await _emit_log(on_log, "Compilando PDF acadêmico da resolução...")
                 pdf_gen = AcademicPDFGenerator()
                 await pdf_gen.render_pdf(
                     markdown_text=clean_markdown,
@@ -246,6 +264,7 @@ class GeminiSolver:
                     course_name=assignment.course_name,
                     assignment_title=assignment.title
                 )
+                await _emit_log(on_log, f"✔ PDF acadêmico gerado: {pdf_path.name}")
             except Exception as pdf_err:
                 console.print(f"[yellow]Aviso ao gerar PDF: {pdf_err}[/yellow]")
                 pdf_path = None
@@ -287,7 +306,8 @@ class GeminiSolver:
         assignment: Assignment,
         questions_data: List[Dict[str, Any]],
         user_notes: Optional[str] = None,
-        extra_context_files: Optional[List[Path]] = None
+        extra_context_files: Optional[List[Path]] = None,
+        on_log: Optional[Any] = None
     ) -> SolutionDraft:
         """Resolve o questionário utilizando o texto real e marcadores [[CAMPO_X]] extraídos ao vivo do Moodle."""
         if not self.client:
@@ -296,6 +316,7 @@ class GeminiSolver:
         console.print(
             f"[cyan]Resolvendo questionário com contexto ao vivo para: [bold]{assignment.title}[/bold]...[/cyan]"
         )
+        await _emit_log(on_log, f"Iniciando resolução das questões de '{assignment.title}' com IA...")
 
         context_files = self._collect_context_files(assignment)
         if extra_context_files:
@@ -310,6 +331,7 @@ class GeminiSolver:
             for file_path in context_files:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
+                    await _emit_log(on_log, f"Carregando material de apoio: {file_path.name}")
                     uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
@@ -378,6 +400,7 @@ class GeminiSolver:
             for model_candidate in self.model_hierarchy:
                 try:
                     console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
+                    await _emit_log(on_log, f"Consultando modelo de IA: {model_candidate}...")
                     response = await asyncio.to_thread(
                         self.client.models.generate_content,
                         model=model_candidate,
@@ -390,6 +413,7 @@ class GeminiSolver:
                     if response and response.text:
                         successful_model = model_candidate
                         console.print(f"  [green]✔ Resolução ao vivo concluída com sucesso via {model_candidate}![/green]")
+                        await _emit_log(on_log, f"✔ Resolução das questões concluída via {model_candidate}")
                         break
                 except Exception as gen_err:
                     console.print(f"  [yellow]Aviso: Falha com {model_candidate} ({gen_err}). Acionando próximo modelo...[/yellow]")
@@ -438,6 +462,14 @@ class GeminiSolver:
                                 clean_val = sub_val.strip("* ").strip()
                                 if clean_val:
                                     structured_dict[f"Q{q_num}_{idx_sub}"] = clean_val
+                                    if any(sep in clean_val for sep in ["→", "->", ":"]):
+                                        parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
+                                        if len(parts) == 2:
+                                            k_label = parts[0].strip("* ").strip()
+                                            v_target = parts[1].strip("* ").strip()
+                                            if k_label and v_target:
+                                                structured_dict[f"Q{q_num}_{k_label}"] = v_target
+                                                structured_dict[k_label] = v_target
 
             summary_lines = [l for l in clean_markdown.splitlines() if l.strip() and not l.startswith("#")]
             summary = "\n".join(summary_lines[:8]) if summary_lines else clean_markdown[:400]
@@ -452,6 +484,7 @@ class GeminiSolver:
 
             pdf_path = dest_dir / f"{safe_title}.pdf"
             try:
+                await _emit_log(on_log, "Compilando folha de respostas em PDF...")
                 pdf_gen = AcademicPDFGenerator()
                 await pdf_gen.render_pdf(
                     markdown_text=clean_markdown,
@@ -459,6 +492,7 @@ class GeminiSolver:
                     course_name=assignment.course_name,
                     assignment_title=assignment.title
                 )
+                await _emit_log(on_log, f"✔ Folha de respostas em PDF gerada: {pdf_path.name}")
             except Exception as pdf_err:
                 console.print(f"[yellow]Aviso ao gerar PDF do quiz: {pdf_err}[/yellow]")
                 pdf_path = None

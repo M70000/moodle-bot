@@ -12,9 +12,10 @@ import argparse
 import asyncio
 import os
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 import re
 import unicodedata
 
@@ -40,6 +41,81 @@ if sys.platform == "win32":
         pass
 
 console = Console()
+
+
+class DiscordLiveReporter:
+    """Gerencia um feed de log ao vivo editado em tempo real em uma mensagem do Discord."""
+
+    def __init__(self, message: Any, initial_header: str):
+        self.message = message
+        self.header = initial_header
+        self.logs: List[str] = []
+        self._last_edit_time = 0.0
+        self._edit_throttle_seconds = 1.2
+        self._pending_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+        self._is_closed = False
+
+    async def log(self, text: str):
+        """Adiciona uma linha de log ao feed e programa a atualização visual da mensagem."""
+        if self._is_closed:
+            return
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        clean_text = text.strip()
+        # Remove tags de estilização Rich se presentes
+        clean_text = re.sub(r"\[/?(cyan|green|yellow|red|bold|dim|underline)[^\]]*\]", "", clean_text)
+        self.logs.append(f"[{timestamp}] {clean_text}")
+        if len(self.logs) > 12:
+            self.logs = self.logs[-12:]
+
+        now = time.time()
+        if now - self._last_edit_time >= self._edit_throttle_seconds:
+            await self._flush()
+        else:
+            if not self._pending_task or self._pending_task.done():
+                self._pending_task = asyncio.create_task(self._delayed_flush())
+
+    async def _delayed_flush(self):
+        await asyncio.sleep(self._edit_throttle_seconds)
+        await self._flush()
+
+    async def _flush(self):
+        if self._is_closed or not self.message:
+            return
+        async with self._lock:
+            self._last_edit_time = time.time()
+            log_block = "\n".join(self.logs)
+            content = f"{self.header}\n```bash\n{log_block}\n```"
+            try:
+                if hasattr(self.message, "edit"):
+                    await self.message.edit(content=content)
+            except Exception:
+                pass
+
+    async def finish(self, final_content: str, embed: Optional[discord.Embed] = None):
+        """Finaliza o live reporter, cancela pendências e substitui a mensagem pelo conteúdo final."""
+        self._is_closed = True
+        if self._pending_task and not self._pending_task.done():
+            self._pending_task.cancel()
+            try:
+                await self._pending_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+        async with self._lock:
+            # Respeita intervalo de segurança antes do edit final para prevenir 429
+            elapsed = time.time() - self._last_edit_time
+            if elapsed < 0.6:
+                await asyncio.sleep(0.6 - elapsed)
+
+            if self.message and hasattr(self.message, "edit"):
+                try:
+                    if embed:
+                        await self.message.edit(content=final_content, embed=embed)
+                    else:
+                        await self.message.edit(content=final_content)
+                except Exception:
+                    pass
 
 
 def normalize_text(text: Optional[Any]) -> str:
@@ -311,6 +387,14 @@ class ReviewActionView(ui.View):
                                     clean_val = sub_val.strip("* ").strip()
                                     if clean_val:
                                         ans_payload[f"Q{q_num}_{idx_sub}"] = clean_val
+                                        if any(sep in clean_val for sep in ["→", "->", ":"]):
+                                            parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
+                                            if len(parts) == 2:
+                                                k_label = parts[0].strip("* ").strip()
+                                                v_target = parts[1].strip("* ").strip()
+                                                if k_label and v_target:
+                                                    ans_payload[f"Q{q_num}_{k_label}"] = v_target
+                                                    ans_payload[k_label] = v_target
                 except Exception:
                     pass
 
@@ -334,9 +418,13 @@ class ReviewActionView(ui.View):
             f"[bold cyan]Preenchimento de rascunho solicitado no Discord para {self.assignment_id}![/bold cyan] "
             f"Preenchendo campos no Moodle sem submeter..."
         )
-        await interaction.followup.send(
+        status_msg = await interaction.followup.send(
             content="⏳ **Preenchendo questionário no Moodle com cadência humana...** As respostas serão digitadas e salvas na tentativa sem submeter.",
             ephemeral=False
+        )
+        reporter = DiscordLiveReporter(
+            status_msg,
+            "⏳ **Preenchendo questionário no Moodle com cadência humana...** As respostas serão digitadas e salvas na tentativa sem submeter."
         )
 
         ans_payload = self._extract_answers_payload()
@@ -346,7 +434,8 @@ class ReviewActionView(ui.View):
         success, message = await submitter.submit_quiz(
             quiz_url=self.assignment_url,
             answers=ans_payload or self.structured_answers,
-            auto_submit=False
+            auto_submit=False,
+            on_log=reporter.log
         )
 
         if success:
@@ -362,15 +451,12 @@ class ReviewActionView(ui.View):
 
             await interaction.message.edit(embed=embed, view=self)
             moodle_link_md = f"👉 **[Clique aqui para abrir sua tentativa no Moodle]({self.assignment_url})**\n\n" if self.assignment_url else ""
-            await interaction.followup.send(
-                content=(
-                    f"🎉 **Respostas salvas no Moodle com sucesso!**\n"
-                    f"{message}\n\n"
-                    f"{moodle_link_md}"
-                    f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar tudo e terminar'** diretamente no Moodle;\n"
-                    f"• Ou, se preferir, pode clicar no botão **[🚀 Enviar Tudo e Terminar]** acima para o robô finalizar!"
-                ),
-                ephemeral=False
+            await reporter.finish(
+                f"🎉 **Respostas salvas no Moodle com sucesso!**\n"
+                f"{message}\n\n"
+                f"{moodle_link_md}"
+                f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar tudo e terminar'** diretamente no Moodle;\n"
+                f"• Ou, se preferir, pode clicar no botão **[🚀 Enviar Tudo e Terminar]** acima para o robô finalizar!"
             )
         else:
             self._build_buttons(draft_saved=False)
@@ -380,10 +466,7 @@ class ReviewActionView(ui.View):
                     text=f"Falha ao preencher às {current_time}: {message[:100]}"
                 )
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send(
-                content=f"⚠️ **Falha ao preencher questionário no Moodle:** {message}",
-                ephemeral=False
-            )
+            await reporter.finish(f"⚠️ **Falha ao preencher questionário no Moodle:** {message}")
 
     async def finalize_quiz_button(self, interaction: discord.Interaction):
         """Finaliza e submete em definitivo o questionário no Moodle ('Enviar tudo e terminar')."""
@@ -402,9 +485,13 @@ class ReviewActionView(ui.View):
         console.print(
             f"[bold cyan]Envio definitivo do questionário {self.assignment_id} solicitado no Discord![/bold cyan]"
         )
-        await interaction.followup.send(
+        status_msg = await interaction.followup.send(
             content="🚀 **Finalizando questionário no Moodle...** Confirmando 'Enviar tudo e terminar'.",
             ephemeral=False
+        )
+        reporter = DiscordLiveReporter(
+            status_msg,
+            "🚀 **Finalizando questionário no Moodle...** Confirmando 'Enviar tudo e terminar'."
         )
 
         submitter = MoodleSubmitter()
@@ -412,19 +499,21 @@ class ReviewActionView(ui.View):
 
         ans_payload = self._extract_answers_payload()
         if self._is_draft_saved:
-            success, message = await submitter.finalize_quiz(self.assignment_url)
+            success, message = await submitter.finalize_quiz(self.assignment_url, on_log=reporter.log)
             if not success and "não foi encontrado" in message.lower():
                 # Fallback: tenta preencher e enviar em um passo só
                 success, message = await submitter.submit_quiz(
                     quiz_url=self.assignment_url,
                     answers=ans_payload or self.structured_answers,
-                    auto_submit=True
+                    auto_submit=True,
+                    on_log=reporter.log
                 )
         else:
             success, message = await submitter.submit_quiz(
                 quiz_url=self.assignment_url,
                 answers=ans_payload or self.structured_answers,
-                auto_submit=True
+                auto_submit=True,
+                on_log=reporter.log
             )
 
         if success:
@@ -438,10 +527,7 @@ class ReviewActionView(ui.View):
                     text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
                 )
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send(
-                content=f"🎉 **Confirmação de Envio no Moodle:** {message}",
-                ephemeral=False
-            )
+            await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
             if self.on_action:
                 await self.on_action(self.assignment_id, "approved", interaction)
         else:
@@ -452,10 +538,7 @@ class ReviewActionView(ui.View):
                     text=f"Falha na finalização às {current_time}: {message[:100]}"
                 )
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send(
-                content=f"⚠️ **Falha ao finalizar questionário:** {message}",
-                ephemeral=False
-            )
+            await reporter.finish(f"⚠️ **Falha ao finalizar questionário:** {message}")
 
     async def approve_assign_button(self, interaction: discord.Interaction):
         """Aprova e submete tarefas de entrega de arquivo (PDF/Docx)."""
@@ -482,14 +565,19 @@ class ReviewActionView(ui.View):
             f"[bold cyan]Aprovação recebida no Discord para tarefa {self.assignment_id}![/bold cyan] "
             f"Disparando envio de {self.file_to_submit.name}..."
         )
-        await interaction.followup.send(
+        status_msg = await interaction.followup.send(
             content=f"⏳ **Enviando arquivo no Moodle:** `{self.file_to_submit.name}`...",
             ephemeral=False
+        )
+        reporter = DiscordLiveReporter(
+            status_msg,
+            f"⏳ **Enviando arquivo no Moodle:** `{self.file_to_submit.name}`..."
         )
 
         success, message = await submitter.submit_assignment(
             assignment_url=self.assignment_url,
-            file_path=self.file_to_submit
+            file_path=self.file_to_submit,
+            on_log=reporter.log
         )
 
         if success:
@@ -503,10 +591,7 @@ class ReviewActionView(ui.View):
                     text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
                 )
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send(
-                content=f"🎉 **Confirmação de Envio no Moodle:** {message}",
-                ephemeral=False
-            )
+            await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
             if self.on_action:
                 await self.on_action(self.assignment_id, "approved", interaction)
         else:
@@ -517,10 +602,7 @@ class ReviewActionView(ui.View):
                     text=f"Falha no envio às {current_time}: {message[:100]}"
                 )
             await interaction.message.edit(embed=embed, view=self)
-            await interaction.followup.send(
-                content=f"⚠️ **Falha no envio:** {message}",
-                ephemeral=False
-            )
+            await reporter.finish(f"⚠️ **Falha no envio:** {message}")
 
     async def postpone_button(self, interaction: discord.Interaction):
         for child in self.children:
@@ -864,44 +946,53 @@ async def _execute_solve_flow(
         activity_type=target_item.get("activity_type", "quiz" if "mod/quiz" in target_item.get("url", "") else "assign")
     )
 
+    reporter = None
     try:
         ref_msg = format_reference_materials_msg(assign_obj.course_name, extra_files or [])
         action_verb = "🔄 Refazendo" if is_refazer else "🧠 Analisando"
-        await send_func(f"{action_verb} **{assign_obj.title}**...\n{ref_msg}")
+        initial_header = f"{action_verb} **{assign_obj.title}**...\n{ref_msg}"
+        status_msg = await send_func(initial_header)
+        reporter = DiscordLiveReporter(status_msg, initial_header)
 
         if assign_obj.activity_type == "quiz":
             from src.scraper.moodle_quiz import MoodleQuizAutomator
             quiz_automator = MoodleQuizAutomator()
-            ext_res = await quiz_automator.inspect_and_extract_quiz(assign_obj.url)
+            ext_res = await quiz_automator.inspect_and_extract_quiz(assign_obj.url, on_log=reporter.log)
             if ext_res.get("success") and ext_res.get("questions"):
                 draft = await solver.solve_quiz_with_live_context(
                     assignment=assign_obj,
                     questions_data=ext_res["questions"],
                     user_notes=instrucoes,
-                    extra_context_files=extra_files
+                    extra_context_files=extra_files,
+                    on_log=reporter.log
                 )
             else:
                 draft = await solver.solve_assignment(
                     assignment=assign_obj,
                     user_notes=instrucoes,
-                    extra_context_files=extra_files
+                    extra_context_files=extra_files,
+                    on_log=reporter.log
                 )
         else:
             draft = await solver.solve_assignment(
                 assignment=assign_obj,
                 user_notes=instrucoes,
-                extra_context_files=extra_files
+                extra_context_files=extra_files,
+                on_log=reporter.log
             )
 
         notifier = MoodleDiscordNotifier()
         sent = await notifier.send_assignment_review(assign_obj, draft)
         if sent:
-            await send_func(f"✔ Resolução de **{assign_obj.title}** enviada no canal de revisão com sucesso!")
+            await reporter.finish(f"✔ Resolução de **{assign_obj.title}** enviada no canal de revisão com sucesso!")
         else:
-            await send_func(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card de revisão no Discord. Verifique os logs.")
+            await reporter.finish(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card de revisão no Discord. Verifique os logs.")
 
     except Exception as e:
-        await send_func(f"❌ Erro ao gerar resolução: {e}")
+        if reporter:
+            await reporter.finish(f"❌ Erro ao gerar resolução: {e}")
+        else:
+            await send_func(f"❌ Erro ao gerar resolução: {e}")
 
 
 @bot.tree.command(name="resolver", description="Resolve uma tarefa ou questionário pendente com IA")
