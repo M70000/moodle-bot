@@ -12,7 +12,7 @@
       "status": "pending_review",
       "alert_5m_sent": false,
       "emergency_submitted": false,
-      "updated_at": "2026-09-10T19:46:10.979626",
+      "updated_at": "2026-09-10T20:21:39.422365",
       "alert_15m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
@@ -39,7 +39,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.981084"
+      "updated_at": "2026-09-10T20:21:39.423657"
     },
     "45695": {
       "id": "45695",
@@ -59,7 +59,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.982391"
+      "updated_at": "2026-09-10T20:21:39.424676"
     },
     "45717": {
       "id": "45717",
@@ -79,7 +79,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.983398"
+      "updated_at": "2026-09-10T20:21:39.425643"
     },
     "45694": {
       "id": "45694",
@@ -99,7 +99,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.984536"
+      "updated_at": "2026-09-10T20:21:39.426615"
     },
     "45699": {
       "id": "45699",
@@ -119,7 +119,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.985664"
+      "updated_at": "2026-09-10T20:21:39.427742"
     },
     "45700": {
       "id": "45700",
@@ -139,7 +139,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.986820"
+      "updated_at": "2026-09-10T20:21:39.428841"
     },
     "45701": {
       "id": "45701",
@@ -159,7 +159,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.987937"
+      "updated_at": "2026-09-10T20:21:39.429936"
     },
     "45705": {
       "id": "45705",
@@ -179,7 +179,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.989073"
+      "updated_at": "2026-09-10T20:21:39.431077"
     },
     "45706": {
       "id": "45706",
@@ -199,7 +199,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.990292"
+      "updated_at": "2026-09-10T20:21:39.432084"
     },
     "45707": {
       "id": "45707",
@@ -219,7 +219,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.991522"
+      "updated_at": "2026-09-10T20:21:39.433047"
     },
     "45708": {
       "id": "45708",
@@ -239,7 +239,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.992700"
+      "updated_at": "2026-09-10T20:21:39.434178"
     },
     "45709": {
       "id": "45709",
@@ -259,7 +259,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.993830"
+      "updated_at": "2026-09-10T20:21:39.435072"
     },
     "45710": {
       "id": "45710",
@@ -279,7 +279,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.994780"
+      "updated_at": "2026-09-10T20:21:39.436305"
     },
     "45715": {
       "id": "45715",
@@ -299,7 +299,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.995735"
+      "updated_at": "2026-09-10T20:21:39.438061"
     },
     "45716": {
       "id": "45716",
@@ -319,7 +319,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.996730"
+      "updated_at": "2026-09-10T20:21:39.439949"
     },
     "45718": {
       "id": "45718",
@@ -339,7 +339,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.997661"
+      "updated_at": "2026-09-10T20:21:39.442151"
     },
     "45719": {
       "id": "45719",
@@ -359,7 +359,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.998715"
+      "updated_at": "2026-09-10T20:21:39.443915"
     },
     "45723": {
       "id": "45723",
@@ -379,7 +379,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:10.999680",
+      "updated_at": "2026-09-10T20:21:39.445791",
       "notion_synced": true
     },
     "45724": {
@@ -400,7 +400,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:48:11.162020",
+      "updated_at": "2026-09-10T20:21:39.447057",
       "notion_synced": true
     },
     "45725": {
@@ -411,7 +411,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -421,7 +421,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:50:41.922448",
+      "updated_at": "2026-09-10T20:21:39.448015",
       "notion_synced": true
     },
     "45729": {
@@ -432,7 +432,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -442,7 +442,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:56:30.978744",
+      "updated_at": "2026-09-10T20:21:39.448912",
       "notion_synced": true
     },
     "45730": {
@@ -453,7 +453,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -463,7 +463,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:55:04.702071",
+      "updated_at": "2026-09-10T20:21:39.449846",
       "notion_synced": true
     },
     "45731": {
@@ -474,7 +474,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -484,7 +484,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:55:24.285016",
+      "updated_at": "2026-09-10T20:21:39.450773",
       "notion_synced": true
     },
     "45732": {
@@ -495,17 +495,17 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
-      "is_submitted": false,
+      "is_submitted": true,
       "draft_path": null,
-      "status": "pending_review",
+      "status": "submitted",
       "alert_15m_sent": false,
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.010509",
+      "updated_at": "2026-09-10T20:32:15.437872",
       "notion_synced": true
     },
     "45733": {
@@ -519,14 +519,14 @@
       "submission_status": "A fazer (Pendente)",
       "grade_value": null,
       "has_grade": true,
-      "is_submitted": false,
+      "is_submitted": true,
       "draft_path": null,
-      "status": "pending_review",
+      "status": "submitted",
       "alert_15m_sent": false,
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.012269",
+      "updated_at": "2026-09-10T20:26:54.417004",
       "notion_synced": true
     },
     "45734": {
@@ -540,14 +540,14 @@
       "submission_status": "A fazer (Pendente)",
       "grade_value": null,
       "has_grade": true,
-      "is_submitted": false,
+      "is_submitted": true,
       "draft_path": null,
-      "status": "pending_review",
+      "status": "submitted",
       "alert_15m_sent": false,
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.013431",
+      "updated_at": "2026-09-10T20:30:25.558481",
       "notion_synced": true
     },
     "45735": {
@@ -568,7 +568,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.014356",
+      "updated_at": "2026-09-10T20:21:39.454582",
       "notion_synced": true
     },
     "45736": {
@@ -589,7 +589,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.015303",
+      "updated_at": "2026-09-10T20:21:39.455563",
       "notion_synced": true
     },
     "45737": {
@@ -610,7 +610,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.016181",
+      "updated_at": "2026-09-10T20:21:39.456510",
       "notion_synced": true
     },
     "45738": {
@@ -631,7 +631,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.017163",
+      "updated_at": "2026-09-10T20:21:39.457439",
       "notion_synced": true
     },
     "45739": {
@@ -652,7 +652,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.018115",
+      "updated_at": "2026-09-10T20:21:39.458393",
       "notion_synced": true
     },
     "45740": {
@@ -673,7 +673,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.019032",
+      "updated_at": "2026-09-10T20:21:39.459553",
       "notion_synced": true
     },
     "45741": {
@@ -694,7 +694,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.020008",
+      "updated_at": "2026-09-10T20:21:39.460516",
       "notion_synced": true
     },
     "45742": {
@@ -715,7 +715,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.020923",
+      "updated_at": "2026-09-10T20:21:39.461546",
       "notion_synced": true
     },
     "45743": {
@@ -736,7 +736,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.021860",
+      "updated_at": "2026-09-10T20:21:39.462490",
       "notion_synced": true
     },
     "45744": {
@@ -757,7 +757,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.022917",
+      "updated_at": "2026-09-10T20:21:39.463410",
       "notion_synced": true
     },
     "45745": {
@@ -778,7 +778,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.023891",
+      "updated_at": "2026-09-10T20:21:39.464365",
       "notion_synced": true
     },
     "45746": {
@@ -799,7 +799,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.024805",
+      "updated_at": "2026-09-10T20:21:39.465301",
       "notion_synced": true
     },
     "45747": {
@@ -820,7 +820,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.025710",
+      "updated_at": "2026-09-10T20:21:39.466208",
       "notion_synced": true
     },
     "45748": {
@@ -841,7 +841,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.026641",
+      "updated_at": "2026-09-10T20:21:39.467145",
       "notion_synced": true
     },
     "45752": {
@@ -862,7 +862,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.027554",
+      "updated_at": "2026-09-10T20:21:39.468175",
       "notion_synced": true
     },
     "45753": {
@@ -883,7 +883,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.028590",
+      "updated_at": "2026-09-10T20:21:39.469151",
       "notion_synced": true
     },
     "45754": {
@@ -904,7 +904,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.029546",
+      "updated_at": "2026-09-10T20:21:39.470025",
       "notion_synced": true
     },
     "45757": {
@@ -925,7 +925,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.030492",
+      "updated_at": "2026-09-10T20:21:39.470983",
       "notion_synced": true
     },
     "45758": {
@@ -946,7 +946,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.031437",
+      "updated_at": "2026-09-10T20:21:39.471854",
       "notion_synced": true
     },
     "45759": {
@@ -967,7 +967,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.032369",
+      "updated_at": "2026-09-10T20:21:39.472753",
       "notion_synced": true
     },
     "45763": {
@@ -988,7 +988,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.033294",
+      "updated_at": "2026-09-10T20:21:39.473670",
       "notion_synced": true
     },
     "45764": {
@@ -1009,7 +1009,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.034216",
+      "updated_at": "2026-09-10T20:21:39.474742",
       "notion_synced": true
     },
     "45766": {
@@ -1030,7 +1030,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.035156",
+      "updated_at": "2026-09-10T20:21:39.475669",
       "notion_synced": true
     },
     "45767": {
@@ -1051,7 +1051,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.036059"
+      "updated_at": "2026-09-10T20:21:39.476559"
     },
     "45768": {
       "id": "45768",
@@ -1071,7 +1071,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.036956"
+      "updated_at": "2026-09-10T20:21:39.477479"
     },
     "45769": {
       "id": "45769",
@@ -1091,7 +1091,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.037853"
+      "updated_at": "2026-09-10T20:21:39.478407"
     },
     "45770": {
       "id": "45770",
@@ -1111,7 +1111,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T19:46:11.038737",
+      "updated_at": "2026-09-10T20:21:39.479253",
       "notion_synced": true
     }
   },

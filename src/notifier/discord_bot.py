@@ -312,7 +312,7 @@ async def task_material_autocomplete(
         already_chosen = set()
         options = interaction.data.get("options", [])
         for opt in options:
-            if opt.get("name") == "tarefa":
+            if opt.get("name") in ["tarefa", "disciplina"]:
                 selected_task = str(opt.get("value") or "").strip()
             elif opt.get("name") in ["material_1", "material_2", "material_3"]:
                 val = str(opt.get("value") or "").strip()
@@ -1698,23 +1698,52 @@ async def cmd_refazer(
     )
 
 
+class BatchInstructionModal(ui.Modal, title="Instruções para o Lote"):
+    def __init__(self, parent_view: "BatchSelectView"):
+        super().__init__()
+        self.parent_view = parent_view
+        self.instrucoes_input = ui.TextInput(
+            label="Instruções personalizadas para a IA",
+            style=discord.TextStyle.paragraph,
+            placeholder="Ex: Use o gabarito das aulas anteriores, deduza passo a passo, etc.",
+            default=parent_view.instrucoes or "",
+            required=False,
+            max_length=1000
+        )
+        self.add_item(self.instrucoes_input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        new_val = self.instrucoes_input.value.strip()
+        self.parent_view.instrucoes = new_val if new_val else None
+        embed = self.parent_view.build_panel_embed()
+        await interaction.response.edit_message(embed=embed, view=self.parent_view)
+
+
 class BatchSelectView(ui.View):
-    """Painel interativo para seleção de múltiplas tarefas pendentes e disparo em lote."""
+    """Painel interativo para seleção de múltiplas tarefas pendentes, materiais de apoio e disparo em lote."""
 
     def __init__(
         self,
         pending_items: List[Dict[str, Any]],
         disciplina_filter: Optional[str] = None,
+        instrucoes: Optional[str] = None,
+        attached_files: Optional[List[Path]] = None,
+        available_materials: Optional[List[Path]] = None,
         requester: str = "Usuário",
         timeout: Optional[float] = 300
     ):
         super().__init__(timeout=timeout)
         self.all_pending = pending_items
         self.disciplina_filter = disciplina_filter
+        self.instrucoes = instrucoes
+        self.attached_files = list(attached_files or [])
+        self.available_materials = list(available_materials or [])
+        self.selected_materials: List[Path] = []
         self.requester = requester
         self.selected_ids: List[str] = []
 
-        options: List[discord.SelectOption] = []
+        # 1. Menu Dropdown de Seleção de Tarefas (Row 0)
+        task_options: List[discord.SelectOption] = []
         for item in self.all_pending[:25]:
             aid = str(item.get("id", ""))
             title = item.get("title", f"Atividade {aid}")
@@ -1725,7 +1754,7 @@ class BatchSelectView(ui.View):
 
             label = f"[{prefix}] {title}"[:100]
             desc = f"{course} • Prazo: {due_str}"[:100]
-            options.append(
+            task_options.append(
                 discord.SelectOption(
                     label=label,
                     value=aid,
@@ -1734,38 +1763,103 @@ class BatchSelectView(ui.View):
                 )
             )
 
-        max_picks = min(len(options), 25)
-        self.select_menu = ui.Select(
+        max_picks = min(len(task_options), 25)
+        self.task_select_menu = ui.Select(
             placeholder=f"Selecione de 1 a {max_picks} atividades para resolver em lote...",
             min_values=1,
             max_values=max_picks,
-            options=options,
+            options=task_options,
             row=0
         )
-        self.select_menu.callback = self.on_select_tasks
-        self.add_item(self.select_menu)
+        self.task_select_menu.callback = self.on_select_tasks
+        self.add_item(self.task_select_menu)
 
-    async def on_select_tasks(self, interaction: discord.Interaction):
-        self.selected_ids = list(self.select_menu.values)
-        selected_titles = []
-        id_to_item = {str(item.get("id", "")): item for item in self.all_pending}
-        for aid in self.selected_ids:
-            it = id_to_item.get(aid)
-            if it:
-                selected_titles.append(f"• **{it.get('title', aid)}**")
+        # 2. Menu Dropdown de Seleção de Materiais Salvos (Row 1) se houver materiais disponíveis
+        if self.available_materials:
+            mat_options: List[discord.SelectOption] = []
+            for p in self.available_materials[:25]:
+                size_kb = p.stat().st_size // 1024 if p.exists() else 0
+                size_str = f"{size_kb} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+                mat_options.append(
+                    discord.SelectOption(
+                        label=p.name[:100],
+                        value=p.name,
+                        description=f"Tamanho: {size_str}"[:100],
+                        emoji="📚"
+                    )
+                )
+            max_mat_picks = min(len(mat_options), 3)
+            self.mat_select_menu = ui.Select(
+                placeholder=f"Selecione até {max_mat_picks} materiais salvos de apoio para o lote...",
+                min_values=0,
+                max_values=max_mat_picks,
+                options=mat_options,
+                row=1
+            )
+            self.mat_select_menu.callback = self.on_select_materials
+            self.add_item(self.mat_select_menu)
+        else:
+            self.mat_select_menu = None
 
-        preview_text = "\n".join(selected_titles[:5])
-        if len(selected_titles) > 5:
-            preview_text += f"\n*... e mais {len(selected_titles) - 5} atividade(s)*"
-
-        await interaction.response.send_message(
-            f"✅ **{len(self.selected_ids)} atividade(s) selecionada(s):**\n{preview_text}\n\n"
-            "Escolha abaixo o **modo de execução** para iniciar o processamento em lote:",
-            ephemeral=True
+    def build_panel_embed(self) -> discord.Embed:
+        disc_info = f" da disciplina **{self.disciplina_filter}**" if self.disciplina_filter else ""
+        embed = discord.Embed(
+            title="📦 Resolução de Atividades em Lote",
+            description=(
+                f"Encontradas **{len(self.all_pending)} atividade(s) pendente(s)**{disc_info}.\n\n"
+                "1. Marque no **menu de atividades** as que deseja incluir no lote;\n"
+                "2. (Opcional) Escolha **materiais de apoio** ou clique em **[✏️ Instruções]**;\n"
+                "3. Escolha o nível de autonomia nos botões para disparar a execução."
+            ),
+            color=discord.Color.blue()
         )
 
+        if self.selected_ids:
+            id_to_item = {str(item.get("id", "")): item for item in self.all_pending}
+            sel_names = [f"`{id_to_item[aid].get('title', aid)}`" for aid in self.selected_ids if aid in id_to_item]
+            prev = ", ".join(sel_names[:4])
+            if len(sel_names) > 4:
+                prev += f" (+{len(sel_names) - 4})"
+            embed.add_field(name=f"📋 Atividades Selecionadas ({len(self.selected_ids)})", value=prev, inline=False)
+        else:
+            embed.add_field(name="📋 Atividades Selecionadas", value="*Nenhuma marcada ainda (use o dropdown acima)*", inline=False)
+
+        combined_mats = list(self.attached_files)
+        for sm in self.selected_materials:
+            if sm not in combined_mats:
+                combined_mats.append(sm)
+
+        if combined_mats:
+            mat_names = [f"`{p.name}`" for p in combined_mats]
+            embed.add_field(name=f"📚 Materiais de Apoio para o Lote ({len(combined_mats)})", value="\n".join(f"• {n}" for n in mat_names[:5]), inline=False)
+        else:
+            embed.add_field(name="📚 Materiais de Apoio", value="*Nenhum arquivo externo (a IA usará apenas o enunciado de cada atividade)*", inline=False)
+
+        if self.instrucoes:
+            embed.add_field(name="📝 Instruções da IA para o Lote", value=f"```\n{self.instrucoes[:400]}\n```", inline=False)
+
+        embed.set_footer(text="A execução em lote é estritamente sequencial (FIFO) para segurança do Moodle.")
+        return embed
+
+    async def on_select_tasks(self, interaction: discord.Interaction):
+        self.selected_ids = list(self.task_select_menu.values)
+        embed = self.build_panel_embed()
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception:
+            pass
+
+    async def on_select_materials(self, interaction: discord.Interaction):
+        chosen_names = set(self.mat_select_menu.values)
+        self.selected_materials = [p for p in self.available_materials if p.name in chosen_names]
+        embed = self.build_panel_embed()
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception:
+            pass
+
     async def _dispatch_batch(self, interaction: discord.Interaction, modo: str):
-        chosen_ids = list(self.select_menu.values) if self.select_menu.values else self.selected_ids
+        chosen_ids = list(self.task_select_menu.values) if self.task_select_menu.values else self.selected_ids
         if not chosen_ids:
             await interaction.response.send_message(
                 "⚠️ **Nenhuma atividade foi selecionada!**\nAbra o menu dropdown acima e escolha pelo menos uma atividade.",
@@ -1779,6 +1873,11 @@ class BatchSelectView(ui.View):
 
         id_to_item = {str(item.get("id", "")): item for item in self.all_pending}
         chosen_items = [id_to_item[aid] for aid in chosen_ids if aid in id_to_item]
+
+        combined_files = list(self.attached_files)
+        for sm in self.selected_materials:
+            if sm not in combined_files:
+                combined_files.append(sm)
 
         mode_labels = {
             "resolver": "🧠 Apenas Resolver (Gera rascunhos para conferência)",
@@ -1795,8 +1894,8 @@ class BatchSelectView(ui.View):
             pos = await enqueue_solve_flow(
                 send_func=channel.send,
                 tarefa=aid,
-                instrucoes=None,
-                extra_files=None,
+                instrucoes=self.instrucoes,
+                extra_files=combined_files,
                 is_refazer=False,
                 modo=modo,
                 requester=interaction.user.display_name if interaction.user else self.requester,
@@ -1816,6 +1915,18 @@ class BatchSelectView(ui.View):
             ),
             color=discord.Color.green()
         )
+        if combined_files:
+            embed.add_field(
+                name="📚 Materiais de Referência Aplicados a Todo o Lote",
+                value="\n".join(f"• `{p.name}`" for p in combined_files[:5]),
+                inline=False
+            )
+        if self.instrucoes:
+            embed.add_field(
+                name="📝 Instruções da IA",
+                value=f"```\n{self.instrucoes[:400]}\n```",
+                inline=False
+            )
         if len(summary_lines) > 15:
             embed.set_footer(text=f"... e mais {len(summary_lines) - 15} atividades enfileiradas.")
 
@@ -1827,19 +1938,24 @@ class BatchSelectView(ui.View):
 
         await interaction.followup.send(embed=embed)
 
-    @ui.button(label="Apenas Resolver", style=discord.ButtonStyle.primary, emoji="🧠", row=1)
+    @ui.button(label="Instruções", style=discord.ButtonStyle.secondary, emoji="✏️", row=2)
+    async def btn_instrucoes(self, interaction: discord.Interaction, button: ui.Button):
+        modal = BatchInstructionModal(parent_view=self)
+        await interaction.response.send_modal(modal)
+
+    @ui.button(label="Apenas Resolver", style=discord.ButtonStyle.primary, emoji="🧠", row=2)
     async def btn_resolver(self, interaction: discord.Interaction, button: ui.Button):
         await self._dispatch_batch(interaction, modo="resolver")
 
-    @ui.button(label="Resolver e Preencher", style=discord.ButtonStyle.primary, emoji="📝", row=1)
+    @ui.button(label="Resolver e Preencher", style=discord.ButtonStyle.primary, emoji="📝", row=2)
     async def btn_preencher(self, interaction: discord.Interaction, button: ui.Button):
         await self._dispatch_batch(interaction, modo="preencher")
 
-    @ui.button(label="Resolver e Enviar Tudo", style=discord.ButtonStyle.success, emoji="⚡", row=1)
+    @ui.button(label="Resolver e Enviar Tudo", style=discord.ButtonStyle.success, emoji="⚡", row=3)
     async def btn_finalizar(self, interaction: discord.Interaction, button: ui.Button):
         await self._dispatch_batch(interaction, modo="finalizar")
 
-    @ui.button(label="Cancelar", style=discord.ButtonStyle.danger, emoji="❌", row=2)
+    @ui.button(label="Cancelar", style=discord.ButtonStyle.danger, emoji="❌", row=3)
     async def btn_cancelar(self, interaction: discord.Interaction, button: ui.Button):
         for child in self.children:
             child.disabled = True
@@ -1853,18 +1969,39 @@ class BatchSelectView(ui.View):
 
 @bot.tree.command(name="resolver_lote", description="Seleciona e resolve múltiplas tarefas/questionários pendentes em lote")
 @app_commands.describe(
-    disciplina="Filtrar atividades pendentes por disciplina específica (opcional)"
+    disciplina="Filtrar atividades pendentes por disciplina específica (opcional)",
+    instrucoes="Instruções adicionais personalizadas para todas as tarefas do lote (opcional)",
+    arquivo="Arquivo complementar anexado por você (gabarito, PDF, foto) para usar no lote (opcional)",
+    material_1="Material 1 salvo da matéria para usar como apoio no lote (opcional)",
+    material_2="Material 2 salvo da matéria para usar como apoio no lote (opcional)",
+    material_3="Material 3 salvo da matéria para usar como apoio no lote (opcional)"
 )
 @app_commands.autocomplete(
-    disciplina=course_autocomplete
+    disciplina=course_autocomplete,
+    material_1=task_material_autocomplete,
+    material_2=task_material_autocomplete,
+    material_3=task_material_autocomplete
 )
 async def cmd_resolver_lote(
     interaction: discord.Interaction,
-    disciplina: Optional[str] = None
+    disciplina: Optional[str] = None,
+    instrucoes: Optional[str] = None,
+    arquivo: Optional[discord.Attachment] = None,
+    material_1: Optional[str] = None,
+    material_2: Optional[str] = None,
+    material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
     state = DaemonState()
     assignments = state.data.get("assignments", {})
+
+    extra_files: List[Path] = []
+    if arquivo:
+        temp_dir = Path("storage/submissions/temp_uploads")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        dest_file = temp_dir / sanitize_filename(arquivo.filename)
+        await arquivo.save(dest_file)
+        extra_files.append(dest_file)
 
     pending_items = []
     norm_disc = normalize_text(disciplina) if disciplina else None
@@ -1892,24 +2029,39 @@ async def cmd_resolver_lote(
         await interaction.followup.send(msg)
         return
 
-    disc_info = f" da disciplina **{disciplina}**" if disciplina else ""
-    embed = discord.Embed(
-        title="📦 Resolução de Atividades em Lote",
-        description=(
-            f"Encontradas **{len(pending_items)} atividade(s) pendente(s)**{disc_info}.\n\n"
-            "1. Abra o menu **dropdown abaixo** e marque as atividades que deseja incluir;\n"
-            "2. Escolha o nível de autonomia desejado nos botões:\n"
-            "   • **[🧠 Apenas Resolver]**: gera o rascunho com IA para você conferir no Discord;\n"
-            "   • **[📝 Resolver e Preencher]**: preenche no Moodle e salva como rascunho;\n"
-            "   • **[⚡ Resolver e Enviar Tudo]**: resolve, preenche e finaliza no Moodle (End-to-End)."
-        ),
-        color=discord.Color.blue()
-    )
+    # Coleta materiais disponíveis para a disciplina ou tarefas pendentes encontradas
+    available_mats: List[Path] = []
+    seen_mats = set()
+    if disciplina:
+        for p in get_course_materials_for_task(disciplina):
+            if p.name not in seen_mats:
+                seen_mats.add(p.name)
+                available_mats.append(p)
+    for it in pending_items[:25]:
+        for p in get_course_materials_for_task(str(it.get("id", ""))):
+            if p.name not in seen_mats:
+                seen_mats.add(p.name)
+                available_mats.append(p)
+
+    # Se usuário especificou material_1/2/3 diretamente nos parâmetros
+    specified_mats = [m for m in [material_1, material_2, material_3] if m]
+    if specified_mats:
+        for m_name in specified_mats:
+            for p in available_mats:
+                if p.name == m_name or normalize_text(p.name) == normalize_text(m_name):
+                    if p not in extra_files:
+                        extra_files.append(p)
+                    break
+
     view = BatchSelectView(
         pending_items=pending_items,
         disciplina_filter=disciplina,
+        instrucoes=instrucoes,
+        attached_files=extra_files,
+        available_materials=available_mats,
         requester=interaction.user.display_name if interaction.user else "Usuário"
     )
+    embed = view.build_panel_embed()
     await interaction.followup.send(embed=embed, view=view)
 
 
@@ -2199,8 +2351,27 @@ async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Opt
 
 
 @bot.command(name="resolver_lote", aliases=["lote"])
-async def prefix_resolver_lote(ctx: commands.Context, *, disciplina: Optional[str] = None):
-    """Comando alternativo com prefixo: !resolver_lote ou !lote [disciplina]."""
+async def prefix_resolver_lote(ctx: commands.Context, *, args: Optional[str] = None):
+    """Comando alternativo com prefixo: !resolver_lote [disciplina] [--instrucoes <texto>]."""
+    extra_files = []
+    if ctx.message.attachments:
+        temp_dir = Path("storage/submissions/temp_uploads")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        for att in ctx.message.attachments:
+            dest_file = temp_dir / sanitize_filename(att.filename)
+            await att.save(dest_file)
+            extra_files.append(dest_file)
+
+    disciplina = None
+    instrucoes = None
+    if args:
+        if "--instrucoes" in args:
+            parts = args.split("--instrucoes", 1)
+            disciplina = parts[0].strip() or None
+            instrucoes = parts[1].strip() or None
+        else:
+            disciplina = args.strip() or None
+
     state = DaemonState()
     assignments = state.data.get("assignments", {})
 
@@ -2230,24 +2401,28 @@ async def prefix_resolver_lote(ctx: commands.Context, *, disciplina: Optional[st
         await ctx.send(msg)
         return
 
-    disc_info = f" da disciplina **{disciplina}**" if disciplina else ""
-    embed = discord.Embed(
-        title="📦 Resolução de Atividades em Lote",
-        description=(
-            f"Encontradas **{len(pending_items)} atividade(s) pendente(s)**{disc_info}.\n\n"
-            "1. Abra o menu **dropdown abaixo** e marque as atividades que deseja incluir;\n"
-            "2. Escolha o nível de autonomia desejado nos botões:\n"
-            "   • **[🧠 Apenas Resolver]**: gera o rascunho com IA para você conferir no Discord;\n"
-            "   • **[📝 Resolver e Preencher]**: preenche no Moodle e salva como rascunho;\n"
-            "   • **[⚡ Resolver e Enviar Tudo]**: resolve, preenche e finaliza no Moodle (End-to-End)."
-        ),
-        color=discord.Color.blue()
-    )
+    available_mats: List[Path] = []
+    seen_mats = set()
+    if disciplina:
+        for p in get_course_materials_for_task(disciplina):
+            if p.name not in seen_mats:
+                seen_mats.add(p.name)
+                available_mats.append(p)
+    for it in pending_items[:25]:
+        for p in get_course_materials_for_task(str(it.get("id", ""))):
+            if p.name not in seen_mats:
+                seen_mats.add(p.name)
+                available_mats.append(p)
+
     view = BatchSelectView(
         pending_items=pending_items,
         disciplina_filter=disciplina,
+        instrucoes=instrucoes,
+        attached_files=extra_files,
+        available_materials=available_mats,
         requester=ctx.author.display_name
     )
+    embed = view.build_panel_embed()
     await ctx.send(embed=embed, view=view)
 
 

@@ -152,27 +152,58 @@ Enunciado da questão 2.
             {"id": "301", "title": "Quiz 1", "course": "Química", "url": "https://moodle.ufmg.br/mod/quiz/1", "activity_type": "quiz", "due_date": "15/09/2026"},
             {"id": "302", "title": "Tarefa 2", "course": "Química", "url": "https://moodle.ufmg.br/mod/assign/2", "activity_type": "assign", "due_date": "16/09/2026"},
         ]
+        sample_mat = Path("storage/materials/Apoio_Quimica.pdf")
 
-        view = BatchSelectView(pending_items=pending, disciplina_filter="Química", requester="TestUser")
+        view = BatchSelectView(
+            pending_items=pending,
+            disciplina_filter="Química",
+            instrucoes="Resolver com foco em reações redox",
+            attached_files=[sample_mat],
+            available_materials=[sample_mat],
+            requester="TestUser"
+        )
         self.assertEqual(len(view.all_pending), 2)
-        # Select menu deve ter 2 opções
-        self.assertEqual(len(view.select_menu.options), 2)
-        self.assertEqual(view.select_menu.options[0].value, "301")
-        self.assertEqual(view.select_menu.options[1].value, "302")
+        # Task select menu deve ter 2 opções
+        self.assertEqual(len(view.task_select_menu.options), 2)
+        self.assertEqual(view.task_select_menu.options[0].value, "301")
+        self.assertEqual(view.task_select_menu.options[1].value, "302")
 
-        # Botões de modo presentes
+        # Material select menu deve existir e ter 1 opção
+        self.assertIsNotNone(view.mat_select_menu)
+        self.assertEqual(len(view.mat_select_menu.options), 1)
+        self.assertEqual(view.mat_select_menu.options[0].value, sample_mat.name)
+
+        # Instruções e anexos preservados
+        self.assertEqual(view.instrucoes, "Resolver com foco em reações redox")
+        self.assertEqual(view.attached_files, [sample_mat])
+
+        # Botões de modo e instrução presentes
         button_labels = [item.label for item in view.children if isinstance(item, discord.ui.Button)]
+        self.assertIn("Instruções", button_labels)
         self.assertIn("Apenas Resolver", button_labels)
         self.assertIn("Resolver e Preencher", button_labels)
         self.assertIn("Resolver e Enviar Tudo", button_labels)
         self.assertIn("Cancelar", button_labels)
+
+        # Embed de exibição contém dados corretos
+        embed = view.build_panel_embed()
+        self.assertIn("Química", embed.title + (embed.description or ""))
+        field_names = [f.name for f in embed.fields]
+        self.assertTrue(any("Instruções" in fn for fn in field_names))
+        self.assertTrue(any("Materiais" in fn for fn in field_names))
 
     def test_batch_dispatch_execution(self):
         pending = [
             {"id": "401", "title": "Quiz 1", "course": "EDA", "url": "https://moodle.ufmg.br/mod/quiz/1", "activity_type": "quiz"},
             {"id": "402", "title": "Quiz 2", "course": "EDA", "url": "https://moodle.ufmg.br/mod/quiz/2", "activity_type": "quiz"},
         ]
-        view = BatchSelectView(pending_items=pending, requester="TestUser")
+        sample_mat = Path("storage/materials/Algoritmos_Gabarito.pdf")
+        view = BatchSelectView(
+            pending_items=pending,
+            instrucoes="Priorize respostas completas",
+            attached_files=[sample_mat],
+            requester="TestUser"
+        )
         view.selected_ids = ["401", "402"]
 
         mock_interaction = MagicMock()
@@ -189,19 +220,23 @@ Enunciado da questão 2.
             asyncio.run(view._dispatch_batch(mock_interaction, modo="finalizar"))
 
             self.assertEqual(mock_enqueue.call_count, 2)
-            # Verifica que foram passados os IDs corretos e o modo "finalizar"
+            # Verifica que foram passados os IDs corretos, modo, instruções e arquivos anexados
             first_call_kwargs = mock_enqueue.call_args_list[0].kwargs
             second_call_kwargs = mock_enqueue.call_args_list[1].kwargs
 
             self.assertEqual(first_call_kwargs["tarefa"], "401")
             self.assertEqual(first_call_kwargs["modo"], "finalizar")
+            self.assertEqual(first_call_kwargs["instrucoes"], "Priorize respostas completas")
+            self.assertEqual(first_call_kwargs["extra_files"], [sample_mat])
+
             self.assertEqual(second_call_kwargs["tarefa"], "402")
             self.assertEqual(second_call_kwargs["modo"], "finalizar")
+            self.assertEqual(second_call_kwargs["instrucoes"], "Priorize respostas completas")
+            self.assertEqual(second_call_kwargs["extra_files"], [sample_mat])
 
             # Verifica envio do embed de confirmação do lote
             self.assertTrue(mock_interaction.followup.send.called)
             sent_embed = mock_interaction.followup.send.call_args.kwargs.get("embed")
-            self.assertIsNotNone(sent_embed)
             self.assertIn("Lote de Atividades Enfileirado com Sucesso!", sent_embed.title)
 
     def test_commands_registered(self):

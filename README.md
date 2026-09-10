@@ -19,7 +19,7 @@ Assistente em segundo plano (*background daemon*) para o Moodle da UFMG que moni
   - `/tarefas`: Painel de tarefas ativas, prazos restantes e entregues.
   - `/materiais <disciplina>`: Envia slides e apostilas da disciplina no chat.
   - `/resolver <tarefa> [modo] [instruções] [arquivo]`: Resolve tarefas sob demanda com 3 níveis de autonomia (`Apenas Resolver`, `Resolver e Preencher`, `Resolver e Enviar Tudo`).
-  - `/resolver_lote [disciplina]`: Menu interativo multi-select para selecionar e resolver múltiplas tarefas/questionários em lote de forma sequencial.
+  - `/resolver_lote [disciplina] [instruções] [arquivo] [material_1..3]`: Menu interativo multi-select para selecionar e resolver múltiplas tarefas/questionários em lote de forma sequencial, com suporte a materiais de referência salvos, upload de arquivos e instruções personalizadas aplicadas a todo o lote (inclusive via botão `[✏️ Instruções]`).
   - `/refazer <tarefa>`: Refaz atividades já entregues com novas instruções.
   - `/status`: Telemetria da sessão Moodle, arquivos catalogados e status dos modelos de IA.
   - `/adicionarconteudo <disciplina> <arquivo>`: Ingestão de novos arquivos para a memória do bot.
