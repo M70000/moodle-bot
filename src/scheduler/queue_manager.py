@@ -29,6 +29,9 @@ class QueueTaskType(str, Enum):
     FILL_QUIZ = "📝 Preenchendo Quiz no Moodle (Rascunho)"
     FINALIZE_QUIZ = "🚀 Finalizando e Enviando Quiz no Moodle"
     SUBMIT_ASSIGNMENT = "📄 Submetendo PDF no Moodle"
+    PIPELINE_FILL = "📝 Resolução & Preenchimento no Moodle"
+    PIPELINE_COMPLETE = "⚡ Resolução & Envio Completo (End-to-End)"
+    BATCH_PIPELINE = "📦 Processamento em Lote"
     DAEMON_WATCHER = "🔍 Varredura Automática do Moodle"
 
 

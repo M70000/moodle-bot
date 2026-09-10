@@ -4,6 +4,7 @@ Inclui comandos interativos:
   /tarefas              - Lista tarefas pendentes e entregues com prazos
   /materiais            - Envia slides e materiais de estudo de uma disciplina
   /resolver             - Resolve ou refaz tarefas sob demanda com instruções e anexos
+  /resolver_lote        - Resolve múltiplas tarefas pendentes em lote com modo configurável
   /status               - Exibe o estado da sessão do Moodle, materiais e IA
   /adicionarconteudo    - Envia novos materiais e resumos salvando na memória da IA
 """
@@ -352,7 +353,8 @@ class MaterialSelectionView(ui.View):
         available_materials: List[Path],
         send_func: Callable[[str], asyncio.Future],
         interaction_or_ctx: Any,
-        is_refazer: bool = False
+        is_refazer: bool = False,
+        modo: str = "resolver"
     ):
         super().__init__(timeout=180)
         self.tarefa = tarefa
@@ -362,6 +364,7 @@ class MaterialSelectionView(ui.View):
         self.send_func = send_func
         self.context_handle = interaction_or_ctx
         self.is_refazer = is_refazer
+        self.modo = modo
         self.selected_files: List[Path] = []
 
         options = []
@@ -422,6 +425,7 @@ class MaterialSelectionView(ui.View):
             instrucoes=self.instrucoes,
             extra_files=combined_files,
             is_refazer=self.is_refazer,
+            modo=self.modo,
             requester=requester,
             channel=channel
         )
@@ -447,9 +451,88 @@ class MaterialSelectionView(ui.View):
             instrucoes=self.instrucoes,
             extra_files=self.attached_files,
             is_refazer=self.is_refazer,
+            modo=self.modo,
             requester=requester,
             channel=channel
         )
+
+
+def extract_quiz_answers_payload(
+    structured_answers: Optional[Any],
+    file_to_submit: Optional[Path] = None
+) -> Dict[str, Any]:
+    """Extrai mapeamento chave/valor de respostas estruturadas ou analisa o arquivo de rascunho Markdown."""
+    ans_payload = {}
+    if isinstance(structured_answers, list):
+        for item in structured_answers:
+            if isinstance(item, dict) and "key" in item:
+                ans_payload[item["key"]] = item["value"]
+            elif isinstance(item, dict) and "field" in item:
+                ans_payload[item["field"]] = item.get("value", "")
+    elif isinstance(structured_answers, dict):
+        ans_payload = dict(structured_answers)
+
+    # Fallback robusto: se não houver chaves estruturadas, recupera do arquivo de rascunho gerado
+    if not ans_payload and file_to_submit:
+        target_md = None
+        if file_to_submit.suffix == ".md" and file_to_submit.exists():
+            target_md = file_to_submit
+        elif file_to_submit.parent.exists():
+            same_dir_rascunhos = list(file_to_submit.parent.glob(f"{file_to_submit.stem}*_rascunho.md"))
+            if same_dir_rascunhos:
+                target_md = same_dir_rascunhos[0]
+            else:
+                any_rascunho = list(file_to_submit.parent.glob("*_rascunho.md"))
+                if any_rascunho:
+                    target_md = any_rascunho[0]
+
+        if target_md and target_md.exists():
+            try:
+                text = target_md.read_text(encoding="utf-8")
+                # 1. Tenta recuperar bloco JSON estruturado se presente no arquivo
+                json_match = re.search(r"```(?:json:answers|json)\s*\n(.*?)\n```", text, re.DOTALL)
+                if json_match:
+                    try:
+                        parsed_json = json.loads(json_match.group(1).strip())
+                        if isinstance(parsed_json, dict):
+                            ans_payload.update(parsed_json)
+                    except Exception:
+                        pass
+
+                # 2. Parsing das seções de questões
+                q_matches = list(re.finditer(r"###\s*(?:Quest[ãa]o|Q)\s*(\d+)\s*\n+(.*?)(?=\n###|\Z)", text, re.DOTALL | re.IGNORECASE))
+                for m in q_matches:
+                    q_num = m.group(1)
+                    q_body = m.group(2).strip()
+                    ans_key = f"Q{q_num}"
+                    if ans_key not in ans_payload:
+                        resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*([\s\S]+?)(?=\n\*\*(?:Explicação|Justificativa):|\n###|\Z)", q_body, re.IGNORECASE)
+                        if resp_m and resp_m.group(1).strip():
+                            ans_payload[ans_key] = resp_m.group(1).strip()
+                        else:
+                            items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
+                            if items:
+                                for idx_sub, sub_val in enumerate(items, 1):
+                                    clean_val = sub_val.strip("* ").strip()
+                                    if clean_val:
+                                        ans_payload[f"Q{q_num}_{idx_sub}"] = clean_val
+                                        if any(sep in clean_val for sep in ["→", "->", ":"]):
+                                            parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
+                                            if len(parts) == 2:
+                                                k_label = parts[0].strip("* ").strip()
+                                                v_target = parts[1].strip("* ").strip()
+                                                if k_label and v_target:
+                                                    ans_payload[f"Q{q_num}_{k_label}"] = v_target
+                                                    ans_payload[k_label] = v_target
+                            else:
+                                # Fallback de resposta dissertativa aberta
+                                clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()
+                                if clean_body:
+                                    ans_payload[ans_key] = clean_body
+            except Exception:
+                pass
+
+    return ans_payload
 
 
 class ReviewActionView(ui.View):
@@ -463,6 +546,8 @@ class ReviewActionView(ui.View):
         activity_type: str = "assign",
         structured_answers: Optional[List[Dict[str, Any]]] = None,
         on_action: Optional[Callable[[str, str, discord.Interaction], asyncio.Future]] = None,
+        draft_saved: bool = False,
+        is_finalized: bool = False,
         timeout: Optional[float] = None
     ):
         super().__init__(timeout=timeout)
@@ -472,12 +557,31 @@ class ReviewActionView(ui.View):
         self.activity_type = activity_type
         self.structured_answers = structured_answers or []
         self.on_action = on_action
-        self._is_draft_saved = False
+        self._is_draft_saved = draft_saved
+        self._is_finalized = is_finalized
 
-        self._build_buttons()
+        self._build_buttons(draft_saved=draft_saved, is_finalized=is_finalized)
 
-    def _build_buttons(self, draft_saved: bool = False):
+    def _build_buttons(self, draft_saved: bool = False, is_finalized: bool = False):
         self.clear_items()
+
+        if is_finalized:
+            btn_done = ui.Button(
+                label="Enviado com Sucesso",
+                style=discord.ButtonStyle.success,
+                emoji="✔",
+                disabled=True
+            )
+            self.add_item(btn_done)
+            if self.assignment_url:
+                btn_moodle = ui.Button(
+                    label="Abrir no Moodle",
+                    style=discord.ButtonStyle.link,
+                    url=self.assignment_url,
+                    emoji="🔗"
+                )
+                self.add_item(btn_moodle)
+            return
 
         if self.activity_type == "quiz":
             # 1. Apenas Preencher (Salva rascunho na tentativa sem enviar definitivamente)
@@ -503,10 +607,11 @@ class ReviewActionView(ui.View):
         else:
             # 1. Aprovar e Enviar PDF
             btn_approve = ui.Button(
-                label="Aprovar e Enviar PDF",
-                style=discord.ButtonStyle.success,
+                label="Aprovar e Enviar PDF" if not draft_saved else "✔ PDF Enviado (Rascunho)",
+                style=discord.ButtonStyle.success if not draft_saved else discord.ButtonStyle.secondary,
                 emoji="📄",
-                custom_id=f"btn_approve_{self.assignment_id}"
+                custom_id=f"btn_approve_{self.assignment_id}",
+                disabled=draft_saved
             )
             btn_approve.callback = self.approve_assign_button
             self.add_item(btn_approve)
@@ -542,77 +647,7 @@ class ReviewActionView(ui.View):
             self.add_item(btn_moodle)
 
     def _extract_answers_payload(self) -> Dict[str, Any]:
-        ans_payload = {}
-        if isinstance(self.structured_answers, list):
-            for item in self.structured_answers:
-                if isinstance(item, dict) and "key" in item:
-                    ans_payload[item["key"]] = item["value"]
-                elif isinstance(item, dict) and "field" in item:
-                    ans_payload[item["field"]] = item.get("value", "")
-        elif isinstance(self.structured_answers, dict):
-            ans_payload = dict(self.structured_answers)
-
-        # Fallback robusto: se não houver chaves estruturadas, recupera do arquivo de rascunho gerado
-        if not ans_payload and self.file_to_submit:
-            target_md = None
-            if self.file_to_submit.suffix == ".md" and self.file_to_submit.exists():
-                target_md = self.file_to_submit
-            elif self.file_to_submit.parent.exists():
-                same_dir_rascunhos = list(self.file_to_submit.parent.glob(f"{self.file_to_submit.stem}*_rascunho.md"))
-                if same_dir_rascunhos:
-                    target_md = same_dir_rascunhos[0]
-                else:
-                    any_rascunho = list(self.file_to_submit.parent.glob("*_rascunho.md"))
-                    if any_rascunho:
-                        target_md = any_rascunho[0]
-
-            if target_md and target_md.exists():
-                try:
-                    text = target_md.read_text(encoding="utf-8")
-                    # 1. Tenta recuperar bloco JSON estruturado se presente no arquivo
-                    json_match = re.search(r"```(?:json:answers|json)\s*\n(.*?)\n```", text, re.DOTALL)
-                    if json_match:
-                        try:
-                            parsed_json = json.loads(json_match.group(1).strip())
-                            if isinstance(parsed_json, dict):
-                                ans_payload.update(parsed_json)
-                        except Exception:
-                            pass
-
-                    # 2. Parsing das seções de questões
-                    q_matches = list(re.finditer(r"###\s*(?:Quest[ãa]o|Q)\s*(\d+)\s*\n+(.*?)(?=\n###|\Z)", text, re.DOTALL | re.IGNORECASE))
-                    for m in q_matches:
-                        q_num = m.group(1)
-                        q_body = m.group(2).strip()
-                        ans_key = f"Q{q_num}"
-                        if ans_key not in ans_payload:
-                            resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*([\s\S]+?)(?=\n\*\*(?:Explicação|Justificativa):|\n###|\Z)", q_body, re.IGNORECASE)
-                            if resp_m and resp_m.group(1).strip():
-                                ans_payload[ans_key] = resp_m.group(1).strip()
-                            else:
-                                items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
-                                if items:
-                                    for idx_sub, sub_val in enumerate(items, 1):
-                                        clean_val = sub_val.strip("* ").strip()
-                                        if clean_val:
-                                            ans_payload[f"Q{q_num}_{idx_sub}"] = clean_val
-                                            if any(sep in clean_val for sep in ["→", "->", ":"]):
-                                                parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
-                                                if len(parts) == 2:
-                                                    k_label = parts[0].strip("* ").strip()
-                                                    v_target = parts[1].strip("* ").strip()
-                                                    if k_label and v_target:
-                                                        ans_payload[f"Q{q_num}_{k_label}"] = v_target
-                                        ans_payload[k_label] = v_target
-                                else:
-                                    # Fallback de resposta dissertativa aberta
-                                    clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()
-                                    if clean_body:
-                                        ans_payload[ans_key] = clean_body
-                except Exception:
-                    pass
-
-        return ans_payload
+        return extract_quiz_answers_payload(self.structured_answers, self.file_to_submit)
 
     async def fill_quiz_button(self, interaction: discord.Interaction):
         """Apenas preenche os campos do questionário e salva como rascunho (sem finalizar), passando pela fila."""
@@ -1204,7 +1239,8 @@ async def _execute_solve_flow(
     tarefa: str,
     instrucoes: Optional[str] = None,
     extra_files: Optional[List[Path]] = None,
-    is_refazer: bool = False
+    is_refazer: bool = False,
+    modo: str = "resolver"
 ):
     state = DaemonState()
     assignments = state.data.get("assignments", {})
@@ -1247,7 +1283,15 @@ async def _execute_solve_flow(
     reporter = None
     try:
         ref_msg = format_reference_materials_msg(assign_obj.course_name, extra_files or [])
-        action_verb = "🔄 Refazendo" if is_refazer else "🧠 Analisando"
+        if modo == "finalizar":
+            action_verb = "⚡ Resolvendo e Enviando"
+        elif modo == "preencher":
+            action_verb = "📝 Resolvendo e Preenchendo"
+        elif is_refazer:
+            action_verb = "🔄 Refazendo"
+        else:
+            action_verb = "🧠 Analisando"
+
         initial_header = f"{action_verb} **{assign_obj.title}**...\n{ref_msg}"
         status_msg = await send_func(initial_header)
         reporter = DiscordLiveReporter(status_msg, initial_header)
@@ -1279,12 +1323,70 @@ async def _execute_solve_flow(
                 on_log=reporter.log
             )
 
+        submit_success = False
+        submit_msg = ""
         notifier = MoodleDiscordNotifier()
-        sent = await notifier.send_assignment_review(assign_obj, draft)
-        if sent:
-            await reporter.finish(f"✔ Resolução de **{assign_obj.title}** enviada no canal de revisão com sucesso!")
-        else:
-            await reporter.finish(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card de revisão no Discord. Verifique os logs.")
+
+        if modo == "preencher":
+            await reporter.log("📝 Preenchendo respostas no Moodle sem submeter...")
+            submitter = MoodleSubmitter()
+            if assign_obj.activity_type == "quiz":
+                ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
+                submit_success, submit_msg = await submitter.submit_quiz(
+                    quiz_url=assign_obj.url,
+                    answers=ans_payload or draft.structured_answers,
+                    auto_submit=False,
+                    on_log=reporter.log
+                )
+            else:
+                file_to_submit = draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists()) else draft.output_path
+                submit_success, submit_msg = await submitter.submit_assignment(
+                    assignment_url=assign_obj.url,
+                    file_path=file_to_submit,
+                    on_log=reporter.log
+                )
+            sent = await notifier.send_assignment_review(
+                assign_obj, draft, draft_saved=submit_success, is_finalized=False, final_status_message=submit_msg
+            )
+            if submit_success:
+                await reporter.finish(f"🎉 **Respostas salvas no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+            else:
+                await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao preencher no Moodle: {submit_msg}")
+
+        elif modo == "finalizar":
+            await reporter.log("🚀 Preenchendo e submetendo em definitivo no Moodle...")
+            submitter = MoodleSubmitter()
+            if assign_obj.activity_type == "quiz":
+                ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
+                submit_success, submit_msg = await submitter.submit_quiz(
+                    quiz_url=assign_obj.url,
+                    answers=ans_payload or draft.structured_answers,
+                    auto_submit=True,
+                    on_log=reporter.log
+                )
+            else:
+                file_to_submit = draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists()) else draft.output_path
+                submit_success, submit_msg = await submitter.submit_assignment(
+                    assignment_url=assign_obj.url,
+                    file_path=file_to_submit,
+                    on_log=reporter.log
+                )
+            if submit_success:
+                DaemonState().mark_submitted(assign_obj.id)
+            sent = await notifier.send_assignment_review(
+                assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg
+            )
+            if submit_success:
+                await reporter.finish(f"🎉 **Atividade finalizada e enviada no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+            else:
+                await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Moodle: {submit_msg}")
+
+        else:  # modo == "resolver"
+            sent = await notifier.send_assignment_review(assign_obj, draft)
+            if sent:
+                await reporter.finish(f"✔ Resolução de **{assign_obj.title}** enviada no canal de revisão com sucesso!")
+            else:
+                await reporter.finish(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card de revisão no Discord. Verifique os logs.")
 
     except Exception as e:
         if reporter:
@@ -1299,6 +1401,7 @@ async def enqueue_solve_flow(
     instrucoes: Optional[str] = None,
     extra_files: Optional[List[Path]] = None,
     is_refazer: bool = False,
+    modo: str = "resolver",
     requester: str = "Usuário",
     channel: Optional[Any] = None
 ) -> int:
@@ -1332,6 +1435,10 @@ async def enqueue_solve_flow(
 
     if is_refazer:
         task_type = QueueTaskType.REDO_TASK
+    elif modo == "finalizar":
+        task_type = QueueTaskType.PIPELINE_COMPLETE
+    elif modo == "preencher":
+        task_type = QueueTaskType.PIPELINE_FILL
     elif is_quiz:
         task_type = QueueTaskType.RESOLVE_QUIZ
     else:
@@ -1353,7 +1460,8 @@ async def enqueue_solve_flow(
             tarefa=tarefa,
             instrucoes=instrucoes,
             extra_files=extra_files,
-            is_refazer=is_refazer
+            is_refazer=is_refazer,
+            modo=modo
         )
         return True, f"Resolução de '{title}' concluída"
 
@@ -1368,7 +1476,15 @@ async def enqueue_solve_flow(
     pos = await queue_manager.enqueue(item)
     if pos > 1 or queue_manager.is_busy_except(item):
         queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
-        verb = "Refazer atividade" if is_refazer else "Resolução com IA"
+        if is_refazer:
+            verb = "Refazer atividade"
+        elif modo == "finalizar":
+            verb = "⚡ Resolução & Envio Completo"
+        elif modo == "preencher":
+            verb = "📝 Resolução & Preenchimento"
+        else:
+            verb = "🧠 Resolução com IA"
+
         await _safe_send(
             f"📥 **{verb} adicionada à fila de execução!** (Posição: **#{pos}**)\n"
             f"• Atividade: **{title}**\n"
@@ -1382,11 +1498,19 @@ async def enqueue_solve_flow(
 @bot.tree.command(name="resolver", description="Resolve uma tarefa ou questionário pendente com IA")
 @app_commands.describe(
     tarefa="ID, link ou nome da tarefa pendente a ser resolvida",
+    modo="Modo de execução: apenas resolver, preencher rascunho no Moodle ou enviar tudo",
     instrucoes="Instruções adicionais personalizadas (ex: use linguagem R ou deduza passo a passo)",
     arquivo="Arquivo de referência complementar anexado por você (enunciado, foto ou PDF)",
     material_1="Material 1 salvo da matéria para usar como apoio (opcional)",
     material_2="Material 2 salvo da matéria para usar como apoio (opcional)",
     material_3="Material 3 salvo da matéria para usar como apoio (opcional)"
+)
+@app_commands.choices(
+    modo=[
+        app_commands.Choice(name="🧠 Apenas Resolver (Gera rascunho e envia para revisão)", value="resolver"),
+        app_commands.Choice(name="📝 Resolver e Preencher (Preenche no Moodle sem submeter)", value="preencher"),
+        app_commands.Choice(name="⚡ Resolver, Preencher e Enviar Tudo (End-to-End)", value="finalizar"),
+    ]
 )
 @app_commands.autocomplete(
     tarefa=pending_task_autocomplete,
@@ -1397,6 +1521,7 @@ async def enqueue_solve_flow(
 async def cmd_resolver(
     interaction: discord.Interaction,
     tarefa: str,
+    modo: Optional[app_commands.Choice[str]] = None,
     instrucoes: Optional[str] = None,
     arquivo: Optional[discord.Attachment] = None,
     material_1: Optional[str] = None,
@@ -1404,6 +1529,8 @@ async def cmd_resolver(
     material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
+    chosen_modo = modo.value if isinstance(modo, app_commands.Choice) else (modo or "resolver")
+
     extra_files: List[Path] = []
     if arquivo:
         temp_dir = Path("storage/submissions/temp_uploads")
@@ -1429,6 +1556,7 @@ async def cmd_resolver(
             instrucoes=instrucoes,
             extra_files=extra_files,
             is_refazer=False,
+            modo=chosen_modo,
             requester=interaction.user.display_name,
             channel=interaction.channel
         )
@@ -1458,7 +1586,8 @@ async def cmd_resolver(
             available_materials=available_mats,
             send_func=interaction.followup.send,
             interaction_or_ctx=interaction,
-            is_refazer=False
+            is_refazer=False,
+            modo=chosen_modo
         )
         await interaction.followup.send(embed=embed, view=view)
         return
@@ -1470,6 +1599,7 @@ async def cmd_resolver(
         instrucoes=instrucoes,
         extra_files=extra_files,
         is_refazer=False,
+        modo=chosen_modo,
         requester=interaction.user.display_name,
         channel=interaction.channel
     )
@@ -1566,6 +1696,221 @@ async def cmd_refazer(
         requester=interaction.user.display_name,
         channel=interaction.channel
     )
+
+
+class BatchSelectView(ui.View):
+    """Painel interativo para seleção de múltiplas tarefas pendentes e disparo em lote."""
+
+    def __init__(
+        self,
+        pending_items: List[Dict[str, Any]],
+        disciplina_filter: Optional[str] = None,
+        requester: str = "Usuário",
+        timeout: Optional[float] = 300
+    ):
+        super().__init__(timeout=timeout)
+        self.all_pending = pending_items
+        self.disciplina_filter = disciplina_filter
+        self.requester = requester
+        self.selected_ids: List[str] = []
+
+        options: List[discord.SelectOption] = []
+        for item in self.all_pending[:25]:
+            aid = str(item.get("id", ""))
+            title = item.get("title", f"Atividade {aid}")
+            course = clean_display_course(item.get("course", "Geral"))
+            due_str = item.get("due_date", "Sem prazo")
+            is_quiz = "mod/quiz" in item.get("url", "").lower() or item.get("activity_type") == "quiz"
+            prefix = "Quiz" if is_quiz else "Tarefa"
+
+            label = f"[{prefix}] {title}"[:100]
+            desc = f"{course} • Prazo: {due_str}"[:100]
+            options.append(
+                discord.SelectOption(
+                    label=label,
+                    value=aid,
+                    description=desc,
+                    emoji="📝" if is_quiz else "📄"
+                )
+            )
+
+        max_picks = min(len(options), 25)
+        self.select_menu = ui.Select(
+            placeholder=f"Selecione de 1 a {max_picks} atividades para resolver em lote...",
+            min_values=1,
+            max_values=max_picks,
+            options=options,
+            row=0
+        )
+        self.select_menu.callback = self.on_select_tasks
+        self.add_item(self.select_menu)
+
+    async def on_select_tasks(self, interaction: discord.Interaction):
+        self.selected_ids = list(self.select_menu.values)
+        selected_titles = []
+        id_to_item = {str(item.get("id", "")): item for item in self.all_pending}
+        for aid in self.selected_ids:
+            it = id_to_item.get(aid)
+            if it:
+                selected_titles.append(f"• **{it.get('title', aid)}**")
+
+        preview_text = "\n".join(selected_titles[:5])
+        if len(selected_titles) > 5:
+            preview_text += f"\n*... e mais {len(selected_titles) - 5} atividade(s)*"
+
+        await interaction.response.send_message(
+            f"✅ **{len(self.selected_ids)} atividade(s) selecionada(s):**\n{preview_text}\n\n"
+            "Escolha abaixo o **modo de execução** para iniciar o processamento em lote:",
+            ephemeral=True
+        )
+
+    async def _dispatch_batch(self, interaction: discord.Interaction, modo: str):
+        chosen_ids = list(self.select_menu.values) if self.select_menu.values else self.selected_ids
+        if not chosen_ids:
+            await interaction.response.send_message(
+                "⚠️ **Nenhuma atividade foi selecionada!**\nAbra o menu dropdown acima e escolha pelo menos uma atividade.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer()
+        for child in self.children:
+            child.disabled = True
+
+        id_to_item = {str(item.get("id", "")): item for item in self.all_pending}
+        chosen_items = [id_to_item[aid] for aid in chosen_ids if aid in id_to_item]
+
+        mode_labels = {
+            "resolver": "🧠 Apenas Resolver (Gera rascunhos para conferência)",
+            "preencher": "📝 Resolver e Preencher (Preenche no Moodle sem submeter)",
+            "finalizar": "⚡ Resolver, Preencher e Enviar Tudo (End-to-End)"
+        }
+        mode_label = mode_labels.get(modo, modo)
+
+        summary_lines = []
+        channel = interaction.channel
+
+        for item in chosen_items:
+            aid = str(item.get("id", ""))
+            pos = await enqueue_solve_flow(
+                send_func=channel.send,
+                tarefa=aid,
+                instrucoes=None,
+                extra_files=None,
+                is_refazer=False,
+                modo=modo,
+                requester=interaction.user.display_name if interaction.user else self.requester,
+                channel=channel
+            )
+            summary_lines.append(f"• **#{pos}** na fila: `{item.get('title', aid)}` ({clean_display_course(item.get('course', 'Geral'))})")
+
+        queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+        embed = discord.Embed(
+            title="📦 Lote de Atividades Enfileirado com Sucesso!",
+            description=(
+                f"Foram agendadas **{len(chosen_items)} atividade(s)** para execução sequencial.\n\n"
+                f"⚙️ **Modo Escolhido:** `{mode_label}`\n"
+                f"👤 **Solicitante:** {interaction.user.mention if interaction.user else self.requester}\n"
+                f"📍 **Acompanhamento:** Verifique a ordem e o andamento em tempo real no {queue_mention}.\n\n"
+                "**Ordem de Execução na Fila:**\n" + "\n".join(summary_lines[:15])
+            ),
+            color=discord.Color.green()
+        )
+        if len(summary_lines) > 15:
+            embed.set_footer(text=f"... e mais {len(summary_lines) - 15} atividades enfileiradas.")
+
+        try:
+            if hasattr(interaction, "message") and interaction.message:
+                await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await interaction.followup.send(embed=embed)
+
+    @ui.button(label="Apenas Resolver", style=discord.ButtonStyle.primary, emoji="🧠", row=1)
+    async def btn_resolver(self, interaction: discord.Interaction, button: ui.Button):
+        await self._dispatch_batch(interaction, modo="resolver")
+
+    @ui.button(label="Resolver e Preencher", style=discord.ButtonStyle.primary, emoji="📝", row=1)
+    async def btn_preencher(self, interaction: discord.Interaction, button: ui.Button):
+        await self._dispatch_batch(interaction, modo="preencher")
+
+    @ui.button(label="Resolver e Enviar Tudo", style=discord.ButtonStyle.success, emoji="⚡", row=1)
+    async def btn_finalizar(self, interaction: discord.Interaction, button: ui.Button):
+        await self._dispatch_batch(interaction, modo="finalizar")
+
+    @ui.button(label="Cancelar", style=discord.ButtonStyle.danger, emoji="❌", row=2)
+    async def btn_cancelar(self, interaction: discord.Interaction, button: ui.Button):
+        for child in self.children:
+            child.disabled = True
+        try:
+            if hasattr(interaction, "message") and interaction.message:
+                await interaction.message.edit(view=self)
+        except Exception:
+            pass
+        await interaction.response.send_message("❌ Execução em lote cancelada pelo usuário.", ephemeral=True)
+
+
+@bot.tree.command(name="resolver_lote", description="Seleciona e resolve múltiplas tarefas/questionários pendentes em lote")
+@app_commands.describe(
+    disciplina="Filtrar atividades pendentes por disciplina específica (opcional)"
+)
+@app_commands.autocomplete(
+    disciplina=course_autocomplete
+)
+async def cmd_resolver_lote(
+    interaction: discord.Interaction,
+    disciplina: Optional[str] = None
+):
+    await interaction.response.defer(ephemeral=False)
+    state = DaemonState()
+    assignments = state.data.get("assignments", {})
+
+    pending_items = []
+    norm_disc = normalize_text(disciplina) if disciplina else None
+
+    for aid, item in assignments.items():
+        if _is_task_completed(item):
+            continue
+        if norm_disc:
+            item_course_norm = normalize_text(item.get("course", ""))
+            if norm_disc not in item_course_norm:
+                continue
+        pending_items.append(item)
+
+    def _sort_key(it):
+        return (it.get("due_date", "9999"), natural_sort_key(it.get("title", "")))
+
+    pending_items.sort(key=_sort_key)
+
+    if not pending_items:
+        msg = "🎉 Nenhuma atividade pendente encontrada"
+        if disciplina:
+            msg += f" para a matéria **{disciplina}**."
+        else:
+            msg += " no catálogo local do Moodle."
+        await interaction.followup.send(msg)
+        return
+
+    disc_info = f" da disciplina **{disciplina}**" if disciplina else ""
+    embed = discord.Embed(
+        title="📦 Resolução de Atividades em Lote",
+        description=(
+            f"Encontradas **{len(pending_items)} atividade(s) pendente(s)**{disc_info}.\n\n"
+            "1. Abra o menu **dropdown abaixo** e marque as atividades que deseja incluir;\n"
+            "2. Escolha o nível de autonomia desejado nos botões:\n"
+            "   • **[🧠 Apenas Resolver]**: gera o rascunho com IA para você conferir no Discord;\n"
+            "   • **[📝 Resolver e Preencher]**: preenche no Moodle e salva como rascunho;\n"
+            "   • **[⚡ Resolver e Enviar Tudo]**: resolve, preenche e finaliza no Moodle (End-to-End)."
+        ),
+        color=discord.Color.blue()
+    )
+    view = BatchSelectView(
+        pending_items=pending_items,
+        disciplina_filter=disciplina,
+        requester=interaction.user.display_name if interaction.user else "Usuário"
+    )
+    await interaction.followup.send(embed=embed, view=view)
 
 
 @bot.tree.command(name="status", description="Exibe o status da sessão Moodle, materiais e modelos de IA")
@@ -1793,6 +2138,15 @@ async def prefix_materiais(ctx: commands.Context, *, disciplina: str):
 @bot.command(name="resolver")
 async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Optional[str] = None):
     """Comando alternativo com prefixo: !resolver <id_ou_nome> [instruções]."""
+    modo = "resolver"
+    if instrucoes:
+        if "--finalizar" in instrucoes or "--enviar" in instrucoes:
+            modo = "finalizar"
+            instrucoes = instrucoes.replace("--finalizar", "").replace("--enviar", "").strip() or None
+        elif "--preencher" in instrucoes:
+            modo = "preencher"
+            instrucoes = instrucoes.replace("--preencher", "").strip() or None
+
     extra_files = []
     if ctx.message.attachments:
         temp_dir = Path("storage/submissions/temp_uploads")
@@ -1826,7 +2180,8 @@ async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Opt
             available_materials=available_mats,
             send_func=ctx.send,
             interaction_or_ctx=ctx,
-            is_refazer=False
+            is_refazer=False,
+            modo=modo
         )
         await ctx.send(embed=embed, view=view)
         return
@@ -1837,9 +2192,63 @@ async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Opt
         instrucoes=instrucoes,
         extra_files=extra_files,
         is_refazer=False,
+        modo=modo,
         requester=ctx.author.display_name,
         channel=ctx.channel
     )
+
+
+@bot.command(name="resolver_lote", aliases=["lote"])
+async def prefix_resolver_lote(ctx: commands.Context, *, disciplina: Optional[str] = None):
+    """Comando alternativo com prefixo: !resolver_lote ou !lote [disciplina]."""
+    state = DaemonState()
+    assignments = state.data.get("assignments", {})
+
+    pending_items = []
+    norm_disc = normalize_text(disciplina) if disciplina else None
+
+    for aid, item in assignments.items():
+        if _is_task_completed(item):
+            continue
+        if norm_disc:
+            item_course_norm = normalize_text(item.get("course", ""))
+            if norm_disc not in item_course_norm:
+                continue
+        pending_items.append(item)
+
+    def _sort_key(it):
+        return (it.get("due_date", "9999"), natural_sort_key(it.get("title", "")))
+
+    pending_items.sort(key=_sort_key)
+
+    if not pending_items:
+        msg = "🎉 Nenhuma atividade pendente encontrada"
+        if disciplina:
+            msg += f" para a matéria **{disciplina}**."
+        else:
+            msg += " no catálogo local do Moodle."
+        await ctx.send(msg)
+        return
+
+    disc_info = f" da disciplina **{disciplina}**" if disciplina else ""
+    embed = discord.Embed(
+        title="📦 Resolução de Atividades em Lote",
+        description=(
+            f"Encontradas **{len(pending_items)} atividade(s) pendente(s)**{disc_info}.\n\n"
+            "1. Abra o menu **dropdown abaixo** e marque as atividades que deseja incluir;\n"
+            "2. Escolha o nível de autonomia desejado nos botões:\n"
+            "   • **[🧠 Apenas Resolver]**: gera o rascunho com IA para você conferir no Discord;\n"
+            "   • **[📝 Resolver e Preencher]**: preenche no Moodle e salva como rascunho;\n"
+            "   • **[⚡ Resolver e Enviar Tudo]**: resolve, preenche e finaliza no Moodle (End-to-End)."
+        ),
+        color=discord.Color.blue()
+    )
+    view = BatchSelectView(
+        pending_items=pending_items,
+        disciplina_filter=disciplina,
+        requester=ctx.author.display_name
+    )
+    await ctx.send(embed=embed, view=view)
 
 
 @bot.command(name="refazer")
@@ -1936,6 +2345,7 @@ async def prefix_ajuda(ctx: commands.Context):
     embed.add_field(name="📋 `!tarefas` ou `/tarefas [disciplina]`", value="Lista tarefas e questionários pendentes e concluídos.", inline=False)
     embed.add_field(name="📖 `!materiais <disciplina>` ou `/materiais`", value="Envia slides e materiais de estudo no chat.", inline=False)
     embed.add_field(name="🧠 `!resolver <id_ou_nome>` ou `/resolver`", value="Resolve atividade ou questionário pendente sob demanda com IA.", inline=False)
+    embed.add_field(name="📦 `!resolver_lote` ou `/resolver_lote`", value="Menu interativo para selecionar e resolver múltiplas tarefas em lote.", inline=False)
     embed.add_field(name="🔄 `!refazer <id_ou_nome>` ou `/refazer`", value="Refaz atividade ou questionário já concluído com IA.", inline=False)
     embed.add_field(name="🛰️ `!status` ou `/status`", value="Exibe a sessão do Moodle, materiais e IA.", inline=False)
     embed.add_field(name="📥 `!adicionarconteudo <disciplina>` (com anexo)", value="Salva resumos e materiais na memória da IA.", inline=False)
@@ -1968,7 +2378,10 @@ class MoodleDiscordNotifier:
     async def send_assignment_review(
         self,
         assignment: Assignment,
-        draft: SolutionDraft
+        draft: SolutionDraft,
+        draft_saved: bool = False,
+        is_finalized: bool = False,
+        final_status_message: Optional[str] = None
     ) -> bool:
         """Envia o rascunho de resolução (PDF e Markdown) para o canal privado com botões."""
         if not self.token or self.token == "seu_discord_bot_token_aqui":
@@ -1989,23 +2402,51 @@ class MoodleDiscordNotifier:
             channel = await self._resolve_channel()
 
             if channel:
-                if act_type == "quiz":
+                if is_finalized:
+                    embed_desc = (
+                        "⚡ **Atividade resolvida e enviada em definitivo no Moodle (End-to-End)!**\n\n"
+                        f"{final_status_message or 'Envio concluído com sucesso.'}\n\n"
+                        "Você pode abrir o Moodle a qualquer momento para verificar o comprovante."
+                    )
+                    embed_color = discord.Color.green()
+                    embed_title = f"✅ Submetido com Sucesso: {assignment.title}"
+                    footer_text = f"Finalizado no Moodle em modo autônomo às {datetime.now().strftime('%H:%M:%S')}"
+                    msg_header = f"⚡ **Atividade resolvida e enviada com sucesso no Moodle:** `{assignment.title}`"
+                elif draft_saved:
+                    embed_desc = (
+                        "📝 **Respostas resolvidas pela IA e preenchidas no Moodle!**\n\n"
+                        f"{final_status_message or 'As respostas foram salvas na tentativa sem submeter.'}\n\n"
+                        "👉 Verifique no Moodle ou clique no botão **[🚀 Enviar Tudo e Terminar]** abaixo quando desejar finalizar."
+                    )
+                    embed_color = discord.Color.blue()
+                    embed_title = f"📝 Rascunho Salvo: {assignment.title}"
+                    footer_text = f"Respostas salvas na tentativa do Moodle às {datetime.now().strftime('%H:%M:%S')}. Aguardando envio definitivo."
+                    msg_header = f"📝 **Respostas resolvidas e salvas na tentativa do Moodle:** `{assignment.title}`"
+                elif act_type == "quiz":
                     embed_desc = (
                         "As respostas para o questionário online foram preparadas pela IA.\n\n"
                         "• **[📝 Apenas Preencher Quiz]**: Digita as respostas no Moodle e salva na tentativa sem submeter. Você poderá abrir o Moodle e conferir!\n"
                         "• **[🚀 Enviar Tudo e Terminar]**: Finaliza a tentativa e confirma o envio no Moodle."
                     )
+                    embed_color = discord.Color.blue()
+                    embed_title = f"📋 Revisão: {assignment.title}"
+                    footer_text = "Ação humana obrigatória • Clique abaixo para submeter"
+                    msg_header = f"🔔 **Nova resolução pronta para revisão:** `{assignment.title}`"
                 else:
                     embed_desc = (
                         f"As respostas foram preparadas para sua conferência ({type_str}).\n"
                         "Leia o documento anexado abaixo e confirme o envio usando os botões."
                     )
+                    embed_color = discord.Color.blue()
+                    embed_title = f"📋 Revisão: {assignment.title}"
+                    footer_text = "Ação humana obrigatória • Clique abaixo para submeter"
+                    msg_header = f"🔔 **Nova resolução pronta para revisão:** `{assignment.title}`"
 
                 embed = discord.Embed(
-                    title=f"📋 Revisão: {assignment.title}",
+                    title=embed_title,
                     url=assignment.url,
                     description=embed_desc,
-                    color=discord.Color.blue()
+                    color=embed_color
                 )
 
                 embed.add_field(name="🏫 Disciplina", value=assignment.course_name, inline=False)
@@ -2036,7 +2477,7 @@ class MoodleDiscordNotifier:
                         inline=False
                     )
 
-                embed.set_footer(text="Ação humana obrigatória • Clique abaixo para submeter")
+                embed.set_footer(text=footer_text)
 
                 discord_file = discord.File(str(file_to_send), filename=file_to_send.name)
                 view = ReviewActionView(
@@ -2044,11 +2485,13 @@ class MoodleDiscordNotifier:
                     assignment_url=assignment.url,
                     file_to_submit=file_to_send,
                     activity_type=act_type,
-                    structured_answers=draft.structured_answers
+                    structured_answers=draft.structured_answers,
+                    draft_saved=draft_saved,
+                    is_finalized=is_finalized
                 )
 
                 await channel.send(
-                    content=f"🔔 **Nova resolução pronta para revisão:** `{assignment.title}`",
+                    content=msg_header,
                     embed=embed,
                     file=discord_file,
                     view=view

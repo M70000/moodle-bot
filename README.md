@@ -18,9 +18,12 @@ Assistente em segundo plano (*background daemon*) para o Moodle da UFMG que moni
 - **Slash Commands no Discord (Mobile Friendly):**
   - `/tarefas`: Painel de tarefas ativas, prazos restantes e entregues.
   - `/materiais <disciplina>`: Envia slides e apostilas da disciplina no chat.
-  - `/resolver <tarefa> [instruções] [arquivo]`: Resolve tarefas sob demanda com IA usando materiais e anexos.
+  - `/resolver <tarefa> [modo] [instruções] [arquivo]`: Resolve tarefas sob demanda com 3 níveis de autonomia (`Apenas Resolver`, `Resolver e Preencher`, `Resolver e Enviar Tudo`).
+  - `/resolver_lote [disciplina]`: Menu interativo multi-select para selecionar e resolver múltiplas tarefas/questionários em lote de forma sequencial.
+  - `/refazer <tarefa>`: Refaz atividades já entregues com novas instruções.
   - `/status`: Telemetria da sessão Moodle, arquivos catalogados e status dos modelos de IA.
-  - `/adicionarconteudo <disciplina> <arquivo>`: Ingestão de novos arquivos para a memória do bot (suporta canal exclusivo `DISCORD_CONTENT_CHANNEL_ID`).
+  - `/adicionarconteudo <disciplina> <arquivo>`: Ingestão de novos arquivos para a memória do bot.
+  - `/notion_sync` e `/atualizar_checklist`: Sincronização e checklist de rotina diária no Notion.
 - **Monitor de Notas e Feedbacks do Professor:** Detecta correções e lança alertas festivos com nota, feedback textual e nome do avaliador.
 - **Segurança & Ética (Restrições Estritas):**
   - 🚫 **PROIBIDO** postar em fóruns de dúvidas.
