@@ -42,12 +42,19 @@ def match_radio_option(candidate_options, target_val):
 
     for opt in processed_options:
         score = 0
+        compact_target = re.sub(r"[\s\-_,;]+", "", norm_target_content)
+        compact_opt = re.sub(r"[\s\-_,;]+", "", opt["norm_content"])
+
         if len(norm_target_content) >= 3 and len(opt["norm_content"]) >= 3:
             if norm_target_content == opt["norm_content"]:
+                score = 100
+            elif compact_target and compact_target == compact_opt:
                 score = 100
             elif norm_target_content in opt["norm_content"] and len(norm_target_content) >= 8:
                 score = 90
             elif opt["norm_content"] in norm_target_content and len(opt["norm_content"]) >= 8:
+                score = 90
+            elif compact_target and compact_opt and len(compact_target) >= 6 and (compact_target in compact_opt or compact_opt in compact_target):
                 score = 90
             else:
                 words_target = set(w for w in norm_target_content.split() if len(w) > 2)
@@ -489,6 +496,92 @@ class TestAdvancedQuizComponents(unittest.TestCase):
         # 3. Terceira passada: todos já foram tentados, encerra sem entrar em loop
         c3 = get_next_candidate(pending_questions)
         self.assertIsNone(c3)
+
+    def test_answered_question_with_active_btn_is_not_already_verified(self):
+        """Valida que questões com 'Resposta completa' ou class 'complete' (do aluno)
+        NÃO são consideradas alreadyVerified se houver botão 'Verificar' ativo."""
+        def evaluate_already_verified(state_text, has_outcome, has_checkmarks, has_class_graded, has_active_verify_btn):
+            is_graded = (
+                "correto" in state_text or "correta" in state_text or "correct" in state_text or
+                "incorreto" in state_text or "incorreta" in state_text or "incorrect" in state_text or
+                "atingiu" in state_text or "mark" in state_text or "pontu" in state_text
+            )
+            return not has_active_verify_btn and (is_graded or has_outcome or has_checkmarks or has_class_graded)
+
+        # Caso do bug anterior: resposta completa mas com botão 'Verificar' visível
+        self.assertFalse(
+            evaluate_already_verified(
+                state_text="resposta completa",
+                has_outcome=False,
+                has_checkmarks=False,
+                has_class_graded=False,
+                has_active_verify_btn=True
+            )
+        )
+
+        # Caso já verificado no Moodle: nota atingida e sem botão ativo
+        self.assertTrue(
+            evaluate_already_verified(
+                state_text="atingiu 1,00 de 1,00",
+                has_outcome=True,
+                has_checkmarks=True,
+                has_class_graded=True,
+                has_active_verify_btn=False
+            )
+        )
+
+    def test_gabarito_v_f_f_v_matching(self):
+        """Valida que a alternativa contendo a sequência exata 'V-F-F-V' do gabarito é selecionada,
+        mesmo que haja alternativa 'V-F-F-F' ou ordem embaralhada."""
+        options = [
+            "a. V - F - V - F",
+            "b. V - F - F - V",
+            "c. F - V - V - F",
+            "d. V - F - F - F"
+        ]
+        target = "V-F-F-V"
+        content, letter, score = match_radio_option(options, target)
+        self.assertEqual(letter, "b")
+        self.assertIn("v - f - f - v", content.lower())
+        self.assertGreaterEqual(score, 90)
+
+    def test_extract_text_from_context_files_txt_and_pdf(self):
+        """Testa o extrator de texto local para arquivos de contexto e gabarito."""
+        from src.solver.gemini_solver import extract_text_from_context_files
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            txt_file = Path(tmp_dir) / "gabarito.txt"
+            txt_file.write_text("QUESTÃO 4: V-F-F-V\nQUESTÃO 5: C, B, D, A", encoding="utf-8")
+
+            res = extract_text_from_context_files([txt_file])
+            self.assertIn("gabarito.txt", res)
+            self.assertIn("QUESTÃO 4: V-F-F-V", res)
+            self.assertIn("QUESTÃO 5: C, B, D, A", res)
+
+    def test_extract_text_from_real_pdf(self):
+        """Testa a extração de texto de um PDF real utilizando o pypdf integrado."""
+        from src.solver.gemini_solver import extract_text_from_context_files
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+        import tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            pdf_path = Path(tmp_dir) / "documento_gabarito.pdf"
+            c = canvas.Canvas(str(pdf_path), pagesize=letter)
+            c.drawString(100, 750, "INGLES INSTRUMENTAL - GABARITO CONSOLIDACAO 3")
+            c.drawString(100, 730, "QUESTAO 1: Todas acima")
+            c.drawString(100, 710, "QUESTAO 4: V-F-F-V")
+            c.drawString(100, 690, "QUESTAO 5: C, B, D, A")
+            c.save()
+
+            extracted = extract_text_from_context_files([pdf_path])
+            self.assertIn("documento_gabarito.pdf", extracted)
+            self.assertIn("GABARITO CONSOLIDACAO 3", extracted)
+            self.assertIn("QUESTAO 4: V-F-F-V", extracted)
+            self.assertIn("QUESTAO 5: C, B, D, A", extracted)
 
 
 if __name__ == "__main__":

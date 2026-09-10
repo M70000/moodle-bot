@@ -53,6 +53,54 @@ async def _emit_log(callback: Optional[Any], msg: str):
         pass
 
 
+def extract_text_from_context_files(files: List[Path]) -> str:
+    """Extrai texto legível de PDFs, TXT, Markdown, CSV e JSON para injeção direta no prompt do Gemini."""
+    extracted_blocks = []
+    for file_path in files:
+        if not file_path.exists() or file_path.stat().st_size == 0:
+            continue
+        ext = file_path.suffix.lower()
+        content = ""
+        try:
+            if ext == ".pdf":
+                try:
+                    from pypdf import PdfReader
+                    reader = PdfReader(str(file_path))
+                    pages_text = []
+                    for p_idx, page in enumerate(reader.pages):
+                        pt = page.extract_text()
+                        if pt and pt.strip():
+                            pages_text.append(f"[Página {p_idx+1}]\n{pt.strip()}")
+                    if pages_text:
+                        content = "\n\n".join(pages_text)
+                except Exception as pdf_err:
+                    console.print(f"  [yellow]Aviso ao extrair texto do PDF {file_path.name}: {pdf_err}[/yellow]")
+            elif ext in [".txt", ".md", ".csv", ".json", ".xml", ".html"]:
+                try:
+                    content = file_path.read_text(encoding="utf-8", errors="replace").strip()
+                except Exception:
+                    try:
+                        content = file_path.read_text(encoding="latin-1", errors="replace").strip()
+                    except Exception:
+                        pass
+        except Exception as read_err:
+            console.print(f"  [yellow]Aviso ao ler arquivo de apoio {file_path.name}: {read_err}[/yellow]")
+
+        if content:
+            # Limita tamanho para evitar estourar tokens caso o material seja excessivamente extenso
+            if len(content) > 35000:
+                content = content[:35000] + "\n... [Texto truncado por limite de contexto]"
+            extracted_blocks.append(
+                f"--- INÍCIO DO ARQUIVO: {file_path.name} ---\n"
+                f"{content}\n"
+                f"--- FIM DO ARQUIVO: {file_path.name} ---"
+            )
+
+    if extracted_blocks:
+        return "\n\n".join(extracted_blocks)
+    return ""
+
+
 class SolutionDraft(BaseModel):
     """Representa a resolução elaborada pela IA para a atividade."""
     assignment_id: str
@@ -258,25 +306,29 @@ class GeminiSolver:
                 "Você é um estudante universitário da UFMG realizando esta atividade acadêmica.\n"
                 "Escreva a resolução EXATAMENTE como um aluno humano real entrega para o professor:\n\n"
                 "DIRETRIZES OBRIGATÓRIAS:\n"
-                "1. FOCO TOTAL NA ATIVIDADE ESPECÍFICA:\n"
+                "1. REGRA DE OURO - PRIORIDADE ABSOLUTA DO GABARITO / MATERIAL DE REFERÊNCIA:\n"
+                "   - Se houver materiais de apoio, gabaritos ou anotações fornecidos contendo resoluções ou respostas para esta atividade, "
+                "você DEVE seguir 100% as respostas, termos e sequências indicados neles.\n"
+                "   - É ESTRITAMENTE PROIBIDO divergir, recalcular ou tentar 're-resolver' qualquer questão que já possua resposta explicitada no material de referência/gabarito.\n"
+                "   - Mantenha com máxima fidelidade as sequências de Verdadeiro/Falso (ex: V-F-F-V) e listas de itens/associações (ex: C, B, D, A) dadas no gabarito.\n\n"
+                "2. FOCO TOTAL NA ATIVIDADE ESPECÍFICA:\n"
                 f"   - O título desta atividade é: '{assignment.title}'.\n"
                 "   - Resolva EXCLUSIVAMENTE as questões pertencentes a esta atividade específica. "
                 "Mesmo que os materiais de referência contenham gabaritos ou conteúdos de outras aulas, unidades ou módulos, "
                 "NÃO responda nada além do que foi pedido para esta aula/atividade específica.\n\n"
-                "2. PROIBIDO QUALQUER METATEXTO DE IA OU BOILERPLATE:\n"
+                "3. PROIBIDO QUALQUER METATEXTO DE IA OU BOILERPLATE:\n"
                 "   - NUNCA inclua 'Resumo Executivo', 'Relatório de Resolução', 'Introdução' ou conclusões genéricas.\n"
-                "   - NUNCA mencione gabaritos, arquivos anexos ou referências externas (ex: proibições estritas de frases como "
-                "'todas as respostas foram rigorosamente extraídas do gabarito oficial', 'conforme o anexo', 'com base no material didático').\n"
+                "   - NUNCA mencione frases como 'todas as respostas foram rigorosamente extraídas do gabarito oficial', 'conforme o anexo', 'com base no material didático'. Escreva as respostas diretamente.\n"
                 "   - NUNCA inclua seções vazias de 'Códigos e Scripts' se a matéria ou atividade não exigir programação.\n"
                 "   - NUNCA invente seções de 'Referências Bibliográficas' a menos que solicitado expressamente no enunciado.\n\n"
-                "3. FORMATO LIMPO E DIRETO:\n"
+                "4. FORMATO LIMPO E DIRETO:\n"
                 "   - Comece diretamente com as questões:\n"
                 "     ### Questão 1\n"
                 "     [Sua resposta direta]\n\n"
                 "     ### Questão 2\n"
                 "     1. [Item 1]\n"
                 "     2. [Item 2]\n\n"
-                "4. DADOS ESTRUTURADOS PARA QUESTIONÁRIOS ONLINE (QUIZZES):\n"
+                "5. DADOS ESTRUTURADOS PARA QUESTIONÁRIOS ONLINE (QUIZZES):\n"
                 "   - Ao final da sua resposta, adicione um bloco de código oculto contendo as respostas mapeadas por questão:\n"
                 "   ```json:answers\n"
                 "   [\n"
@@ -294,8 +346,24 @@ class GeminiSolver:
                 f"ENUNCIADO / INSTRUÇÕES:\n{assignment.description}\n"
             ]
 
+            extracted_ref = extract_text_from_context_files(context_files)
+            if extracted_ref:
+                prompt_content.append(
+                    "================================================================================\n"
+                    "### MATERIAL DE REFERÊNCIA / GABARITO PRIORITÁRIO EXTRAÍDO DOS ARQUIVOS DE APOIO:\n"
+                    f"{extracted_ref}\n"
+                    "(ATENÇÃO: O material acima é a referência primária e oficial desta disciplina. Siga-o 100%!)\n"
+                    "================================================================================\n"
+                )
+
             if user_notes:
-                prompt_content.append(f"INSTRUÇÕES ADICIONAIS DO ALUNO:\n{user_notes}\n")
+                prompt_content.append(
+                    "================================================================================\n"
+                    "### INSTRUÇÕES E ANOTAÇÕES PRIORITÁRIAS DO ALUNO:\n"
+                    f"{user_notes}\n"
+                    "(ATENÇÃO: Siga estritamente as respostas e orientações indicadas pelo aluno acima!)\n"
+                    "================================================================================\n"
+                )
 
             prompt_content.append("Por favor, resolva a atividade como o próprio aluno.")
 
@@ -449,13 +517,19 @@ class GeminiSolver:
                 "- Questões de seleção múltipla (caixas de seleção / checkboxes) onde mais de uma opção pode estar correta;\n"
                 "- Questões abertas/dissertativas que exigem redação de resposta fundamentada (ex: caixas de texto TinyMCE / Atto).\n\n"
                 "DIRETRIZES DE RESOLUÇÃO:\n"
-                "1. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]], questão de múltipla escolha (Q1, Q2, etc.) e questão dissertativa.\n"
-                "2. ALTERNATIVAS DE MÚLTIPLA ESCOLHA: Para garantir precisão caso o Moodle embaralhe a ordem das alternativas, sempre indique a letra E o texto completo da alternativa escolhida (ex: 'c. de instruções para o uso correto de algo').\n"
-                "3. CAIXAS DE SELEÇÃO / CHECKBOXES: Se a questão permitir mais de uma alternativa correta, liste todas as letras e textos das alternativas corretas (ex: 'a. ..., c. ...').\n"
-                "4. QUESTÕES DISSERTATIVAS / TEXTO ABERTO: Elabore respostas completas, acadêmicas e fundamentadas, mapeadas tanto para o respectivo [[CAMPO_X]] quanto para QX no JSON e na Folha de Respostas.\n"
-                "5. ARRASTAR E SOLTAR (DRAG & DROP): Preencha cada [[CAMPO_X]] com o texto exato da palavra a ser arrastada para aquela posição.\n"
-                "6. ADEQUAÇÃO AO CONTEXTO: Responda com a máxima precisão e coerência conforme o enunciado e as regras da matéria.\n"
-                "7. COERÊNCIA GRAMATICAL: Respeite a concordância gramatical, sintaxe e tempo verbal.\n\n"
+                "1. REGRA DE OURO - PRIORIDADE ABSOLUTA DO GABARITO / MATERIAL DE APOIO FORNECIDO:\n"
+                "   - Se houver materiais de apoio, gabarito ou anotações fornecidos contendo respostas para esta atividade, você DEVE seguir 100% as respostas, termos e sequências indicados neles.\n"
+                "   - É PROIBIDO DIVERGIR OU TENTAR 'RE-RESOLVER' UMA QUESTÃO QUE JÁ POSSUI RESPOSTA DADA NO MATERIAL DE APOIO OU GABARITO.\n"
+                "   - Se o gabarito indica 'QUESTÃO 4: V-F-F-V', a sua resposta para a Questão 4 DEVE ser obrigatoriamente 'V-F-F-V' (jamais altere para V-F-F-F ou qualquer outra sequência).\n"
+                "   - Se o gabarito indica para uma questão de correspondência/associação a sequência C, B, D, A, você DEVE manter exatamente a sequência de itens 1. C, 2. B, 3. D, 4. A.\n"
+                "   - MAPEAMENTO DO EMBARALHAMENTO DO MOODLE: Frequentemente o Moodle embaralha as alternativas de uma questão. Você DEVE identificar no Moodle qual alternativa corresponde ao CONTEÚDO/TEXTO ou VALOR da resposta do gabarito (ex: se o gabarito indica 'Todas acima' e no Moodle 'Todas acima' aparece na letra 'd', aponte 'd. Todas acima').\n\n"
+                "2. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]], questão de múltipla escolha (Q1, Q2, etc.) e questão dissertativa.\n"
+                "3. ALTERNATIVAS DE MÚLTIPLA ESCOLHA: Para garantir precisão caso o Moodle embaralhe a ordem das alternativas, sempre indique a letra E o texto completo da alternativa escolhida (ex: 'c. de instruções para o uso correto de algo').\n"
+                "4. CAIXAS DE SELEÇÃO / CHECKBOXES: Se a questão permitir mais de uma alternativa correta, liste todas as letras e textos das alternativas corretas (ex: 'a. ..., c. ...').\n"
+                "5. QUESTÕES DE CORRESPONDÊNCIA / LACUNAS: Se a questão possuir múltiplos sub-itens (ex: 1, 2, 3, 4), associe cada um rigorosamente conforme o gabarito e numere-os na folha de respostas (1. **item 1**, 2. **item 2**...).\n"
+                "6. QUESTÕES DISSERTATIVAS / TEXTO ABERTO: Elabore respostas completas, acadêmicas e fundamentadas, mapeadas tanto para o respectivo [[CAMPO_X]] quanto para QX no JSON e na Folha de Respostas.\n"
+                "7. ARRASTAR E SOLTAR (DRAG & DROP): Preencha cada [[CAMPO_X]] com o texto exato da palavra a ser arrastada para aquela posição conforme o gabarito/enunciado.\n"
+                "8. COERÊNCIA GRAMATICAL: Respeite a concordância gramatical, sintaxe e tempo verbal.\n\n"
                 "FORMATO OBRIGATÓRIO DE SAÍDA:\n"
                 "Sua resposta deve conter DUAS PARTES:\n\n"
                 "PARTE 1: Bloco JSON estruturado (no início, usado pelo robô para preenchimento automático no Moodle):\n"
@@ -487,8 +561,24 @@ class GeminiSolver:
                 f"TEXTO REAL EXTRAÍDO DO QUESTIONÁRIO NO MOODLE:\n{questions_body}\n"
             ]
 
+            extracted_ref = extract_text_from_context_files(context_files)
+            if extracted_ref:
+                prompt_content.append(
+                    "================================================================================\n"
+                    "### MATERIAL DE REFERÊNCIA / GABARITO PRIORITÁRIO EXTRAÍDO DOS ARQUIVOS DE APOIO:\n"
+                    f"{extracted_ref}\n"
+                    "(ATENÇÃO: O material acima contém as respostas e referências oficiais desta disciplina. Siga-o 100%!)\n"
+                    "================================================================================\n"
+                )
+
             if user_notes:
-                prompt_content.append(f"OBSERVAÇÕES DO ALUNO:\n{user_notes}\n")
+                prompt_content.append(
+                    "================================================================================\n"
+                    "### ANOTAÇÕES / GABARITO FORNECIDO PELO ALUNO:\n"
+                    f"{user_notes}\n"
+                    "(ATENÇÃO: Se as anotações do aluno contiverem respostas ou instruções específicas, siga-as rigorosamente!)\n"
+                    "================================================================================\n"
+                )
 
             contents = prompt_content + uploaded_gemini_files
 
@@ -537,9 +627,11 @@ class GeminiSolver:
                         # Captura listas numeradas 1. **palavra**
                         items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
                         if items:
+                            clean_items = []
                             for idx_sub, sub_val in enumerate(items, 1):
                                 clean_val = sub_val.strip("* ").strip()
                                 if clean_val:
+                                    clean_items.append(clean_val)
                                     structured_dict[f"Q{q_num}_{idx_sub}"] = clean_val
                                     if any(sep in clean_val for sep in ["→", "->", ":"]):
                                         parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
@@ -549,6 +641,8 @@ class GeminiSolver:
                                             if k_label and v_target:
                                                 structured_dict[f"Q{q_num}_{k_label}"] = v_target
                                                 structured_dict[k_label] = v_target
+                            if clean_items and ans_key not in structured_dict:
+                                structured_dict[ans_key] = ", ".join(clean_items)
                         else:
                             # Resposta dissertativa / texto aberto sem marcador
                             clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()

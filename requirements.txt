@@ -22,3 +22,7 @@ aiofiles>=24.1.0
 
 # Geração de PDFs Acadêmicos
 reportlab>=4.2.0
+
+# Leitura e Extração de Documentos e PDFs de Apoio
+pypdf>=5.0.0
+

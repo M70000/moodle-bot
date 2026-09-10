@@ -188,7 +188,10 @@ class MoodleQuizAutomator:
 
         # Clica no botão para iniciar/refazer tentativa
         await attempt_btn.click()
-        await page.wait_for_load_state("networkidle")
+        try:
+            await page.wait_for_load_state("domcontentloaded", timeout=12000)
+        except Exception:
+            pass
         await asyncio.sleep(1.2)
 
         # Trata eventual modal de confirmação no Moodle ("Iniciar tentativa", "Começar tentativa", etc.)
@@ -211,7 +214,10 @@ class MoodleQuizAutomator:
                     if await m_loc.first.is_visible():
                         console.print(f"[cyan]Confirmando modal de início/reabertura de tentativa: '{await m_loc.first.inner_text()}'...[/cyan]")
                         await m_loc.first.click()
-                        await page.wait_for_load_state("networkidle")
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=12000)
+                        except Exception:
+                            pass
                         await asyncio.sleep(1.2)
                         break
                 except Exception:
@@ -230,7 +236,10 @@ class MoodleQuizAutomator:
             page = await context.new_page()
 
             try:
-                await page.goto(quiz_url, wait_until="networkidle")
+                try:
+                    await page.goto(quiz_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception:
+                    await page.goto(quiz_url, timeout=25000)
 
                 # Se não estiver em attempt.php, abre nova tentativa, refaz tentativa ou continua existente
                 if "attempt.php" not in page.url:
@@ -434,9 +443,6 @@ class MoodleQuizAutomator:
                                      stateText.includes("incorreto") || 
                                      stateText.includes("incorreta") || 
                                      stateText.includes("incorrect") || 
-                                     stateText.includes("finalizada") || 
-                                     stateText.includes("finished") || 
-                                     stateText.includes("complet") || 
                                      stateText.includes("atingiu") || 
                                      stateText.includes("mark") || 
                                      stateText.includes("pontu");
@@ -444,17 +450,9 @@ class MoodleQuizAutomator:
                     // Feedback, outcome ou ícones de acerto/erro (checkmarks fa-check, text-success, etc.)
                     const hasOutcome = !!q.querySelector(".outcome, .feedback, .grading, .history, .comment, .specificfeedback");
                     const hasCheckmarks = !!q.querySelector(".fa-check, .text-success, .correct, .incorrect, .feedbackimage, [title*='Correto'], [alt*='Correto'], [title*='Correct'], [alt*='Correct'], i.fa-check");
-                    const hasClassComplete = q.classList.contains("complete") || 
-                                           q.classList.contains("readonly") ||
-                                           q.classList.contains("correct") || 
+                    const hasClassGraded = q.classList.contains("correct") || 
                                            q.classList.contains("incorrect") ||
                                            q.classList.contains("partiallycorrect");
-
-                    // Verifica se todos os campos/seletores da questão foram travados/desabilitados pelo Moodle
-                    const inputs = Array.from(q.querySelectorAll("select, input:not([type='hidden']):not([type='submit']):not([type='button']), textarea"));
-                    const allInputsDisabled = inputs.length > 0 && inputs.every(inp => inp.disabled);
-
-                    const alreadyVerified = isGraded || hasOutcome || hasCheckmarks || hasClassComplete || allInputsDisabled;
 
                     // 2. Localiza o botão 'Verificar' desta questão específica de forma compatível com DOM puro
                     const buttons = Array.from(q.querySelectorAll("input[type='submit'], button[type='submit'], button.submit, input.submit, button"));
@@ -485,10 +483,16 @@ class MoodleQuizAutomator:
                         window.getComputedStyle(verifyBtn).display !== 'none'
                     ) : false;
 
+                    const hasActiveVerifyBtn = !!verifyBtn && isVisible && !isBtnDisabled;
+
+                    // Se a questão possui botão 'Verificar' ativo e visível, ela OBRIGATORIAMENTE NÃO está verificada!
+                    // Só é considerada já verificada se tiver feedback/nota e NÃO possuir botão de verificação pendente.
+                    const alreadyVerified = !hasActiveVerifyBtn && (isGraded || hasOutcome || hasCheckmarks || hasClassGraded);
+
                     results.push({
                         qId: qId,
                         btnName: btnName,
-                        hasBtn: !!verifyBtn && isVisible && !isBtnDisabled,
+                        hasBtn: hasActiveVerifyBtn,
                         alreadyVerified: alreadyVerified,
                         stateText: stateText
                     });
@@ -541,8 +545,11 @@ class MoodleQuizAutomator:
                     await btn_loc.scroll_into_view_if_needed()
                     await asyncio.sleep(random.uniform(0.4, 0.7))
                     await btn_loc.click()
-                    await page.wait_for_load_state("networkidle")
-                    await page.wait_for_timeout(800)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=12000)
+                    except Exception:
+                        pass
+                    await page.wait_for_timeout(1000)
                     verified_count += 1
                     clicks += 1
                 else:
@@ -553,7 +560,9 @@ class MoodleQuizAutomator:
 
         if verified_count > 0:
             console.print(f"[green]✔ Total de questões verificadas no Moodle nesta etapa: {verified_count}[/green]")
-            await _emit_log(on_log, f"✔ {verified_count} questão(ões) verificada(s) com sucesso no Moodle")
+            await _emit_log(on_log, f"✔ {verified_count} questão(ões) verificada(s) com sucesso no Moodle.")
+        else:
+            console.print("[dim]Nenhum botão de verificação pendente (questionário em modo de feedback diferido ou já validado).[/dim]")
         return verified_count
 
     async def fill_and_submit_quiz(
@@ -631,7 +640,10 @@ class MoodleQuizAutomator:
             page = await context.new_page()
 
             try:
-                await page.goto(quiz_url, wait_until="networkidle")
+                try:
+                    await page.goto(quiz_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception:
+                    await page.goto(quiz_url, timeout=25000)
 
                 # Se não estiver em attempt.php, abre nova tentativa, refaz tentativa ou continua existente
                 if "attempt.php" not in page.url:
@@ -1056,14 +1068,21 @@ class MoodleQuizAutomator:
 
                                     best_match = None
                                     best_score = -1
+                                    compact_target = re.sub(r"[\s\-_,;]+", "", norm_target_content)
                                     for opt in candidate_options:
                                         score = 0
+                                        compact_opt = re.sub(r"[\s\-_,;]+", "", opt["norm_content"])
+
                                         if len(norm_target_content) >= 3 and len(opt["norm_content"]) >= 3:
                                             if norm_target_content == opt["norm_content"]:
+                                                score = 100
+                                            elif compact_target and compact_target == compact_opt:
                                                 score = 100
                                             elif norm_target_content in opt["norm_content"] and len(norm_target_content) >= 8:
                                                 score = 90
                                             elif opt["norm_content"] in norm_target_content and len(opt["norm_content"]) >= 8:
+                                                score = 90
+                                            elif compact_target and compact_opt and len(compact_target) >= 6 and (compact_target in compact_opt or compact_opt in compact_target):
                                                 score = 90
                                             else:
                                                 words_target = set(w for w in norm_target_content.split() if len(w) > 2)
@@ -1386,12 +1405,20 @@ class MoodleQuizAutomator:
                     if await finish_btn.count() > 0:
                         console.print("[dim]Página concluída. Indo para resumo da tentativa...[/dim]")
                         await finish_btn.first.click()
-                        await page.wait_for_load_state("networkidle")
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1500)
                         has_next = False
                     elif await next_btn.count() > 0:
                         console.print("[dim]Avançando para a próxima página do questionário...[/dim]")
                         await next_btn.first.click()
-                        await page.wait_for_load_state("networkidle")
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=12000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1000)
                     else:
                         has_next = False
 
@@ -1446,7 +1473,10 @@ class MoodleQuizAutomator:
                     else:
                         await page.keyboard.press("Enter")
 
-                    await page.wait_for_load_state("networkidle")
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(2500)
 
                     total_time_str = f"{int(time.time() - start_time)}s"
@@ -1500,7 +1530,10 @@ class MoodleQuizAutomator:
             context = await browser.new_context(storage_state=self.auth.cookies_path)
             page = await context.new_page()
             try:
-                await page.goto(quiz_url, wait_until="networkidle")
+                try:
+                    await page.goto(quiz_url, wait_until="domcontentloaded", timeout=25000)
+                except Exception:
+                    await page.goto(quiz_url, timeout=25000)
 
                 if "summary.php" not in page.url and "attempt.php" not in page.url:
                     await self._open_or_resume_attempt(page)
@@ -1509,7 +1542,11 @@ class MoodleQuizAutomator:
                 submit_button = page.locator(
                     "button:has-text('Enviar tudo e terminar'), "
                     "input[value*='Enviar tudo e terminar'], "
-                    "a:has-text('Enviar tudo e terminar')"
+                    "a:has-text('Enviar tudo e terminar'), "
+                    "button:has-text('Submit all and finish'), "
+                    "input[value*='Submit all and finish'], "
+                    ".submitbtns button.btn-primary, "
+                    ".submitbtns input[type='submit']"
                 ).first
 
                 # Se NÃO tem 'Enviar tudo e terminar' diretamente disponível e está em attempt.php:
@@ -1519,38 +1556,85 @@ class MoodleQuizAutomator:
                     while has_next_page:
                         await self._verify_all_questions_on_current_attempt(page, on_log=on_log)
 
-                        next_page_btn = page.locator("input[type='submit'][value*='Próxima página'], button:has-text('Próxima página')")
+                        next_page_btn = page.locator("input[type='submit'][value*='Próxima página'], button:has-text('Próxima página'), button:has-text('Next page')")
                         if await next_page_btn.count() > 0 and await next_page_btn.first.is_visible():
                             console.print("[dim]Avançando para a próxima página para verificar questões...[/dim]")
                             await next_page_btn.first.click()
-                            await page.wait_for_load_state("networkidle")
+                            try:
+                                await page.wait_for_load_state("domcontentloaded", timeout=12000)
+                            except Exception:
+                                pass
+                            await page.wait_for_timeout(1000)
                         else:
                             has_next_page = False
 
-                    finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa')")
+                    finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa'), button:has-text('Finish attempt')")
                     if await finish_btn.count() > 0:
-                        console.print("[dim]Todas as questões verificadas. Indo para resumo da tentativa...[/dim]")
+                        console.print("[dim]Avançando para o resumo da tentativa no Moodle...[/dim]")
                         await finish_btn.first.click()
-                        await page.wait_for_load_state("networkidle")
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1500)
 
-                submit_button = page.locator("button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar']").first
+                submit_button = page.locator(
+                    "button:has-text('Enviar tudo e terminar'), "
+                    "input[value*='Enviar tudo e terminar'], "
+                    "a:has-text('Enviar tudo e terminar'), "
+                    "button:has-text('Submit all and finish'), "
+                    "input[value*='Submit all and finish'], "
+                    ".submitbtns button.btn-primary, "
+                    ".submitbtns input[type='submit']"
+                ).first
+
+                if await submit_button.count() == 0:
+                    try:
+                        await page.wait_for_selector(
+                            "button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar'], button:has-text('Submit all and finish'), .submitbtns",
+                            timeout=8000
+                        )
+                        submit_button = page.locator(
+                            "button:has-text('Enviar tudo e terminar'), "
+                            "input[value*='Enviar tudo e terminar'], "
+                            "a:has-text('Enviar tudo e terminar'), "
+                            "button:has-text('Submit all and finish'), "
+                            "input[value*='Submit all and finish'], "
+                            ".submitbtns button.btn-primary, "
+                            ".submitbtns input[type='submit']"
+                        ).first
+                    except Exception:
+                        pass
+
                 if await submit_button.count() > 0:
                     await _emit_log(on_log, "Confirmando 'Enviar tudo e terminar' no Moodle...")
+                    await submit_button.scroll_into_view_if_needed()
                     await submit_button.click()
                     await page.wait_for_timeout(1000)
 
                     confirm_btn = page.locator(
                         ".modal.show button[data-action='confirm'], "
                         ".modal.show button.btn-primary:has-text('Enviar tudo e terminar'), "
+                        ".modal.show button.btn-primary:has-text('Submit all and finish'), "
+                        ".modal.show button.btn-primary, "
                         ".moodle-dialogue-confirm input[value*='Enviar tudo e terminar'], "
-                        "div[role='dialog'] button:has-text('Enviar tudo e terminar')"
+                        "div[role='dialog'] button:has-text('Enviar tudo e terminar'), "
+                        "div[role='dialog'] button:has-text('Submit all and finish'), "
+                        "div[role='dialog'] button.btn-primary, "
+                        ".confirmation-buttons button.btn-primary"
                     )
-                    if await confirm_btn.count() > 0:
-                        await confirm_btn.first.click()
-                    else:
+                    try:
+                        if await confirm_btn.count() > 0 and await confirm_btn.first.is_visible():
+                            await confirm_btn.first.click()
+                        else:
+                            await page.keyboard.press("Enter")
+                    except Exception:
                         await page.keyboard.press("Enter")
 
-                    await page.wait_for_load_state("networkidle")
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(2500)
 
                     screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
