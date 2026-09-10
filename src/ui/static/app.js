@@ -85,6 +85,7 @@ async function loadConfig() {
     setInputValue('DISCORD_CONTENT_CHANNEL_ID', config.DISCORD_CONTENT_CHANNEL_ID || '0');
     setInputValue('DISCORD_ANNOUNCEMENTS_CHANNEL_ID', config.DISCORD_ANNOUNCEMENTS_CHANNEL_ID || '0');
     setInputValue('DISCORD_QUEUE_CHANNEL_ID', config.DISCORD_QUEUE_CHANNEL_ID || '0');
+    setInputValue('DISCORD_STUDY_CHANNEL_ID', config.DISCORD_STUDY_CHANNEL_ID || '0');
 
     setInputValue('GEMINI_API_KEY', config.GEMINI_API_KEY || '');
     setInputValue('GEMINI_MODEL', config.GEMINI_MODEL || 'gemini-3.8-flash');
@@ -154,6 +155,7 @@ async function saveConfig() {
     DISCORD_CONTENT_CHANNEL_ID: getInputValue('DISCORD_CONTENT_CHANNEL_ID'),
     DISCORD_ANNOUNCEMENTS_CHANNEL_ID: getInputValue('DISCORD_ANNOUNCEMENTS_CHANNEL_ID'),
     DISCORD_QUEUE_CHANNEL_ID: getInputValue('DISCORD_QUEUE_CHANNEL_ID'),
+    DISCORD_STUDY_CHANNEL_ID: getInputValue('DISCORD_STUDY_CHANNEL_ID'),
 
     GEMINI_API_KEY: getInputValue('GEMINI_API_KEY'),
     GEMINI_MODEL: getInputValue('GEMINI_MODEL'),

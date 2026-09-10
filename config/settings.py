@@ -45,6 +45,10 @@ class Settings(BaseSettings):
         default=0,
         description="ID do canal exclusivo para acompanhamento da fila de tarefas em tempo real (se 0, usa DISCORD_CHANNEL_ID)"
     )
+    DISCORD_STUDY_CHANNEL_ID: int = Field(
+        default=0,
+        description="ID do canal exclusivo para estudos, dúvidas (/perguntar), simulados (/quiz) e flashcards (/flashcards) (se 0, responde no canal chamado)"
+    )
 
     # Integração Notion (Central de Estudos & Tarefas)
     NOTION_API_KEY: str = Field(

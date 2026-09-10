@@ -33,6 +33,7 @@ from src.scheduler.state import DaemonState
 from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_filename
 from src.scraper.moodle_submitter import MoodleSubmitter
 from src.solver.gemini_solver import GeminiSolver, SolutionDraft
+from src.solver.study_tutor import StudyTutor
 
 if sys.platform == "win32":
     try:
@@ -314,7 +315,7 @@ async def task_material_autocomplete(
         for opt in options:
             if opt.get("name") in ["tarefa", "disciplina"]:
                 selected_task = str(opt.get("value") or "").strip()
-            elif opt.get("name") in ["material_1", "material_2", "material_3"]:
+            elif opt.get("name") in ["material_1", "material_2", "material_3", "material"]:
                 val = str(opt.get("value") or "").strip()
                 if val:
                     already_chosen.add(val)
@@ -2259,6 +2260,484 @@ async def cmd_atualizar_checklist(interaction: discord.Interaction):
         )
 
 
+def get_study_target_channel(interaction_or_ctx) -> Tuple[Any, bool]:
+    """Retorna o canal alvo para atividades de estudo e se houve redirecionamento."""
+    study_id = getattr(settings, "DISCORD_STUDY_CHANNEL_ID", 0)
+    current_channel = getattr(interaction_or_ctx, "channel", None)
+    if study_id and study_id > 0:
+        target = bot.get_channel(study_id)
+        if target:
+            if current_channel and current_channel.id != study_id:
+                return target, True
+            return target, False
+    return current_channel, False
+
+
+class FlashcardsCarouselView(ui.View):
+    """View interativa em carrossel para navegação e estudo de flashcards do Anki."""
+
+    def __init__(
+        self,
+        cards: List[Dict[str, str]],
+        discipline: str,
+        topic: str,
+        requester: str = "Estudante",
+        timeout: Optional[float] = 900
+    ):
+        super().__init__(timeout=timeout)
+        self.cards = cards or []
+        self.discipline = discipline
+        self.topic = topic
+        self.requester = requester
+        self.current_idx = 0
+        self.is_flipped = False
+        self._update_buttons()
+
+    def _update_buttons(self):
+        total = len(self.cards)
+        self.btn_prev.disabled = (self.current_idx <= 0)
+        self.btn_next.disabled = (self.current_idx >= total - 1)
+        if self.is_flipped:
+            self.btn_flip.label = "Ocultar Resposta"
+            self.btn_flip.emoji = "🔄"
+            self.btn_flip.style = discord.ButtonStyle.secondary
+        else:
+            self.btn_flip.label = "Revelar Resposta"
+            self.btn_flip.emoji = "👁️"
+            self.btn_flip.style = discord.ButtonStyle.primary
+
+    def build_embed(self) -> discord.Embed:
+        if not self.cards:
+            return discord.Embed(
+                title="🗂️ Baralho de Flashcards Vazio",
+                description="Nenhum card foi gerado para este tópico.",
+                color=discord.Color.red()
+            )
+
+        total = len(self.cards)
+        card = self.cards[self.current_idx]
+        disc_clean = clean_display_course(self.discipline)
+
+        embed = discord.Embed(
+            title=f"🗂️ Flashcards: {disc_clean}",
+            description=f"**Tópico:** `{self.topic}` • **Card:** `{self.current_idx + 1}/{total}`",
+            color=discord.Color.purple() if not self.is_flipped else discord.Color.green()
+        )
+
+        embed.add_field(name="❓ Pergunta / Conceito", value=f"**{card['front']}**", inline=False)
+
+        if self.is_flipped:
+            embed.add_field(name="💡 Resposta do Professor", value=card.get("back", ""), inline=False)
+            if card.get("explanation"):
+                embed.add_field(name="⚠️ Dica & Pegadinha", value=card["explanation"], inline=False)
+            if card.get("source"):
+                embed.add_field(name="📚 Referência nos Slides", value=f"`{card['source']}`", inline=False)
+        else:
+            embed.add_field(name="🔒 Resposta Oculta", value="*Pense na resposta e clique em `[👁️ Revelar Resposta]` abaixo.*", inline=False)
+
+        embed.set_footer(text=f"Solicitado por {self.requester} • Arquivo Anki pronto para importação em anexo!")
+        return embed
+
+    @ui.button(label="Anterior", style=discord.ButtonStyle.secondary, emoji="⬅️", row=0)
+    async def btn_prev(self, interaction: discord.Interaction, button: ui.Button):
+        if self.current_idx > 0:
+            self.current_idx -= 1
+            self.is_flipped = False
+            self._update_buttons()
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.defer()
+
+    @ui.button(label="Revelar Resposta", style=discord.ButtonStyle.primary, emoji="👁️", row=0)
+    async def btn_flip(self, interaction: discord.Interaction, button: ui.Button):
+        self.is_flipped = not self.is_flipped
+        self._update_buttons()
+        embed = self.build_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Próximo", style=discord.ButtonStyle.secondary, emoji="➡️", row=0)
+    async def btn_next(self, interaction: discord.Interaction, button: ui.Button):
+        if self.current_idx < len(self.cards) - 1:
+            self.current_idx += 1
+            self.is_flipped = False
+            self._update_buttons()
+            embed = self.build_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.response.defer()
+
+
+class InteractiveQuizSessionView(ui.View):
+    """View interativa para simulado pré-prova no Discord com avaliação instantânea e pegadinhas."""
+
+    def __init__(
+        self,
+        questions: List[Dict[str, Any]],
+        discipline: str,
+        topic: str,
+        requester: str = "Estudante",
+        requester_id: Optional[int] = None,
+        timeout: Optional[float] = 900
+    ):
+        super().__init__(timeout=timeout)
+        self.questions = questions or []
+        self.discipline = discipline
+        self.topic = topic
+        self.requester = requester
+        self.requester_id = requester_id
+        self.current_idx = 0
+        self.score = 0
+        self.user_answers: Dict[int, str] = {}
+        self.is_answered = False
+        self._configure_for_current_question()
+
+    def _configure_for_current_question(self):
+        self.is_answered = (self.current_idx in self.user_answers)
+        is_last = (self.current_idx == len(self.questions) - 1)
+
+        for opt_char in ["A", "B", "C", "D"]:
+            btn = getattr(self, f"btn_opt_{opt_char.lower()}", None)
+            if btn:
+                if self.is_answered:
+                    btn.disabled = True
+                    chosen = self.user_answers.get(self.current_idx)
+                    correct = self.questions[self.current_idx].get("correct_option", "A")
+                    if opt_char == correct:
+                        btn.style = discord.ButtonStyle.success
+                    elif opt_char == chosen:
+                        btn.style = discord.ButtonStyle.danger
+                    else:
+                        btn.style = discord.ButtonStyle.secondary
+                else:
+                    btn.disabled = False
+                    btn.style = discord.ButtonStyle.primary
+
+        if hasattr(self, "btn_next_action"):
+            if not self.is_answered:
+                self.btn_next_action.disabled = True
+                self.btn_next_action.label = "Próxima Questão" if not is_last else "Finalizar Simulado"
+                self.btn_next_action.style = discord.ButtonStyle.secondary
+            else:
+                self.btn_next_action.disabled = False
+                self.btn_next_action.label = "Próxima Questão ➡️" if not is_last else "Ver Resultado Final 🏁"
+                self.btn_next_action.style = discord.ButtonStyle.success
+
+    def build_question_embed(self) -> discord.Embed:
+        if not self.questions:
+            return discord.Embed(title="Simulado Vazio", description="Nenhuma questão gerada.", color=discord.Color.red())
+
+        q = self.questions[self.current_idx]
+        total = len(self.questions)
+        disc_clean = clean_display_course(self.discipline)
+
+        embed = discord.Embed(
+            title=f"📝 Simulado Pré-Prova: {disc_clean}",
+            description=(
+                f"**Tema:** `{self.topic}` • **Questão {self.current_idx + 1} de {total}**\n\n"
+                f"### {q['question']}\n\n"
+                f"**[A]** {q['options'].get('A', '')}\n"
+                f"**[B]** {q['options'].get('B', '')}\n"
+                f"**[C]** {q['options'].get('C', '')}\n"
+                f"**[D]** {q['options'].get('D', '')}\n"
+            ),
+            color=discord.Color.blue()
+        )
+
+        if self.is_answered:
+            chosen = self.user_answers[self.current_idx]
+            correct = q.get("correct_option", "A")
+            if chosen == correct:
+                embed.color = discord.Color.green()
+                embed.add_field(
+                    name="🎉 Parabéns! Você Acertou!",
+                    value=f"Alternativa correta: **[{correct}]**",
+                    inline=False
+                )
+            else:
+                embed.color = discord.Color.red()
+                embed.add_field(
+                    name="❌ Atenção à Pegadinha!",
+                    value=f"Você marcou **[{chosen}]**, mas a alternativa correta é **[{correct}]**.",
+                    inline=False
+                )
+
+            embed.add_field(name="💡 Explicação Pedagógica", value=q.get("explanation", "Sem explicação"), inline=False)
+            if q.get("reference"):
+                embed.add_field(name="📚 Referência nos Slides", value=f"`{q['reference']}`", inline=False)
+        else:
+            embed.set_footer(text=f"Pontuação atual: {self.score}/{self.current_idx} acertos • Escolha uma opção abaixo")
+
+        return embed
+
+    def build_results_embed(self) -> discord.Embed:
+        total = len(self.questions)
+        pct = (self.score / total * 100) if total > 0 else 0
+        disc_clean = clean_display_course(self.discipline)
+
+        if pct >= 80:
+            status_text = "🏆 **Desempenho Excepcional!** Você dominou os conceitos e superou as pegadinhas!"
+            color = discord.Color.green()
+        elif pct >= 50:
+            status_text = "📚 **Bom Desempenho!** Você está no caminho certo, mas vale revisar as pegadinhas das aulas."
+            color = discord.Color.gold()
+        else:
+            status_text = "⚠️ **Atenção aos Conceitos!** Recomendamos reler os slides indicados e usar `/flashcards` para fixar."
+            color = discord.Color.orange()
+
+        embed = discord.Embed(
+            title=f"🏁 Simulado Concluído: {disc_clean}",
+            description=(
+                f"### Placar Final: **{self.score} de {total} questões corretas ({pct:.0f}%)**\n\n"
+                f"{status_text}\n\n"
+                f"👤 **Estudante:** {self.requester}\n"
+                f"🎯 **Tópico:** `{self.topic}`"
+            ),
+            color=color
+        )
+        embed.set_footer(text="Quer treinar novamente? Clique no botão abaixo!")
+        return embed
+
+    async def _handle_option_click(self, interaction: discord.Interaction, chosen: str):
+        if self.requester_id and interaction.user.id != self.requester_id:
+            await interaction.response.send_message("⚠️ Este simulado pertence a outro estudante. Inicie o seu com `/quiz`!", ephemeral=True)
+            return
+
+        if self.is_answered:
+            await interaction.response.defer()
+            return
+
+        correct = self.questions[self.current_idx].get("correct_option", "A")
+        self.user_answers[self.current_idx] = chosen
+        if chosen == correct:
+            self.score += 1
+
+        self.is_answered = True
+        self._configure_for_current_question()
+        embed = self.build_question_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="A", style=discord.ButtonStyle.primary, row=0)
+    async def btn_opt_a(self, interaction: discord.Interaction, button: ui.Button):
+        await self._handle_option_click(interaction, "A")
+
+    @ui.button(label="B", style=discord.ButtonStyle.primary, row=0)
+    async def btn_opt_b(self, interaction: discord.Interaction, button: ui.Button):
+        await self._handle_option_click(interaction, "B")
+
+    @ui.button(label="C", style=discord.ButtonStyle.primary, row=0)
+    async def btn_opt_c(self, interaction: discord.Interaction, button: ui.Button):
+        await self._handle_option_click(interaction, "C")
+
+    @ui.button(label="D", style=discord.ButtonStyle.primary, row=0)
+    async def btn_opt_d(self, interaction: discord.Interaction, button: ui.Button):
+        await self._handle_option_click(interaction, "D")
+
+    @ui.button(label="Próxima Questão", style=discord.ButtonStyle.secondary, emoji="➡️", row=1)
+    async def btn_next_action(self, interaction: discord.Interaction, button: ui.Button):
+        if self.requester_id and interaction.user.id != self.requester_id:
+            await interaction.response.send_message("⚠️ Este simulado pertence a outro estudante.", ephemeral=True)
+            return
+
+        if self.current_idx < len(self.questions) - 1:
+            self.current_idx += 1
+            self.is_answered = False
+            self._configure_for_current_question()
+            embed = self.build_question_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            for child in self.children:
+                if child != self.btn_restart:
+                    child.disabled = True
+            self.btn_restart.disabled = False
+            embed = self.build_results_embed()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    @ui.button(label="Refazer Simulado", style=discord.ButtonStyle.primary, emoji="🔄", row=1, disabled=True)
+    async def btn_restart(self, interaction: discord.Interaction, button: ui.Button):
+        if self.requester_id and interaction.user.id != self.requester_id:
+            await interaction.response.send_message("⚠️ Este simulado pertence a outro estudante.", ephemeral=True)
+            return
+
+        self.current_idx = 0
+        self.score = 0
+        self.user_answers.clear()
+        self.is_answered = False
+        self.btn_restart.disabled = True
+        self._configure_for_current_question()
+        embed = self.build_question_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
+@bot.tree.command(name="perguntar", description="Tira dúvidas conceituais com a IA citando slides e apostilas da disciplina")
+@app_commands.describe(
+    disciplina="Nome da disciplina (ex: Cálculo, Física, Inglês)",
+    duvida="Sua dúvida conceitual, fórmula ou questão teórica",
+    material="Material específico da disciplina para consulta prioritária (opcional)"
+)
+@app_commands.autocomplete(
+    disciplina=course_autocomplete,
+    material=task_material_autocomplete
+)
+async def cmd_perguntar(
+    interaction: discord.Interaction,
+    disciplina: str,
+    duvida: str,
+    material: Optional[str] = None
+):
+    target_ch, redirected = get_study_target_channel(interaction)
+    if redirected:
+        await interaction.response.send_message(
+            f"📍 Sua dúvida sobre **{disciplina}** foi encaminhada para o canal de estudos: <#{target_ch.id}>!",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.defer(ephemeral=False)
+
+    tutor = StudyTutor()
+    res = await tutor.answer_question(discipline=disciplina, question=duvida, specific_material=material)
+
+    disc_clean = clean_display_course(disciplina)
+    embed = discord.Embed(
+        title=f"💡 Tutor Acadêmico: {disc_clean}",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="❓ Dúvida do Aluno", value=f"*{duvida[:500]}*", inline=False)
+
+    ans_text = res.get("answer", "")
+    if len(ans_text) <= 4000:
+        embed.description = f"### 📖 Resposta do Tutor\n\n{ans_text}"
+    else:
+        embed.description = f"### 📖 Resposta do Tutor\n\n{ans_text[:3900]}\n\n*(continua no próximo campo...)*"
+        embed.add_field(name="📖 Continuação", value=ans_text[3900:4900], inline=False)
+
+    mats = res.get("materials_used", [])
+    if mats:
+        embed.add_field(name="📚 Materiais & Slides Consultados", value="\n".join(f"• `{m}`" for m in mats[:4]), inline=False)
+
+    embed.set_footer(text=f"Solicitado por {interaction.user.display_name} • Modelo: {res.get('model_used')}")
+
+    if redirected:
+        await target_ch.send(content=f"{interaction.user.mention} aqui está a resposta para a sua dúvida:", embed=embed)
+    else:
+        await interaction.followup.send(embed=embed)
+
+
+@bot.tree.command(name="flashcards", description="Gera baralho de flashcards para estudo ativo com exportação direta para o Anki")
+@app_commands.describe(
+    disciplina="Nome da disciplina (ex: Cálculo, Química, Inglês)",
+    topico="Tópico específico a ser enfatizado (opcional)",
+    qtd="Quantidade de flashcards a gerar (3 a 15, padrão: 8)",
+    material="Material específico da disciplina para basear o baralho (opcional)"
+)
+@app_commands.autocomplete(
+    disciplina=course_autocomplete,
+    material=task_material_autocomplete
+)
+async def cmd_flashcards(
+    interaction: discord.Interaction,
+    disciplina: str,
+    topico: Optional[str] = None,
+    qtd: Optional[int] = 8,
+    material: Optional[str] = None
+):
+    target_ch, redirected = get_study_target_channel(interaction)
+    if redirected:
+        await interaction.response.send_message(
+            f"📍 Seu baralho de flashcards para **{disciplina}** está sendo gerado no canal de estudos: <#{target_ch.id}>!",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.defer(ephemeral=False)
+
+    tutor = StudyTutor()
+    count = max(3, min(qtd or 8, 15))
+    res = await tutor.generate_flashcards(discipline=disciplina, topic=topico, count=count, specific_material=material)
+
+    view = FlashcardsCarouselView(
+        cards=res.get("cards", []),
+        discipline=disciplina,
+        topic=res.get("topic", "Geral"),
+        requester=interaction.user.display_name
+    )
+    embed = view.build_embed()
+
+    anki_path = res.get("anki_file_path")
+    file_to_send = None
+    if anki_path and Path(anki_path).exists():
+        file_to_send = discord.File(str(anki_path), filename=Path(anki_path).name)
+
+    if redirected:
+        if file_to_send:
+            await target_ch.send(
+                content=f"{interaction.user.mention} aqui está o seu baralho de flashcards interativo e o arquivo Anki!",
+                embed=embed,
+                view=view,
+                file=file_to_send
+            )
+        else:
+            await target_ch.send(
+                content=f"{interaction.user.mention} aqui está o seu baralho de flashcards interativo!",
+                embed=embed,
+                view=view
+            )
+    else:
+        if file_to_send:
+            await interaction.followup.send(embed=embed, view=view, file=file_to_send)
+        else:
+            await interaction.followup.send(embed=embed, view=view)
+
+
+@bot.tree.command(name="quiz", description="Gera simulado pré-prova interativo com botões A, B, C, D e pegadinhas reais")
+@app_commands.describe(
+    disciplina="Nome da disciplina (ex: Cálculo, Fundamentos de Eletromag., Inglês)",
+    qtd_questoes="Quantidade de questões no simulado (3 a 10, padrão: 5)",
+    topico="Tópico específico da matéria para focar o simulado (opcional)",
+    material="Material específico da disciplina para consulta prioritária (opcional)"
+)
+@app_commands.autocomplete(
+    disciplina=course_autocomplete,
+    material=task_material_autocomplete
+)
+async def cmd_quiz(
+    interaction: discord.Interaction,
+    disciplina: str,
+    qtd_questoes: Optional[int] = 5,
+    topico: Optional[str] = None,
+    material: Optional[str] = None
+):
+    target_ch, redirected = get_study_target_channel(interaction)
+    if redirected:
+        await interaction.response.send_message(
+            f"📍 Seu simulado para **{disciplina}** foi iniciado no canal de estudos: <#{target_ch.id}>!",
+            ephemeral=True
+        )
+    else:
+        await interaction.response.defer(ephemeral=False)
+
+    tutor = StudyTutor()
+    num_q = max(3, min(qtd_questoes or 5, 10))
+    res = await tutor.generate_quiz(discipline=disciplina, num_questions=num_q, topic=topico, specific_material=material)
+
+    view = InteractiveQuizSessionView(
+        questions=res.get("questions", []),
+        discipline=disciplina,
+        topic=res.get("topic", "Geral"),
+        requester=interaction.user.display_name,
+        requester_id=interaction.user.id
+    )
+    embed = view.build_question_embed()
+
+    if redirected:
+        await target_ch.send(
+            content=f"{interaction.user.mention} seu simulado interativo começou! Responda nos botões abaixo:",
+            embed=embed,
+            view=view
+        )
+    else:
+        await interaction.followup.send(embed=embed, view=view)
+
+
 # ----------------------------------------------------
 # 2. Comandos de Mensagem / Prefixo (!tarefas, !status, etc.)
 # ----------------------------------------------------
@@ -2509,6 +2988,72 @@ async def prefix_adicionarconteudo(ctx: commands.Context, *, disciplina: str):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="perguntar")
+async def prefix_perguntar(ctx: commands.Context, disciplina: str, *, duvida: str):
+    """Tira dúvidas conceituais: !perguntar <disciplina> <dúvida>."""
+    target_ch, redirected = get_study_target_channel(ctx)
+    if redirected:
+        await ctx.send(f"📍 Sua dúvida sobre **{disciplina}** foi encaminhada para o canal de estudos: <#{target_ch.id}>!")
+
+    tutor = StudyTutor()
+    res = await tutor.answer_question(discipline=disciplina, question=duvida)
+    disc_clean = clean_display_course(disciplina)
+    embed = discord.Embed(title=f"💡 Tutor Acadêmico: {disc_clean}", color=discord.Color.blue())
+    embed.add_field(name="❓ Dúvida do Aluno", value=f"*{duvida[:500]}*", inline=False)
+    ans_text = res.get("answer", "")
+    embed.description = f"### 📖 Resposta do Tutor\n\n{ans_text[:4000]}"
+    mats = res.get("materials_used", [])
+    if mats:
+        embed.add_field(name="📚 Materiais Consultados", value="\n".join(f"• `{m}`" for m in mats[:4]), inline=False)
+    embed.set_footer(text=f"Solicitado por {ctx.author.display_name} • Modelo: {res.get('model_used')}")
+    await target_ch.send(embed=embed)
+
+
+@bot.command(name="flashcards")
+async def prefix_flashcards(ctx: commands.Context, disciplina: str, *, topico: Optional[str] = None):
+    """Gera flashcards e deck Anki: !flashcards <disciplina> [tópico]."""
+    target_ch, redirected = get_study_target_channel(ctx)
+    if redirected:
+        await ctx.send(f"📍 Seus flashcards para **{disciplina}** estão no canal de estudos: <#{target_ch.id}>!")
+
+    tutor = StudyTutor()
+    res = await tutor.generate_flashcards(discipline=disciplina, topic=topico, count=8)
+    view = FlashcardsCarouselView(
+        cards=res.get("cards", []),
+        discipline=disciplina,
+        topic=res.get("topic", "Geral"),
+        requester=ctx.author.display_name
+    )
+    embed = view.build_embed()
+    anki_path = res.get("anki_file_path")
+    file_to_send = discord.File(str(anki_path), filename=Path(anki_path).name) if anki_path and Path(anki_path).exists() else None
+    if file_to_send:
+        await target_ch.send(embed=embed, view=view, file=file_to_send)
+    else:
+        await target_ch.send(embed=embed, view=view)
+
+
+@bot.command(name="quiz")
+async def prefix_quiz(ctx: commands.Context, disciplina: str, qtd: Optional[int] = 5):
+    """Gera simulado pré-prova: !quiz <disciplina> [qtd_questoes]."""
+    target_ch, redirected = get_study_target_channel(ctx)
+    if redirected:
+        await ctx.send(f"📍 Seu simulado para **{disciplina}** foi iniciado no canal de estudos: <#{target_ch.id}>!")
+
+    tutor = StudyTutor()
+    num_q = max(3, min(qtd or 5, 10))
+    res = await tutor.generate_quiz(discipline=disciplina, num_questions=num_q)
+    view = InteractiveQuizSessionView(
+        questions=res.get("questions", []),
+        discipline=disciplina,
+        topic=res.get("topic", "Geral"),
+        requester=ctx.author.display_name,
+        requester_id=ctx.author.id
+    )
+    embed = view.build_question_embed()
+    await target_ch.send(embed=embed, view=view)
+
+
 @bot.command(name="ajuda")
 async def prefix_ajuda(ctx: commands.Context):
     """Exibe o guia de comandos do robô."""
@@ -2519,9 +3064,12 @@ async def prefix_ajuda(ctx: commands.Context):
     )
     embed.add_field(name="📋 `!tarefas` ou `/tarefas [disciplina]`", value="Lista tarefas e questionários pendentes e concluídos.", inline=False)
     embed.add_field(name="📖 `!materiais <disciplina>` ou `/materiais`", value="Envia slides e materiais de estudo no chat.", inline=False)
-    embed.add_field(name="🧠 `!resolver <id_ou_nome>` ou `/resolver`", value="Resolve atividade ou questionário pendente sob demanda com IA.", inline=False)
+    embed.add_field(name="🧠 `!resolver <id_ou_nome>` ou `/resolver`", value="Resolve atividade ou questionário sob demanda com IA.", inline=False)
     embed.add_field(name="📦 `!resolver_lote` ou `/resolver_lote`", value="Menu interativo para selecionar e resolver múltiplas tarefas em lote.", inline=False)
     embed.add_field(name="🔄 `!refazer <id_ou_nome>` ou `/refazer`", value="Refaz atividade ou questionário já concluído com IA.", inline=False)
+    embed.add_field(name="💡 `!perguntar <disciplina> <dúvida>` ou `/perguntar`", value="Tutor acadêmico que tira dúvidas citando slides do professor.", inline=False)
+    embed.add_field(name="🗂️ `!flashcards <disciplina> [tópico]` ou `/flashcards`", value="Gera baralho de flashcards com exportação direta para o Anki.", inline=False)
+    embed.add_field(name="📝 `!quiz <disciplina> [qtd]` ou `/quiz`", value="Simulado interativo pré-prova com pegadinhas e botões A, B, C, D.", inline=False)
     embed.add_field(name="🛰️ `!status` ou `/status`", value="Exibe a sessão do Moodle, materiais e IA.", inline=False)
     embed.add_field(name="📥 `!adicionarconteudo <disciplina>` (com anexo)", value="Salva resumos e materiais na memória da IA.", inline=False)
     await ctx.send(embed=embed)

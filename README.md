@@ -22,7 +22,9 @@ Assistente em segundo plano (*background daemon*) para o Moodle da UFMG que moni
   - `/resolver_lote [disciplina] [instruções] [arquivo] [material_1..3]`: Menu interativo multi-select para selecionar e resolver múltiplas tarefas/questionários em lote de forma sequencial, com suporte a materiais de referência salvos, upload de arquivos e instruções personalizadas aplicadas a todo o lote (inclusive via botão `[✏️ Instruções]`).
   - `/refazer <tarefa>`: Refaz atividades já entregues com novas instruções.
   - `/status`: Telemetria da sessão Moodle, arquivos catalogados e status dos modelos de IA.
-  - `/adicionarconteudo <disciplina> <arquivo>`: Ingestão de novos arquivos para a memória do bot.
+  - `/perguntar <disciplina> <dúvida> [material]`: Tutor acadêmico para tirar dúvidas conceituais citando expressamente os slides e apostilas do professor.
+  - `/flashcards <disciplina> [tópico] [qtd] [material]`: Baralhos de repetição espaçada com carrossel interativo no Discord e exportação de arquivo `.txt` para o Anki.
+  - `/quiz <disciplina> [qtd_questoes] [tópico] [material]`: Simulado pré-prova interativo com botões A, B, C, D, correção imediata, explicação de pegadinhas e placar final.
   - `/notion_sync` e `/atualizar_checklist`: Sincronização e checklist de rotina diária no Notion.
 - **Monitor de Notas e Feedbacks do Professor:** Detecta correções e lança alertas festivos com nota, feedback textual e nome do avaliador.
 - **Segurança & Ética (Restrições Estritas):**
