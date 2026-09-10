@@ -70,8 +70,23 @@ c:\moodle-bot\
 
 ## 🚀 Instalação e Configuração
 
-### 1. Configurar variáveis no `.env`
-Preencha no `.env`:
+### 1. Interface Gráfica de Configuração (Recomendado) 🖥️
+Você pode configurar todo o `.env` de forma visual e testar suas conexões (Moodle, Gemini, Discord) com apenas 2 cliques:
+- **No Windows:** Dê um duplo clique no arquivo [`configurar.bat`](file:///c:/moodle-bot/configurar.bat) na raiz do projeto.
+- **Ou via Terminal:**
+  ```bash
+  .venv\Scripts\python config_gui.py
+  ```
+Uma janela dedicada será aberta permitindo:
+- Configurar URL do Moodle e disparar o login SSO MinhaUFMG com 1 clique.
+- Inserir e testar a chave do Google Gemini (com verificação imediata de cota e modelo).
+- Inserir e testar o token e canais do bot do Discord.
+- Ajustar frequência de varredura e gerenciar pastas de materiais e rascunhos.
+
+---
+
+### 2. Configuração Manual via `.env` (Alternativa)
+Se preferir editar manualmente, copie o `.env.example` para `.env` e preencha:
 ```ini
 MOODLE_BASE_URL=https://virtual.ufmg.br
 DISCORD_BOT_TOKEN=seu_bot_token
@@ -83,8 +98,8 @@ GEMINI_FALLBACK_MODEL_1=gemini-3.7-flash
 GEMINI_FALLBACK_MODEL_2=gemini-3.5-flash-lite
 ```
 
-### 2. Autenticação Inicial no Moodle / MinhaUFMG
-Na primeira execução ou quando a sessão expirar:
+### 3. Autenticação Inicial no Moodle / MinhaUFMG
+Pode ser disparada direto pelo botão na Interface Gráfica ou via terminal:
 ```bash
 .venv\Scripts\python -m src.auth.moodle_auth
 ```
@@ -92,7 +107,7 @@ Na primeira execução ou quando a sessão expirar:
 - Digite seu usuário, senha e conclua o 2FA.
 - A sessão autenticada é salva em `storage/cookies/session.json` e as próximas execuções ocorrem 100% em segundo plano (*headless*).
 
-### 3. Execução do Assistente Completo (Daemon + Discord Bot)
+### 4. Execução do Assistente Completo (Daemon + Discord Bot)
 Para manter o monitoramento contínuo e os Slash Commands ativos:
 ```bash
 .venv\Scripts\python -m src.scheduler.daemon

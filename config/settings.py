@@ -46,6 +46,32 @@ class Settings(BaseSettings):
         description="ID do canal exclusivo para acompanhamento da fila de tarefas em tempo real (se 0, usa DISCORD_CHANNEL_ID)"
     )
 
+    # Integração Notion (Central de Estudos & Tarefas)
+    NOTION_API_KEY: str = Field(
+        default="",
+        description="Token de integração do Notion (Secret API Key)"
+    )
+    NOTION_PAGE_ID: str = Field(
+        default="17db4e452b43449a9ca266065840f909",
+        description="ID da página principal no Notion (Minha Central)"
+    )
+    NOTION_TASKS_DATABASE_ID: str = Field(
+        default="00e5c698-5139-4b4c-9cac-db04bfc22c4b",
+        description="ID da database de Tarefas / À Fazer no Notion"
+    )
+    NOTION_COURSES_DATABASE_ID: str = Field(
+        default="751117de-c4d2-468c-9b46-571c036969b1",
+        description="ID da database de Cursos / Disciplinas no Notion"
+    )
+    NOTION_DAILY_CHECKLIST_BLOCK_ID: str = Field(
+        default="25cd128a-26fe-49ac-8ab0-a895f1e0858d",
+        description="ID do bloco toggle 'tarefas do dia' na página central do Notion"
+    )
+    NOTION_WEEKLY_SCHEDULE_TABLE_ID: str = Field(
+        default="2a9222dd-474a-4c40-9b96-a548f2c9ec11",
+        description="ID da tabela 'Agenda Semanal' na página central do Notion"
+    )
+
     # Google Gemini AI (com Fallback Hierárquico)
     GEMINI_API_KEY: str = Field(
         default="",

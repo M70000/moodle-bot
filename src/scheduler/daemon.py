@@ -118,6 +118,46 @@ class MoodleDaemon:
                     console.print(f"[dim]Tarefa {assign.title} marcada como cancelada pelo usuário. Ignorando.[/dim]")
                     continue
 
+                # Sincronização automática com a Central de Estudos do Notion
+                # REGRA CRÍTICA: Só sincroniza atividades que possuem DATA/PRAZO DEFINIDO.
+                # Questionários e atividades sem prazo (ex: auto-estudo de Inglês Instrumental) NUNCA são adicionados ao Notion.
+                if assign.is_actionable_pending:
+                    if not assign.due_date:
+                        if assign_state and not assign_state.get("notion_synced"):
+                            assign_state["notion_synced"] = True
+                            self.state.save()
+                    else:
+                        notion_synced = assign_state and assign_state.get("notion_synced", False)
+                        if not notion_synced:
+                            try:
+                                from src.notifier.notion_client import notion_client
+                                if notion_client.is_configured:
+                                    date_iso = assign.due_date.strftime("%Y-%m-%d")
+                                    r = await notion_client.create_task(
+                                        title=assign.title,
+                                        date_str=date_iso,
+                                        category="TAREFA✅" if getattr(assign, "activity_type", "assign") != "quiz" else "TRABALHO🟡",
+                                        course_name=assign.course_name,
+                                        task_id_val=f"moodle_{assign.id}",
+                                        notes_val=f"Atividade Moodle: {assign.title} ({assign.course_name})",
+                                        details=f"Atividade detectada no Moodle UFMG com prazo em {assign.due_date_str or date_iso}.\nTipo: {'Questionário' if getattr(assign, 'activity_type', 'assign') == 'quiz' else 'Entrega de Arquivo'}",
+                                        moodle_url=assign.url,
+                                        steps=[
+                                            f"Revisar anotações e conteúdos de {assign.course_name}",
+                                            f"Resolver '{assign.title}'",
+                                            "Validar e submeter no Moodle"
+                                        ],
+                                        notify_discord=True
+                                    )
+                                    if r.get("success"):
+                                        self.state.register_assignment(assign)
+                                        cur = self.state.get_assignment(assign.id)
+                                        if cur:
+                                            cur["notion_synced"] = True
+                                            self.state.save()
+                            except Exception as n_err:
+                                console.print(f"[yellow]Aviso ao sincronizar tarefa {assign.title} no Notion: {n_err}[/yellow]")
+
                 # Se for questionário online (quiz), registra no catálogo para acompanhamento em /tarefas (resolução sob demanda)
                 if getattr(assign, "activity_type", "assign") == "quiz":
                     self.state.register_assignment(assign)
@@ -162,6 +202,21 @@ class MoodleDaemon:
                         console.print("[yellow]Gemini não configurado: rascunho não gerado.[/yellow]")
                 else:
                     self.state.register_assignment(assign)
+
+            # 5. Atualização automática da checklist de tarefas do dia no Notion (uma vez ao dia)
+            today_str = datetime.now().strftime("%Y-%m-%d")
+            last_checklist_date = self.state.data.get("last_daily_checklist_date")
+            if last_checklist_date != today_str:
+                try:
+                    from src.notifier.notion_client import notion_client
+                    if notion_client.is_configured:
+                        console.print(f"[cyan]Sincronizando tarefas do dia no Notion para hoje ({today_str})...[/cyan]")
+                        chk_res = await notion_client.update_daily_checklist(notify_discord=True)
+                        if chk_res.get("success"):
+                            self.state.data["last_daily_checklist_date"] = today_str
+                            self.state.save()
+                except Exception as chk_err:
+                    console.print(f"[yellow]Aviso ao atualizar checklist diária no Notion: {chk_err}[/yellow]")
 
             console.print("[green]✔ Ciclo de varredura concluído com sucesso.[/green]")
 
@@ -215,6 +270,20 @@ class MoodleDaemon:
                 item["alert_1m_sent"] = True
                 self.state.save()
 
+    async def _daily_checklist_job(self):
+        """Dispara a atualização diária da checklist matinal no Notion às 07:00."""
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        try:
+            from src.notifier.notion_client import notion_client
+            if notion_client.is_configured:
+                console.print("[cyan]Executando rotina matinal (07:00): atualizando tarefas do dia no Notion...[/cyan]")
+                chk_res = await notion_client.update_daily_checklist(notify_discord=True)
+                if chk_res.get("success"):
+                    self.state.data["last_daily_checklist_date"] = today_str
+                    self.state.save()
+        except Exception as e:
+            console.print(f"[yellow]Aviso no job diário da checklist do Notion: {e}[/yellow]")
+
     async def start(self):
         """Inicia o daemon e agenda os jobs em segundo plano."""
         self._running = True
@@ -264,6 +333,17 @@ class MoodleDaemon:
             seconds=60,
             id="timeline_watcher_job",
             misfire_grace_time=300,
+            coalesce=True
+        )
+
+        # 4. Agenda a atualização diária da checklist no Notion todos os dias às 07:00
+        self.scheduler.add_job(
+            self._daily_checklist_job,
+            "cron",
+            hour=7,
+            minute=0,
+            id="daily_checklist_notion_job",
+            misfire_grace_time=3600,
             coalesce=True
         )
 

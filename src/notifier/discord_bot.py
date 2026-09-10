@@ -1616,6 +1616,152 @@ async def cmd_adicionarconteudo(
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="notion_adicionar", description="Adiciona uma tarefa, estudo ou anotação ao Notion e anuncia no Discord")
+@app_commands.describe(
+    titulo="Título da tarefa ou anotação a ser adicionada",
+    disciplina="Disciplina relacionada (ex: Eletromagnetismo)",
+    prazo="Data ou prazo de estudo (formato AAAA-MM-DD ou DD/MM/AAAA)",
+    tipo="Tipo do registro (TAREFA, ESTUDO, TRABALHO, PROVA ou OUTROS)",
+    detalhes="Detalhes, passos de estudo ou descrição completa"
+)
+@app_commands.autocomplete(disciplina=course_autocomplete)
+async def cmd_notion_adicionar(
+    interaction: discord.Interaction,
+    titulo: str,
+    disciplina: Optional[str] = None,
+    prazo: Optional[str] = None,
+    tipo: Optional[str] = "TAREFA✅",
+    detalhes: Optional[str] = None
+):
+    """Comando para adicionar manualmente qualquer item ao Notion e anunciar no canal de avisos."""
+    await interaction.response.defer(ephemeral=True)
+    from src.notifier.notion_client import notion_client
+    if not notion_client.is_configured:
+        await interaction.followup.send("❌ Integração com Notion não está configurada no `.env` (verifique `NOTION_API_KEY`).", ephemeral=True)
+        return
+
+    # Normaliza prazo para formato ISO
+    date_val = None
+    if prazo:
+        prazo_clean = prazo.strip()
+        if "/" in prazo_clean:
+            parts = prazo_clean.split("/")
+            if len(parts) == 3:
+                date_val = f"{parts[2]}-{parts[1].zfill(2)}-{parts[0].zfill(2)}"
+        else:
+            date_val = prazo_clean
+
+    chosen_type = tipo.strip() if tipo else "TAREFA✅"
+    if not any(k in chosen_type for k in ["PROVA", "TRABALHO", "TAREFA", "OUTROS"]):
+        chosen_type = "TAREFA✅"
+
+    res = await notion_client.create_task(
+        title=titulo,
+        date_str=date_val,
+        category=chosen_type,
+        course_name=disciplina,
+        details=detalhes,
+        notes_val=detalhes[:200] if detalhes else None,
+        notify_discord=True
+    )
+
+    if res.get("success"):
+        url = res.get("url", "")
+        await interaction.followup.send(
+            f"✔ **Item adicionado com sucesso ao Notion!**\n"
+            f"🔗 [Abrir no Notion]({url})\n"
+            f"📢 Notificação detalhada enviada para o canal de avisos da turma.",
+            ephemeral=True
+        )
+    else:
+        await interaction.followup.send(f"❌ Erro ao adicionar ao Notion: {res.get('error', 'Erro desconhecido')}", ephemeral=True)
+
+
+@bot.tree.command(name="notion_sync", description="Sincroniza tarefas e listas pendentes do Moodle com o Notion e avisa no canal")
+async def cmd_notion_sync(interaction: discord.Interaction):
+    """Sincroniza as tarefas atuais pendentes do catálogo Moodle diretamente para o Notion."""
+    await interaction.response.defer(ephemeral=True)
+    from src.notifier.notion_client import notion_client
+    if not notion_client.is_configured:
+        await interaction.followup.send("❌ Integração com Notion não está configurada no `.env`.", ephemeral=True)
+        return
+
+    state = DaemonState()
+    assignments = state.get_pending_assignments()
+    if not assignments:
+        await interaction.followup.send("ℹ Nenhuma tarefa pendente no catálogo local para sincronizar.", ephemeral=True)
+        return
+
+    added = 0
+    already = 0
+    for a in assignments:
+        # Só sincroniza atividades que possuem data/prazo definido no Moodle
+        if not a.due_date:
+            continue
+
+        tid = f"moodle_{a.id}"
+        date_iso = a.due_date.strftime("%Y-%m-%d")
+
+        r = await notion_client.create_task(
+            title=a.title,
+            date_str=date_iso,
+            category="TAREFA✅" if getattr(a, "activity_type", "assign") != "quiz" else "TRABALHO🟡",
+            course_name=a.course_name,
+            task_id_val=tid,
+            notes_val=f"Atividade Moodle: {a.title} ({a.course_name})",
+            details=f"Atividade do Moodle com vencimento em {a.due_date_str or 'Data não informada'}.\nStatus no Moodle: {a.status_text or 'Pendente'}",
+            moodle_url=a.url,
+            steps=[
+                f"Revisar conceitos e anotações de {a.course_name}",
+                f"Resolver '{a.title}'",
+                "Conferir envio no Moodle"
+            ],
+            notify_discord=True
+        )
+        if r.get("success"):
+            if r.get("already_exists"):
+                already += 1
+            else:
+                added += 1
+
+    await interaction.followup.send(
+        f"✔ **Sincronização com o Notion concluída!**\n"
+        f"• Novos itens adicionados e anunciados: **{added}**\n"
+        f"• Já sincronizados anteriormente: **{already}**",
+        ephemeral=True
+    )
+
+
+@bot.tree.command(name="atualizar_checklist", description="Atualiza a checklist de tarefas do dia no Notion com a rotina e pendências")
+async def cmd_atualizar_checklist(interaction: discord.Interaction):
+    """Atualiza a checklist diária no bloco 'tarefas do dia' no Notion e anuncia no Discord."""
+    await interaction.response.defer(ephemeral=True)
+    from src.notifier.notion_client import notion_client
+    if not notion_client.is_configured:
+        await interaction.followup.send("❌ Integração com Notion não está configurada no `.env`.", ephemeral=True)
+        return
+
+    res = await notion_client.update_daily_checklist(notify_discord=True)
+    if res.get("success"):
+        tasks_list = res.get("tasks", [])
+        tasks_preview = "\n".join([f"• {t}" for t in tasks_list[:8]])
+        if len(tasks_list) > 8:
+            tasks_preview += f"\n• ... e mais {len(tasks_list) - 8} itens"
+
+        await interaction.followup.send(
+            f"✔ **Checklist do dia atualizada no Notion com sucesso!**\n"
+            f"📅 **Data:** {res.get('day_name')}, {res.get('date')}\n"
+            f"📋 **Total de tarefas inseridas:** {res.get('tasks_count')}\n\n"
+            f"**Prévia das tarefas:**\n{tasks_preview}",
+            ephemeral=True
+        )
+    else:
+        await interaction.followup.send(
+            f"❌ Erro ao atualizar checklist no Notion: {res.get('error', 'Erro desconhecido')}",
+            ephemeral=True
+        )
+
+
 # ----------------------------------------------------
 # 2. Comandos de Mensagem / Prefixo (!tarefas, !status, etc.)
 # ----------------------------------------------------
@@ -2007,6 +2153,227 @@ class MoodleDiscordNotifier:
                 return True
         except Exception as e:
             console.print(f"[red]Erro ao enviar comunicado da turma: {e}[/red]")
+        return False
+
+    async def send_notion_announcement(
+        self,
+        title: str,
+        item_type: str = "Atividade / Tarefa",
+        course_name: Optional[str] = None,
+        date_str: Optional[str] = None,
+        notion_url: Optional[str] = None,
+        moodle_url: Optional[str] = None,
+        details: Optional[str] = None,
+        steps: Optional[List[str]] = None,
+        notes: Optional[str] = None,
+        status: Optional[str] = "não iniciado",
+        action: str = "Novo Item Registrado no Notion"
+    ) -> bool:
+        """Envia anúncio detalhado no canal de avisos do Discord sempre que algo for adicionado ao Notion."""
+        try:
+            target_ch_id = settings.DISCORD_ANNOUNCEMENTS_CHANNEL_ID or self.channel_id
+            if not target_ch_id or target_ch_id == 0:
+                target_ch_id = self.channel_id
+
+            if not bot.is_ready():
+                if self.token:
+                    try:
+                        await asyncio.wait_for(bot.wait_until_ready(), timeout=5.0)
+                    except Exception:
+                        pass
+
+            channel = bot.get_channel(target_ch_id)
+            if not channel and bot.is_ready():
+                try:
+                    channel = await bot.fetch_channel(target_ch_id)
+                except Exception:
+                    pass
+
+            if not channel:
+                channel = await self._resolve_channel()
+
+            color = discord.Color.from_rgb(15, 122, 116)  # Notion teal
+            embed = discord.Embed(
+                title=f"📓 {action}: {title}",
+                url=notion_url if notion_url else None,
+                description="Um novo item foi catalogado e organizado na sua **Central de Estudos no Notion**.",
+                color=color,
+                timestamp=datetime.now()
+            )
+
+            embed.add_field(name="📌 Categoria / Tipo", value=f"`{item_type}`", inline=True)
+
+            if course_name:
+                embed.add_field(name="🏫 Disciplina", value=f"**{course_name}**", inline=True)
+
+            if date_str:
+                embed.add_field(name="📅 Data / Prazo", value=f"📆 **{date_str}**", inline=True)
+
+            if status:
+                status_display = status.capitalize()
+                status_emoji = "🟢" if "conclu" in status.lower() else ("🟡" if "andamento" in status.lower() else "⚪")
+                embed.add_field(name="📊 Status no Notion", value=f"{status_emoji} {status_display}", inline=True)
+
+            if details:
+                clean_details = details.strip()
+                if len(clean_details) > 1000:
+                    clean_details = clean_details[:997] + "..."
+                embed.add_field(name="📝 Detalhes e Conteúdo", value=clean_details, inline=False)
+
+            if steps:
+                steps_text = "\n".join([f"• {s}" for s in steps])
+                if len(steps_text) > 800:
+                    steps_text = steps_text[:797] + "..."
+                embed.add_field(name="📋 Etapas de Estudo Planejadas", value=steps_text, inline=False)
+
+            if notes:
+                embed.add_field(name="💡 Observações", value=notes[:500], inline=False)
+
+            embed.set_footer(text="Notion Assistant • Sincronizado automaticamente")
+
+            buttons = []
+            if notion_url:
+                buttons.append(ui.Button(
+                    label="Abrir no Notion",
+                    style=discord.ButtonStyle.link,
+                    url=notion_url,
+                    emoji="📓"
+                ))
+            if moodle_url:
+                buttons.append(ui.Button(
+                    label="Abrir no Moodle",
+                    style=discord.ButtonStyle.link,
+                    url=moodle_url,
+                    emoji="🔗"
+                ))
+
+            view = None
+            if buttons:
+                view = ui.View(timeout=None)
+                for btn in buttons:
+                    view.add_item(btn)
+
+            if channel:
+                await channel.send(
+                    content=f"📢 **Notion Atualizado:** O bot acabou de adicionar `{title}` na sua central de estudos!",
+                    embed=embed,
+                    view=view
+                )
+                console.print(f"[bold green]✔ Anúncio detalhado enviado ao canal do Discord para o item do Notion: {title}[/bold green]")
+                return True
+            elif self.token and target_ch_id:
+                # Fallback direto via REST API do Discord caso o gateway não esteja conectado
+                import httpx
+                rest_url = f"https://discord.com/api/v10/channels/{target_ch_id}/messages"
+                rest_headers = {
+                    "Authorization": f"Bot {self.token}",
+                    "Content-Type": "application/json"
+                }
+                rest_body = {
+                    "content": f"📢 **Notion Atualizado:** O bot acabou de adicionar `{title}` na sua central de estudos!",
+                    "embeds": [embed.to_dict()]
+                }
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    r = await http_client.post(rest_url, headers=rest_headers, json=rest_body)
+                    if r.status_code in [200, 201]:
+                        console.print(f"[bold green]✔ Anúncio detalhado enviado via REST ao canal do Discord para: {title}[/bold green]")
+                        return True
+                    else:
+                        console.print(f"[yellow]Aviso Discord REST {r.status_code}: {r.text}[/yellow]")
+            return False
+        except Exception as e:
+            console.print(f"[red]Erro ao enviar anúncio do Notion no Discord: {e}[/red]")
+        return False
+
+    async def send_daily_checklist_announcement(
+        self,
+        day_name: str,
+        date_str: str,
+        checklist_items: List[str],
+        notion_url: Optional[str] = None
+    ) -> bool:
+        """Envia um briefing matinal com as tarefas do dia sincronizadas no Notion."""
+        try:
+            target_ch_id = settings.DISCORD_ANNOUNCEMENTS_CHANNEL_ID or settings.DISCORD_CHANNEL_ID
+            channel = None
+            if bot.is_ready():
+                channel = bot.get_channel(target_ch_id)
+                if not channel:
+                    try:
+                        channel = await bot.fetch_channel(target_ch_id)
+                    except Exception:
+                        pass
+            if not channel:
+                channel = await self._resolve_channel()
+
+            color = discord.Color.from_rgb(34, 139, 34)  # Forest Green / Notion
+            embed = discord.Embed(
+                title=f"🌅 Tarefas do Dia: {day_name} ({date_str})",
+                url=notion_url if notion_url else None,
+                description=(
+                    "Sua checklist de **tarefas do dia** no Notion foi atualizada automaticamente com "
+                    "seus compromissos da rotina semanal e prazos acadêmicos!"
+                ),
+                color=color,
+                timestamp=datetime.now()
+            )
+
+            # Formata os itens para o Discord
+            task_lines = []
+            for item in checklist_items:
+                task_lines.append(f"☐ {item}")
+
+            tasks_text = "\n".join(task_lines)
+            if len(tasks_text) > 1900:
+                tasks_text = tasks_text[:1890] + "\n... (mais itens no Notion)"
+
+            embed.add_field(
+                name=f"📋 Checklist Diária ({len(checklist_items)} tarefas)",
+                value=tasks_text or "Nenhuma tarefa para hoje!",
+                inline=False
+            )
+            embed.set_footer(text="Central de Estudos • Notion Assistant")
+
+            view = None
+            if notion_url:
+                view = ui.View(timeout=None)
+                view.add_item(ui.Button(
+                    label="Abrir no Notion",
+                    style=discord.ButtonStyle.link,
+                    url=notion_url,
+                    emoji="📓"
+                ))
+
+            if channel:
+                await channel.send(
+                    content=f"🌅 **Bom dia!** Suas tarefas de hoje ({day_name}) estão prontas no Notion:",
+                    embed=embed,
+                    view=view
+                )
+                console.print(f"[bold green]✔ Briefing da checklist diária enviado ao Discord para {day_name}[/bold green]")
+                return True
+            elif self.token and target_ch_id:
+                # Fallback via REST API
+                import httpx
+                rest_url = f"https://discord.com/api/v10/channels/{target_ch_id}/messages"
+                rest_headers = {
+                    "Authorization": f"Bot {self.token}",
+                    "Content-Type": "application/json"
+                }
+                rest_body = {
+                    "content": f"🌅 **Bom dia!** Suas tarefas de hoje ({day_name}) estão prontas no Notion:",
+                    "embeds": [embed.to_dict()]
+                }
+                async with httpx.AsyncClient(timeout=10.0) as http_client:
+                    r = await http_client.post(rest_url, headers=rest_headers, json=rest_body)
+                    if r.status_code in [200, 201]:
+                        console.print(f"[bold green]✔ Briefing da checklist enviado via REST ao Discord para {day_name}[/bold green]")
+                        return True
+                    else:
+                        console.print(f"[yellow]Aviso Discord REST {r.status_code}: {r.text}[/yellow]")
+            return False
+        except Exception as e:
+            console.print(f"[red]Erro ao enviar anúncio de checklist diária no Discord: {e}[/red]")
         return False
 
     async def send_countdown_alert(

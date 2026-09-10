@@ -110,20 +110,25 @@ class MoodleQuizAutomator:
         self.screenshots_dir = Path("storage/submissions/screenshots")
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
 
-    async def _open_or_resume_attempt(self, page) -> bool:
+    async def _open_or_resume_attempt(self, page, return_to_attempt: bool = True) -> bool:
         """Abre uma nova tentativa, refaz tentativa anterior ('Fazer uma outra tentativa') ou continua tentativa em aberto."""
         if "attempt.php" in page.url:
             return True
 
+        # Se já estiver no resumo da tentativa (summary.php):
+        if "summary.php" in page.url:
+            if return_to_attempt:
+                ret_btn = page.locator("button:has-text('Retornar à tentativa'), a:has-text('Retornar à tentativa'), input[value*='Retornar à tentativa']").first
+                if await ret_btn.count() > 0:
+                    await ret_btn.click()
+                    await page.wait_for_load_state("networkidle")
+                    return True
+            else:
+                # Permanece em summary.php se a intenção for finalizar a tentativa
+                return True
+
         console.print(f"[cyan]Localizando botões de início/retomada de tentativa em: {page.url}[/cyan]")
 
-        # 1. Se já estiver no resumo da tentativa (summary.php)
-        if "summary.php" in page.url:
-            ret_btn = page.locator("button:has-text('Retornar à tentativa'), a:has-text('Retornar à tentativa'), input[value*='Retornar à tentativa']").first
-            if await ret_btn.count() > 0:
-                await ret_btn.click()
-                await page.wait_for_load_state("networkidle")
-                return True
 
         # 2. Seletores em ordem de prioridade (suporta refazer tentativa já respondida)
         attempt_selectors = [
@@ -1399,31 +1404,58 @@ class MoodleQuizAutomator:
                         await self._verify_all_questions_on_current_attempt(page, on_log=on_log)
 
                     # Avançar página ou finalizar
-                    finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa')")
-                    next_btn = page.locator("input[type='submit'][value*='Próxima página'], button:has-text('Próxima página')")
+                    finish_selectors = [
+                        "input[name='next'][value*='Finalizar tentativa']",
+                        "input[type='submit'][value*='Finalizar tentativa']",
+                        "button:has-text('Finalizar tentativa')",
+                        "a:has-text('Finalizar tentativa')",
+                        "input[value*='Término da tentativa']",
+                        "button:has-text('Término da tentativa')",
+                        "a:has-text('Término da tentativa')",
+                        "a.endtestlink",
+                        "a[href*='summary.php']",
+                        "form[action*='summary.php'] input[type='submit']",
+                        "form[action*='summary.php'] button",
+                        "button:has-text('Finish attempt')",
+                        "input[value*='Finish attempt']",
+                        "a:has-text('Finish attempt')"
+                    ]
+                    finish_btn = None
+                    for f_sel in finish_selectors:
+                        f_loc = page.locator(f_sel).first
+                        if await f_loc.count() > 0 and await f_loc.is_visible():
+                            finish_btn = f_loc
+                            break
 
-                    if await finish_btn.count() > 0:
-                        console.print("[dim]Página concluída. Indo para resumo da tentativa...[/dim]")
-                        await finish_btn.first.click()
+                    next_btn = page.locator(
+                        "input[type='submit'][value*='Próxima página'], "
+                        "button:has-text('Próxima página'), "
+                        "button:has-text('Next page'), "
+                        "input[value*='Next page']"
+                    ).first
+
+                    if await next_btn.count() > 0 and await next_btn.is_visible():
+                        console.print("[dim]Avançando para a próxima página do questionário...[/dim]")
+                        await next_btn.click()
+                        try:
+                            await page.wait_for_load_state("domcontentloaded", timeout=12000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1000)
+                    elif finish_btn:
+                        console.print("[dim]Página final concluída. Indo para resumo da tentativa...[/dim]")
+                        await finish_btn.click()
                         try:
                             await page.wait_for_load_state("domcontentloaded", timeout=15000)
                         except Exception:
                             pass
                         await page.wait_for_timeout(1500)
                         has_next = False
-                    elif await next_btn.count() > 0:
-                        console.print("[dim]Avançando para a próxima página do questionário...[/dim]")
-                        await next_btn.first.click()
-                        try:
-                            await page.wait_for_load_state("domcontentloaded", timeout=12000)
-                        except Exception:
-                            pass
-                        await page.wait_for_timeout(1000)
                     else:
                         has_next = False
 
                 # 3. Na tela de resumo (summary.php)
-                if "summary.php" in page.url or await page.locator("button:has-text('Enviar tudo e terminar')").count() > 0:
+                if "summary.php" in page.url or await page.locator("button:has-text('Enviar tudo e terminar'), form[action*='processattempt.php']").count() > 0:
                     # Se for apenas preenchimento (auto_submit=False), salva o rascunho e retorna imediatamente
                     if not auto_submit:
                         console.print(f"[bold green]✔ Respostas salvas na tentativa no Moodle ({total_filled} campos preenchidos)![/bold green]")
@@ -1456,53 +1488,103 @@ class MoodleQuizAutomator:
 
                     console.print("[bold green]Confirmando envio definitivo no Moodle...[/bold green]")
                     await _emit_log(on_log, "Confirmando 'Enviar tudo e terminar' no Moodle...")
-                    submit_button = page.locator("button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar']").first
-                    await submit_button.click()
-                    await page.wait_for_timeout(1000)
+                    submit_btn_selectors = [
+                        "#frm-finishattempt button",
+                        "#frm-finishattempt input[type='submit']",
+                        "form[action*='processattempt.php'] button",
+                        "form[action*='processattempt.php'] input[type='submit']",
+                        "button:has-text('Enviar tudo e terminar')",
+                        "input[value*='Enviar tudo e terminar']",
+                        "button:has-text('Submit all and finish')",
+                        "input[value*='Submit all and finish']"
+                    ]
+                    submit_button = None
+                    for s_sel in submit_btn_selectors:
+                        loc = page.locator(s_sel).first
+                        if await loc.count() > 0 and await loc.is_visible():
+                            submit_button = loc
+                            break
 
-                    # Confirma no diálogo modal do Moodle
-                    confirm_btn = page.locator(
-                        ".modal.show button[data-action='confirm'], "
-                        ".modal.show button.btn-primary:has-text('Enviar tudo e terminar'), "
-                        ".moodle-dialogue-confirm input[value*='Enviar tudo e terminar'], "
-                        "div[role='dialog'] button:has-text('Enviar tudo e terminar')"
-                    )
+                    if submit_button:
+                        await submit_button.scroll_into_view_if_needed()
+                        await submit_button.click()
 
-                    if await confirm_btn.count() > 0:
-                        await confirm_btn.first.click()
-                    else:
-                        await page.keyboard.press("Enter")
+                        # Aguarda o modal de confirmação
+                        try:
+                            await page.wait_for_selector(".modal.show, [role='dialog'].show, .moodle-dialogue", timeout=6000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(1000)
 
-                    try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                    except Exception:
-                        pass
-                    await page.wait_for_timeout(2500)
+                        confirm_selectors = [
+                            ".modal.show button[data-action='save']",
+                            ".modal.show button.btn-primary:has-text('Enviar tudo e terminar')",
+                            ".modal.show button[data-action='confirm']",
+                            ".modal.show button.btn-primary:has-text('Submit all and finish')",
+                            "div[role='dialog'] button[data-action='save']",
+                            "div[role='dialog'] button.btn-primary:has-text('Enviar tudo e terminar')",
+                            "div[role='dialog'] button.btn-primary",
+                            ".modal.show button.btn-primary",
+                            ".moodle-dialogue-confirm input[value*='Enviar tudo e terminar']",
+                            ".confirmation-buttons button.btn-primary"
+                        ]
 
-                    total_time_str = f"{int(time.time() - start_time)}s"
-                    screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
-                    await page.screenshot(path=str(screenshot_path), full_page=False)
+                        confirm_clicked = False
+                        for c_sel in confirm_selectors:
+                            c_loc = page.locator(c_sel).first
+                            if await c_loc.count() > 0 and await c_loc.is_visible():
+                                await c_loc.click()
+                                confirm_clicked = True
+                                break
 
-                    grade_info = await page.evaluate('''() => {
-                        const stateEl = document.querySelector(".cell.c1, .generaltable td");
-                        const gradeEl = document.querySelector(".cell.c2, .feedback");
+                        if not confirm_clicked:
+                            await page.keyboard.press("Enter")
+
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=15000)
+                        except Exception:
+                            pass
+                        await page.wait_for_timeout(2500)
+
+                        # Verifica se o envio de fato foi concluído
+                        is_submitted = "review.php" in page.url or "view.php" in page.url
+                        if not is_submitted and ("summary.php" in page.url or "attempt.php" in page.url):
+                            console.print("[red]Erro: Envio não foi concluído. Permaneceu em summary/attempt.[/red]")
+                            return {
+                                "success": False,
+                                "error": "Falha ao enviar tudo e terminar: o Moodle permaneceu na tela de resumo."
+                            }
+
+                        total_time_str = f"{int(time.time() - start_time)}s"
+                        screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
+                        await page.screenshot(path=str(screenshot_path), full_page=False)
+
+                        grade_info = await page.evaluate('''() => {
+                            const stateEl = document.querySelector(".cell.c1, .generaltable td");
+                            const gradeEl = document.querySelector(".cell.c2, .feedback");
+                            return {
+                                stateText: stateEl ? stateEl.innerText.trim() : "",
+                                gradeText: gradeEl ? gradeEl.innerText.trim() : ""
+                            };
+                        }''')
+
+                        console.print(f"[bold green]✔ Questionário submetido com sucesso no Moodle! Tempo total empregado: {total_time_str}[/bold green]")
+                        await _emit_log(on_log, f"✔ Questionário submetido com sucesso! Tempo: {total_time_str} | Nota: {grade_info.get('gradeText', 'N/A')}")
+
                         return {
-                            stateText: stateEl ? stateEl.innerText.trim() : "",
-                            gradeText: gradeEl ? gradeEl.innerText.trim() : ""
-                        };
-                    }''')
+                            "success": True,
+                            "status": "submitted",
+                            "total_filled": total_filled,
+                            "elapsed_time": total_time_str,
+                            "review_url": page.url,
+                            "screenshot_path": str(screenshot_path),
+                            "grade_info": grade_info
+                        }
 
-                    console.print(f"[bold green]✔ Questionário submetido com sucesso no Moodle! Tempo total empregado: {total_time_str}[/bold green]")
-                    await _emit_log(on_log, f"✔ Questionário submetido com sucesso! Tempo: {total_time_str} | Nota: {grade_info.get('gradeText', 'N/A')}")
-
+                if auto_submit:
                     return {
-                        "success": True,
-                        "status": "submitted",
-                        "total_filled": total_filled,
-                        "elapsed_time": total_time_str,
-                        "review_url": page.url,
-                        "screenshot_path": str(screenshot_path),
-                        "grade_info": grade_info
+                        "success": False,
+                        "error": "Não foi possível avançar para a tela de resumo 'summary.php' para envio definitivo."
                     }
 
                 return {
@@ -1510,6 +1592,7 @@ class MoodleQuizAutomator:
                     "status": "completed",
                     "total_filled": total_filled
                 }
+
 
             except Exception as e:
                 console.print(f"[red]Erro na automação do questionário: {e}[/red]")
@@ -1535,107 +1618,181 @@ class MoodleQuizAutomator:
                 except Exception:
                     await page.goto(quiz_url, timeout=25000)
 
+                # 1. Se já estiver finalizado (review.php ou view.php com estado finalizado)
+                if "review.php" in page.url:
+                    screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
+                    await page.screenshot(path=str(screenshot_path), full_page=False)
+                    return {
+                        "success": True,
+                        "status": "already_submitted",
+                        "review_url": page.url,
+                        "screenshot_path": str(screenshot_path),
+                        "message": "Questionário já se encontra finalizado no Moodle!"
+                    }
+
                 if "summary.php" not in page.url and "attempt.php" not in page.url:
-                    await self._open_or_resume_attempt(page)
+                    opened = await self._open_or_resume_attempt(page, return_to_attempt=False)
+                    if not opened and "summary.php" not in page.url and "attempt.php" not in page.url:
+                        # Verifica se a tentativa já estava finalizada
+                        if "review.php" in page.url or await page.locator(".cell.c1:has-text('Finalizada'), .generaltable td:has-text('Finalizada')").count() > 0:
+                            screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
+                            await page.screenshot(path=str(screenshot_path), full_page=False)
+                            return {
+                                "success": True,
+                                "status": "already_submitted",
+                                "review_url": page.url,
+                                "screenshot_path": str(screenshot_path),
+                                "message": "Questionário já se encontra finalizado no Moodle!"
+                            }
+                        return {
+                            "success": False,
+                            "error": "Não foi possível abrir ou retomar a tentativa para finalização no Moodle."
+                        }
 
-                # 1. Se já está na tela de resumo (summary.php) ou já possui botão de envio definitivo visível:
-                submit_button = page.locator(
-                    "button:has-text('Enviar tudo e terminar'), "
-                    "input[value*='Enviar tudo e terminar'], "
-                    "a:has-text('Enviar tudo e terminar'), "
-                    "button:has-text('Submit all and finish'), "
-                    "input[value*='Submit all and finish'], "
-                    ".submitbtns button.btn-primary, "
-                    ".submitbtns input[type='submit']"
-                ).first
-
-                # Se NÃO tem 'Enviar tudo e terminar' diretamente disponível e está em attempt.php:
-                has_direct_submit = await submit_button.count() > 0 and await submit_button.is_visible()
-                if not has_direct_submit and "attempt.php" in page.url:
+                # 2. Se estiver em attempt.php, percorre as páginas até chegar em summary.php
+                if "attempt.php" in page.url:
                     has_next_page = True
-                    while has_next_page:
+                    max_hops = 30
+                    hops = 0
+                    while has_next_page and hops < max_hops and "attempt.php" in page.url:
+                        hops += 1
+                        # Executa 'Verificar' se a atividade possuir botões individuais por questão
                         await self._verify_all_questions_on_current_attempt(page, on_log=on_log)
 
-                        next_page_btn = page.locator("input[type='submit'][value*='Próxima página'], button:has-text('Próxima página'), button:has-text('Next page')")
-                        if await next_page_btn.count() > 0 and await next_page_btn.first.is_visible():
-                            console.print("[dim]Avançando para a próxima página para verificar questões...[/dim]")
-                            await next_page_btn.first.click()
+                        next_page_btn = page.locator(
+                            "input[type='submit'][value*='Próxima página'], "
+                            "button:has-text('Próxima página'), "
+                            "button:has-text('Next page'), "
+                            "input[value*='Next page']"
+                        ).first
+
+                        if await next_page_btn.count() > 0 and await next_page_btn.is_visible():
+                            console.print("[dim]Avançando para a próxima página do questionário...[/dim]")
+                            await next_page_btn.click()
                             try:
                                 await page.wait_for_load_state("domcontentloaded", timeout=12000)
                             except Exception:
                                 pass
                             await page.wait_for_timeout(1000)
                         else:
+                            # Última página da tentativa: clica em 'Finalizar tentativa...'
+                            finish_selectors = [
+                                "input[name='next'][value*='Finalizar tentativa']",
+                                "input[type='submit'][value*='Finalizar tentativa']",
+                                "button:has-text('Finalizar tentativa')",
+                                "a:has-text('Finalizar tentativa')",
+                                "input[value*='Término da tentativa']",
+                                "button:has-text('Término da tentativa')",
+                                "a:has-text('Término da tentativa')",
+                                "a.endtestlink",
+                                "a[href*='summary.php']",
+                                "form[action*='summary.php'] input[type='submit']",
+                                "form[action*='summary.php'] button",
+                                "button:has-text('Finish attempt')",
+                                "input[value*='Finish attempt']",
+                                "a:has-text('Finish attempt')"
+                            ]
+                            finish_btn = None
+                            for f_sel in finish_selectors:
+                                f_loc = page.locator(f_sel).first
+                                if await f_loc.count() > 0 and await f_loc.is_visible():
+                                    finish_btn = f_loc
+                                    break
+
+                            if finish_btn:
+                                console.print("[dim]Avançando para o resumo da tentativa no Moodle...[/dim]")
+                                await finish_btn.click()
+                                try:
+                                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                                except Exception:
+                                    pass
+                                await page.wait_for_timeout(1500)
                             has_next_page = False
 
-                    finish_btn = page.locator("input[type='submit'][value*='Finalizar tentativa'], button:has-text('Finalizar tentativa'), button:has-text('Finish attempt')")
-                    if await finish_btn.count() > 0:
-                        console.print("[dim]Avançando para o resumo da tentativa no Moodle...[/dim]")
-                        await finish_btn.first.click()
-                        try:
-                            await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                        except Exception:
-                            pass
-                        await page.wait_for_timeout(1500)
+                # 3. Na tela de resumo (summary.php)
+                submit_btn_selectors = [
+                    "#frm-finishattempt button",
+                    "#frm-finishattempt input[type='submit']",
+                    "form[action*='processattempt.php'] button",
+                    "form[action*='processattempt.php'] input[type='submit']",
+                    "button:has-text('Enviar tudo e terminar')",
+                    "input[value*='Enviar tudo e terminar']",
+                    "button:has-text('Submit all and finish')",
+                    "input[value*='Submit all and finish']"
+                ]
 
-                submit_button = page.locator(
-                    "button:has-text('Enviar tudo e terminar'), "
-                    "input[value*='Enviar tudo e terminar'], "
-                    "a:has-text('Enviar tudo e terminar'), "
-                    "button:has-text('Submit all and finish'), "
-                    "input[value*='Submit all and finish'], "
-                    ".submitbtns button.btn-primary, "
-                    ".submitbtns input[type='submit']"
-                ).first
+                submit_button = None
+                for s_sel in submit_btn_selectors:
+                    loc = page.locator(s_sel).first
+                    if await loc.count() > 0 and await loc.is_visible():
+                        submit_button = loc
+                        break
 
-                if await submit_button.count() == 0:
+                if not submit_button:
                     try:
                         await page.wait_for_selector(
-                            "button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar'], button:has-text('Submit all and finish'), .submitbtns",
+                            "#frm-finishattempt button, button:has-text('Enviar tudo e terminar'), input[value*='Enviar tudo e terminar']",
                             timeout=8000
                         )
-                        submit_button = page.locator(
-                            "button:has-text('Enviar tudo e terminar'), "
-                            "input[value*='Enviar tudo e terminar'], "
-                            "a:has-text('Enviar tudo e terminar'), "
-                            "button:has-text('Submit all and finish'), "
-                            "input[value*='Submit all and finish'], "
-                            ".submitbtns button.btn-primary, "
-                            ".submitbtns input[type='submit']"
-                        ).first
+                        for s_sel in submit_btn_selectors:
+                            loc = page.locator(s_sel).first
+                            if await loc.count() > 0 and await loc.is_visible():
+                                submit_button = loc
+                                break
                     except Exception:
                         pass
 
-                if await submit_button.count() > 0:
+                if submit_button:
                     await _emit_log(on_log, "Confirmando 'Enviar tudo e terminar' no Moodle...")
                     await submit_button.scroll_into_view_if_needed()
                     await submit_button.click()
+
+                    # Aguarda o modal de confirmação
+                    try:
+                        await page.wait_for_selector(".modal.show, [role='dialog'].show, .moodle-dialogue", timeout=6000)
+                    except Exception:
+                        pass
                     await page.wait_for_timeout(1000)
 
-                    confirm_btn = page.locator(
-                        ".modal.show button[data-action='confirm'], "
-                        ".modal.show button.btn-primary:has-text('Enviar tudo e terminar'), "
-                        ".modal.show button.btn-primary:has-text('Submit all and finish'), "
-                        ".modal.show button.btn-primary, "
-                        ".moodle-dialogue-confirm input[value*='Enviar tudo e terminar'], "
-                        "div[role='dialog'] button:has-text('Enviar tudo e terminar'), "
-                        "div[role='dialog'] button:has-text('Submit all and finish'), "
-                        "div[role='dialog'] button.btn-primary, "
+                    confirm_selectors = [
+                        ".modal.show button[data-action='save']",
+                        ".modal.show button.btn-primary:has-text('Enviar tudo e terminar')",
+                        ".modal.show button[data-action='confirm']",
+                        ".modal.show button.btn-primary:has-text('Submit all and finish')",
+                        "div[role='dialog'] button[data-action='save']",
+                        "div[role='dialog'] button.btn-primary:has-text('Enviar tudo e terminar')",
+                        "div[role='dialog'] button.btn-primary",
+                        ".modal.show button.btn-primary",
+                        ".moodle-dialogue-confirm input[value*='Enviar tudo e terminar']",
                         ".confirmation-buttons button.btn-primary"
-                    )
-                    try:
-                        if await confirm_btn.count() > 0 and await confirm_btn.first.is_visible():
-                            await confirm_btn.first.click()
-                        else:
-                            await page.keyboard.press("Enter")
-                    except Exception:
+                    ]
+
+                    confirm_clicked = False
+                    for c_sel in confirm_selectors:
+                        c_loc = page.locator(c_sel).first
+                        if await c_loc.count() > 0 and await c_loc.is_visible():
+                            await c_loc.click()
+                            confirm_clicked = True
+                            break
+
+                    if not confirm_clicked:
                         await page.keyboard.press("Enter")
 
                     try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)
                     except Exception:
                         pass
                     await page.wait_for_timeout(2500)
+
+                    # Verifica com rigor se o envio de fato foi concluído
+                    is_submitted = "review.php" in page.url or "view.php" in page.url
+                    if not is_submitted and ("summary.php" in page.url or "attempt.php" in page.url):
+                        console.print("[red]Erro: Envio não foi concluído no Moodle. Permaneceu na tela de resumo/tentativa.[/red]")
+                        await _emit_log(on_log, "❌ Erro: Envio não foi concluído. Permaneceu na tela de resumo.")
+                        return {
+                            "success": False,
+                            "error": "Falha ao enviar tudo e terminar: o Moodle permaneceu na tela de resumo da tentativa."
+                        }
 
                     screenshot_path = self.screenshots_dir / f"quiz_submitted_{int(time.time())}.png"
                     await page.screenshot(path=str(screenshot_path), full_page=False)
