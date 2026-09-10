@@ -405,54 +405,154 @@ class MoodleQuizAutomator:
                 await browser.close()
 
     async def _verify_all_questions_on_current_attempt(self, page, on_log: Optional[Any] = None) -> int:
-        """Clica sequencialmente no botão 'Verificar' de cada questão ativa antes de submeter a tentativa."""
-        console.print("[cyan]Verificando questões individualmente no Moodle antes do envio definitivo...[/cyan]")
+        """Clica no botão 'Verificar' de cada questão que ainda não foi validada, no máximo 1 vez por questão."""
+        if "attempt.php" not in page.url:
+            return 0
+
         verified_count = 0
-        max_clicks = 60
+        attempted_buttons: set[str] = set()
+        attempted_qids: set[str] = set()
+        max_clicks = 25
         clicks = 0
 
-        while clicks < max_clicks:
-            if "attempt.php" not in page.url:
+        while clicks < max_clicks and "attempt.php" in page.url:
+            # Avalia no DOM quais questões ainda não foram validadas
+            pending_questions = await page.evaluate(r'''() => {
+                const results = [];
+                const qNodes = document.querySelectorAll(".que");
+                
+                qNodes.forEach((q, idx) => {
+                    const qId = q.id || `q_${idx+1}`;
+                    
+                    // 1. Verifica se a questão já possui feedback, nota ou estado concluído
+                    const stateEl = q.querySelector(".info .state");
+                    const stateText = stateEl ? stateEl.innerText.trim().toLowerCase() : "";
+                    
+                    const isGraded = stateText.includes("correto") || 
+                                     stateText.includes("correta") || 
+                                     stateText.includes("correct") || 
+                                     stateText.includes("incorreto") || 
+                                     stateText.includes("incorreta") || 
+                                     stateText.includes("incorrect") || 
+                                     stateText.includes("finalizada") || 
+                                     stateText.includes("finished") || 
+                                     stateText.includes("complet") || 
+                                     stateText.includes("atingiu") || 
+                                     stateText.includes("mark") || 
+                                     stateText.includes("pontu");
+
+                    // Feedback, outcome ou ícones de acerto/erro (checkmarks fa-check, text-success, etc.)
+                    const hasOutcome = !!q.querySelector(".outcome, .feedback, .grading, .history, .comment, .specificfeedback");
+                    const hasCheckmarks = !!q.querySelector(".fa-check, .text-success, .correct, .incorrect, .feedbackimage, [title*='Correto'], [alt*='Correto'], [title*='Correct'], [alt*='Correct'], i.fa-check");
+                    const hasClassComplete = q.classList.contains("complete") || 
+                                           q.classList.contains("readonly") ||
+                                           q.classList.contains("correct") || 
+                                           q.classList.contains("incorrect") ||
+                                           q.classList.contains("partiallycorrect");
+
+                    // Verifica se todos os campos/seletores da questão foram travados/desabilitados pelo Moodle
+                    const inputs = Array.from(q.querySelectorAll("select, input:not([type='hidden']):not([type='submit']):not([type='button']), textarea"));
+                    const allInputsDisabled = inputs.length > 0 && inputs.every(inp => inp.disabled);
+
+                    const alreadyVerified = isGraded || hasOutcome || hasCheckmarks || hasClassComplete || allInputsDisabled;
+
+                    // 2. Localiza o botão 'Verificar' desta questão específica de forma compatível com DOM puro
+                    const buttons = Array.from(q.querySelectorAll("input[type='submit'], button[type='submit'], button.submit, input.submit, button"));
+                    let verifyBtn = null;
+                    for (const b of buttons) {
+                        const text = (b.innerText || b.value || "").trim().toLowerCase();
+                        const name = (b.getAttribute("name") || "").toLowerCase();
+                        const isVerify = text.includes("verificar") || text.includes("check") || name.endsWith("-submit");
+                        const isTryAgain = name.includes("-tryagain") || text.includes("tentar novamente") || text.includes("try again");
+                        
+                        if (isVerify && !isTryAgain) {
+                            verifyBtn = b;
+                            break;
+                        }
+                    }
+
+                    const btnName = verifyBtn ? (verifyBtn.getAttribute("name") || "") : "";
+                    const isBtnDisabled = verifyBtn ? (
+                        verifyBtn.disabled || 
+                        verifyBtn.classList.contains("disabled") || 
+                        verifyBtn.getAttribute("aria-disabled") === "true"
+                    ) : true;
+                    
+                    const isVisible = verifyBtn ? (
+                        verifyBtn.offsetWidth > 0 && 
+                        verifyBtn.offsetHeight > 0 && 
+                        window.getComputedStyle(verifyBtn).visibility !== 'hidden' &&
+                        window.getComputedStyle(verifyBtn).display !== 'none'
+                    ) : false;
+
+                    results.push({
+                        qId: qId,
+                        btnName: btnName,
+                        hasBtn: !!verifyBtn && isVisible && !isBtnDisabled,
+                        alreadyVerified: alreadyVerified,
+                        stateText: stateText
+                    });
+                });
+                return results;
+            }''')
+
+            # Encontra a próxima questão elegível para verificação
+            candidate = None
+            for q_info in pending_questions:
+                btn_name = q_info.get("btnName")
+                q_id = q_info.get("qId")
+                already_verified = q_info.get("alreadyVerified")
+                has_btn = q_info.get("hasBtn")
+
+                if already_verified:
+                    continue
+                if not has_btn or not btn_name:
+                    continue
+                if btn_name in attempted_buttons or q_id in attempted_qids:
+                    continue
+
+                # Extrai prefixo da questão (ex: 'q78308' de 'q78308:1_-submit')
+                q_prefix = btn_name.split(":")[0] if ":" in btn_name else ""
+                if q_prefix and q_prefix in attempted_qids:
+                    continue
+
+                candidate = q_info
                 break
 
-            verify_buttons = page.locator(
-                "button.submit.btn:has-text('Verificar'):not([disabled]), "
-                "button[name$='-submit']:has-text('Verificar'):not([disabled]), "
-                "input.submit[value*='Verificar']:not([disabled]), "
-                "input[type='submit'][value*='Verificar']:not([disabled])"
-            )
-            count = await verify_buttons.count()
-            if count == 0:
+            if not candidate:
+                # Nenhuma questão elegível restante para verificação nesta página
                 break
 
-            btn_to_click = None
-            btn_name = ""
-            for i in range(count):
-                b = verify_buttons.nth(i)
-                if await b.is_visible() and await b.is_enabled():
-                    btn_to_click = b
-                    btn_name = (await b.get_attribute("name")) or f"btn_{i+1}"
-                    break
+            btn_name = candidate["btnName"]
+            q_id = candidate["qId"]
+            q_prefix = btn_name.split(":")[0] if ":" in btn_name else ""
 
-            if not btn_to_click:
-                break
+            attempted_buttons.add(btn_name)
+            attempted_qids.add(q_id)
+            if q_prefix:
+                attempted_qids.add(q_prefix)
 
             console.print(f"  ✔ [Verificar] Acionando botão da questão ({btn_name})...")
             await _emit_log(on_log, f"Acionando botão 'Verificar' da questão ({btn_name})...")
+
             try:
-                await btn_to_click.scroll_into_view_if_needed()
-                await asyncio.sleep(random.uniform(0.4, 0.8))
-                await btn_to_click.click()
-                await page.wait_for_load_state("networkidle")
-                await page.wait_for_timeout(600)
-                verified_count += 1
-                clicks += 1
+                btn_loc = page.locator(f"[name='{btn_name}']").first
+                if await btn_loc.count() > 0 and await btn_loc.is_visible():
+                    await btn_loc.scroll_into_view_if_needed()
+                    await asyncio.sleep(random.uniform(0.4, 0.7))
+                    await btn_loc.click()
+                    await page.wait_for_load_state("networkidle")
+                    await page.wait_for_timeout(800)
+                    verified_count += 1
+                    clicks += 1
+                else:
+                    break
             except Exception as click_err:
                 console.print(f"  [yellow]Nota ao clicar em Verificar ({btn_name}): {click_err}[/yellow]")
                 break
 
-        console.print(f"[green]✔ Total de questões verificadas no Moodle nesta etapa: {verified_count}[/green]")
         if verified_count > 0:
+            console.print(f"[green]✔ Total de questões verificadas no Moodle nesta etapa: {verified_count}[/green]")
             await _emit_log(on_log, f"✔ {verified_count} questão(ões) verificada(s) com sucesso no Moodle")
         return verified_count
 
@@ -1405,17 +1505,16 @@ class MoodleQuizAutomator:
                 if "summary.php" not in page.url and "attempt.php" not in page.url:
                     await self._open_or_resume_attempt(page)
 
-                # Se estiver na tela de resumo (summary.php), retorna à tentativa para poder verificar as questões
-                if "summary.php" in page.url:
-                    return_btn = page.locator("a:has-text('Retornar à tentativa'), button:has-text('Retornar à tentativa'), a[href*='attempt.php']").first
-                    if await return_btn.count() > 0:
-                        console.print("[dim]Retornando à tentativa para acionar 'Verificar' em cada questão pendente...[/dim]")
-                        await _emit_log(on_log, "Retornando à tentativa para acionar 'Verificar' nas questões...")
-                        await return_btn.click()
-                        await page.wait_for_load_state("networkidle")
+                # 1. Se já está na tela de resumo (summary.php) ou já possui botão de envio definitivo visível:
+                submit_button = page.locator(
+                    "button:has-text('Enviar tudo e terminar'), "
+                    "input[value*='Enviar tudo e terminar'], "
+                    "a:has-text('Enviar tudo e terminar')"
+                ).first
 
-                # Na tentativa, percorre as páginas acionando 'Verificar' em todas as questões pendentes
-                if "attempt.php" in page.url:
+                # Se NÃO tem 'Enviar tudo e terminar' diretamente disponível e está em attempt.php:
+                has_direct_submit = await submit_button.count() > 0 and await submit_button.is_visible()
+                if not has_direct_submit and "attempt.php" in page.url:
                     has_next_page = True
                     while has_next_page:
                         await self._verify_all_questions_on_current_attempt(page, on_log=on_log)

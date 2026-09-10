@@ -27,6 +27,7 @@ from rich.console import Console
 
 from config.settings import settings
 from src.auth.moodle_auth import MoodleAuth
+from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus
 from src.scheduler.state import DaemonState
 from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_filename
 from src.scraper.moodle_submitter import MoodleSubmitter
@@ -413,12 +414,16 @@ class MaterialSelectionView(ui.View):
             if sf not in combined_files:
                 combined_files.append(sf)
 
-        await _execute_solve_flow(
+        requester = interaction.user.display_name if interaction.user else "Usuário"
+        channel = getattr(self.context_handle, "channel", None) or getattr(interaction, "channel", None)
+        await enqueue_solve_flow(
             send_func=self.send_func,
             tarefa=self.tarefa,
             instrucoes=self.instrucoes,
             extra_files=combined_files,
-            is_refazer=self.is_refazer
+            is_refazer=self.is_refazer,
+            requester=requester,
+            channel=channel
         )
 
     @ui.button(label="⏩ Resolver sem materiais extras", style=discord.ButtonStyle.secondary, row=1)
@@ -434,12 +439,16 @@ class MaterialSelectionView(ui.View):
         except Exception:
             pass
 
-        await _execute_solve_flow(
+        requester = interaction.user.display_name if interaction.user else "Usuário"
+        channel = getattr(self.context_handle, "channel", None) or getattr(interaction, "channel", None)
+        await enqueue_solve_flow(
             send_func=self.send_func,
             tarefa=self.tarefa,
             instrucoes=self.instrucoes,
             extra_files=self.attached_files,
-            is_refazer=self.is_refazer
+            is_refazer=self.is_refazer,
+            requester=requester,
+            channel=channel
         )
 
 
@@ -594,7 +603,7 @@ class ReviewActionView(ui.View):
                                                     v_target = parts[1].strip("* ").strip()
                                                     if k_label and v_target:
                                                         ans_payload[f"Q{q_num}_{k_label}"] = v_target
-                                                        ans_payload[k_label] = v_target
+                                        ans_payload[k_label] = v_target
                                 else:
                                     # Fallback de resposta dissertativa aberta
                                     clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()
@@ -606,7 +615,7 @@ class ReviewActionView(ui.View):
         return ans_payload
 
     async def fill_quiz_button(self, interaction: discord.Interaction):
-        """Apenas preenche os campos do questionário e salva como rascunho (sem finalizar)."""
+        """Apenas preenche os campos do questionário e salva como rascunho (sem finalizar), passando pela fila."""
         for child in self.children:
             child.disabled = True
 
@@ -614,67 +623,93 @@ class ReviewActionView(ui.View):
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: ⏳ Inserindo respostas no Moodle (Modo Rascunho) por {interaction.user.name}..."
+                text=f"Status: ⏳ Na fila para preenchimento no Moodle por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-        console.print(
-            f"[bold cyan]Preenchimento de rascunho solicitado no Discord para {self.assignment_id}![/bold cyan] "
-            f"Preenchendo campos no Moodle sem submeter..."
-        )
-        status_msg = await interaction.followup.send(
-            content="⏳ **Preenchendo questionário no Moodle com cadência humana...** As respostas serão digitadas e salvas na tentativa sem submeter.",
-            ephemeral=False
-        )
-        reporter = DiscordLiveReporter(
-            status_msg,
-            "⏳ **Preenchendo questionário no Moodle com cadência humana...** As respostas serão digitadas e salvas na tentativa sem submeter."
-        )
+        state = DaemonState()
+        item_data = state.data.get("assignments", {}).get(self.assignment_id, {})
+        title_raw = item_data.get("title") or (embed.title if embed else f"Quiz {self.assignment_id}")
+        clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
+        course_name = clean_display_course(item_data.get("course", "Geral"))
 
-        ans_payload = self._extract_answers_payload()
-        submitter = MoodleSubmitter()
-        current_time = datetime.now().strftime("%H:%M:%S")
-
-        success, message = await submitter.submit_quiz(
-            quiz_url=self.assignment_url,
-            answers=ans_payload or self.structured_answers,
-            auto_submit=False,
-            on_log=reporter.log
-        )
-
-        if success:
-            self._is_draft_saved = True
-            self._build_buttons(draft_saved=True)
-
-            if embed:
-                embed.color = discord.Color.blue()
-                embed.title = f"📝 Rascunho Salvo: {embed.title.replace('📋 Revisão: ', '').replace('📋 Revisão de Atividade: ', '')}"
-                embed.set_footer(
-                    text=f"Respostas salvas no Moodle às {current_time}. Aguardando sua conferência manual ou envio definitivo."
-                )
-
-            await interaction.message.edit(embed=embed, view=self)
-            moodle_link_md = f"👉 **[Clique aqui para abrir sua tentativa no Moodle]({self.assignment_url})**\n\n" if self.assignment_url else ""
-            await reporter.finish(
-                f"🎉 **Respostas salvas no Moodle com sucesso!**\n"
-                f"{message}\n\n"
-                f"{moodle_link_md}"
-                f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar tudo e terminar'** diretamente no Moodle;\n"
-                f"• Ou, se preferir, pode clicar no botão **[🚀 Enviar Tudo e Terminar]** acima para o robô finalizar!"
+        async def _do_fill():
+            console.print(
+                f"[bold cyan]Preenchimento de rascunho executado da fila para {self.assignment_id}![/bold cyan] "
+                f"Preenchendo campos no Moodle sem submeter..."
             )
-        else:
-            self._build_buttons(draft_saved=False)
-            if embed:
-                embed.color = discord.Color.red()
-                embed.set_footer(
-                    text=f"Falha ao preencher às {current_time}: {message[:100]}"
+            status_msg = await interaction.followup.send(
+                content=f"⏳ **Preenchendo questionário no Moodle com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter.",
+                ephemeral=False
+            )
+            reporter = DiscordLiveReporter(
+                status_msg,
+                f"⏳ **Preenchendo questionário no Moodle com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter."
+            )
+
+            ans_payload = self._extract_answers_payload()
+            submitter = MoodleSubmitter()
+            current_time = datetime.now().strftime("%H:%M:%S")
+
+            success, message = await submitter.submit_quiz(
+                quiz_url=self.assignment_url,
+                answers=ans_payload or self.structured_answers,
+                auto_submit=False,
+                on_log=reporter.log
+            )
+
+            if success:
+                self._is_draft_saved = True
+                self._build_buttons(draft_saved=True)
+
+                if embed:
+                    embed.color = discord.Color.blue()
+                    embed.title = f"📝 Rascunho Salvo: {clean_title}"
+                    embed.set_footer(
+                        text=f"Respostas salvas no Moodle às {current_time}. Aguardando sua conferência manual ou envio definitivo."
+                    )
+
+                await interaction.message.edit(embed=embed, view=self)
+                moodle_link_md = f"👉 **[Clique aqui para abrir sua tentativa no Moodle]({self.assignment_url})**\n\n" if self.assignment_url else ""
+                await reporter.finish(
+                    f"🎉 **Respostas salvas no Moodle com sucesso!**\n"
+                    f"{message}\n\n"
+                    f"{moodle_link_md}"
+                    f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar tudo e terminar'** diretamente no Moodle;\n"
+                    f"• Ou, se preferir, pode clicar no botão **[🚀 Enviar Tudo e Terminar]** acima para o robô finalizar!"
                 )
-            await interaction.message.edit(embed=embed, view=self)
-            await reporter.finish(f"⚠️ **Falha ao preencher questionário no Moodle:** {message}")
+            else:
+                self._build_buttons(draft_saved=False)
+                if embed:
+                    embed.color = discord.Color.red()
+                    embed.set_footer(
+                        text=f"Falha ao preencher às {current_time}: {message[:100]}"
+                    )
+                await interaction.message.edit(embed=embed, view=self)
+                await reporter.finish(f"⚠️ **Falha ao preencher questionário no Moodle:** {message}")
+
+            return success, message
+
+        item = QueueItem(
+            task_type=QueueTaskType.FILL_QUIZ,
+            title=clean_title,
+            course=course_name,
+            requester=interaction.user.display_name,
+            coro_func=_do_fill
+        )
+        pos = await queue_manager.enqueue(item)
+        if pos > 1 or queue_manager.is_busy_except(item):
+            queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+            await interaction.followup.send(
+                f"📥 **Preenchimento do quiz adicionado à fila!** (Posição: **#{pos}**)\n"
+                f"• Atividade: **{clean_title}**\n"
+                f"• Acompanhe a ordem e o andamento no {queue_mention}.",
+                ephemeral=True
+            )
 
     async def finalize_quiz_button(self, interaction: discord.Interaction):
-        """Finaliza e submete em definitivo o questionário no Moodle ('Enviar tudo e terminar')."""
+        """Finaliza e submete em definitivo o questionário no Moodle ('Enviar tudo e terminar'), passando pela fila."""
         for child in self.children:
             child.disabled = True
 
@@ -682,71 +717,97 @@ class ReviewActionView(ui.View):
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: 🔄 Finalizando e enviando tudo no Moodle por {interaction.user.name}..."
+                text=f"Status: ⏳ Na fila para finalização no Moodle por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-        console.print(
-            f"[bold cyan]Envio definitivo do questionário {self.assignment_id} solicitado no Discord![/bold cyan]"
-        )
-        status_msg = await interaction.followup.send(
-            content="🚀 **Finalizando questionário no Moodle...** Confirmando 'Enviar tudo e terminar'.",
-            ephemeral=False
-        )
-        reporter = DiscordLiveReporter(
-            status_msg,
-            "🚀 **Finalizando questionário no Moodle...** Confirmando 'Enviar tudo e terminar'."
-        )
+        state = DaemonState()
+        item_data = state.data.get("assignments", {}).get(self.assignment_id, {})
+        title_raw = item_data.get("title") or (embed.title if embed else f"Quiz {self.assignment_id}")
+        clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
+        course_name = clean_display_course(item_data.get("course", "Geral"))
 
-        submitter = MoodleSubmitter()
-        current_time = datetime.now().strftime("%H:%M:%S")
+        async def _do_finalize():
+            console.print(
+                f"[bold cyan]Envio definitivo executado da fila para {self.assignment_id}![/bold cyan]"
+            )
+            status_msg = await interaction.followup.send(
+                content=f"🚀 **Finalizando questionário no Moodle ({clean_title})...** Confirmando 'Enviar tudo e terminar'.",
+                ephemeral=False
+            )
+            reporter = DiscordLiveReporter(
+                status_msg,
+                f"🚀 **Finalizando questionário no Moodle ({clean_title})...** Confirmando 'Enviar tudo e terminar'."
+            )
 
-        ans_payload = self._extract_answers_payload()
-        if self._is_draft_saved:
-            success, message = await submitter.finalize_quiz(self.assignment_url, on_log=reporter.log)
-            if not success and "não foi encontrado" in message.lower():
-                # Fallback: tenta preencher e enviar em um passo só
+            submitter = MoodleSubmitter()
+            current_time = datetime.now().strftime("%H:%M:%S")
+
+            ans_payload = self._extract_answers_payload()
+            if self._is_draft_saved:
+                success, message = await submitter.finalize_quiz(self.assignment_url, on_log=reporter.log)
+                if not success and "não foi encontrado" in message.lower():
+                    # Fallback: tenta preencher e enviar em um passo só
+                    success, message = await submitter.submit_quiz(
+                        quiz_url=self.assignment_url,
+                        answers=ans_payload or self.structured_answers,
+                        auto_submit=True,
+                        on_log=reporter.log
+                    )
+            else:
                 success, message = await submitter.submit_quiz(
                     quiz_url=self.assignment_url,
                     answers=ans_payload or self.structured_answers,
                     auto_submit=True,
                     on_log=reporter.log
                 )
-        else:
-            success, message = await submitter.submit_quiz(
-                quiz_url=self.assignment_url,
-                answers=ans_payload or self.structured_answers,
-                auto_submit=True,
-                on_log=reporter.log
+
+            if success:
+                st = DaemonState()
+                st.mark_submitted(self.assignment_id)
+
+                if embed:
+                    embed.color = discord.Color.green()
+                    embed.title = f"✅ Submetido com Sucesso: {clean_title}"
+                    embed.set_footer(
+                        text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
+                    )
+                await interaction.message.edit(embed=embed, view=self)
+                await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
+                if self.on_action:
+                    await self.on_action(self.assignment_id, "approved", interaction)
+            else:
+                self._build_buttons(draft_saved=self._is_draft_saved)
+                if embed:
+                    embed.color = discord.Color.red()
+                    embed.set_footer(
+                        text=f"Falha na finalização às {current_time}: {message[:100]}"
+                    )
+                await interaction.message.edit(embed=embed, view=self)
+                await reporter.finish(f"⚠️ **Falha ao finalizar questionário:** {message}")
+
+            return success, message
+
+        item = QueueItem(
+            task_type=QueueTaskType.FINALIZE_QUIZ,
+            title=clean_title,
+            course=course_name,
+            requester=interaction.user.display_name,
+            coro_func=_do_finalize
+        )
+        pos = await queue_manager.enqueue(item)
+        if pos > 1 or queue_manager.is_busy_except(item):
+            queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+            await interaction.followup.send(
+                f"📥 **Finalização de quiz adicionada à fila!** (Posição: **#{pos}**)\n"
+                f"• Atividade: **{clean_title}**\n"
+                f"• Acompanhe a ordem e o andamento no {queue_mention}.",
+                ephemeral=True
             )
 
-        if success:
-            state = DaemonState()
-            state.mark_submitted(self.assignment_id)
-
-            if embed:
-                embed.color = discord.Color.green()
-                embed.title = f"✅ Submetido com Sucesso: {embed.title.replace('📋 Revisão: ', '').replace('📋 Revisão de Atividade: ', '').replace('📝 Rascunho Salvo: ', '')}"
-                embed.set_footer(
-                    text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
-                )
-            await interaction.message.edit(embed=embed, view=self)
-            await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
-            if self.on_action:
-                await self.on_action(self.assignment_id, "approved", interaction)
-        else:
-            self._build_buttons(draft_saved=self._is_draft_saved)
-            if embed:
-                embed.color = discord.Color.red()
-                embed.set_footer(
-                    text=f"Falha na finalização às {current_time}: {message[:100]}"
-                )
-            await interaction.message.edit(embed=embed, view=self)
-            await reporter.finish(f"⚠️ **Falha ao finalizar questionário:** {message}")
-
     async def approve_assign_button(self, interaction: discord.Interaction):
-        """Aprova e submete tarefas de entrega de arquivo (PDF/Docx)."""
+        """Aprova e submete tarefas de entrega de arquivo (PDF/Docx), passando pela fila."""
         for child in self.children:
             child.disabled = True
 
@@ -754,60 +815,86 @@ class ReviewActionView(ui.View):
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: 🔄 Aprovado por {interaction.user.name}! Enviando arquivo no Moodle..."
+                text=f"Status: ⏳ Na fila para envio no Moodle por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
-
-        submitter = MoodleSubmitter()
-        current_time = datetime.now().strftime("%H:%M:%S")
 
         if not self.file_to_submit:
             await interaction.followup.send("⚠️ Nenhum arquivo foi anexado a este pedido.", ephemeral=True)
             return
 
-        console.print(
-            f"[bold cyan]Aprovação recebida no Discord para tarefa {self.assignment_id}![/bold cyan] "
-            f"Disparando envio de {self.file_to_submit.name}..."
-        )
-        status_msg = await interaction.followup.send(
-            content=f"⏳ **Enviando arquivo no Moodle:** `{self.file_to_submit.name}`...",
-            ephemeral=False
-        )
-        reporter = DiscordLiveReporter(
-            status_msg,
-            f"⏳ **Enviando arquivo no Moodle:** `{self.file_to_submit.name}`..."
-        )
+        state = DaemonState()
+        item_data = state.data.get("assignments", {}).get(self.assignment_id, {})
+        title_raw = item_data.get("title") or (embed.title if embed else f"Tarefa {self.assignment_id}")
+        clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "")
+        course_name = clean_display_course(item_data.get("course", "Geral"))
 
-        success, message = await submitter.submit_assignment(
-            assignment_url=self.assignment_url,
-            file_path=self.file_to_submit,
-            on_log=reporter.log
+        async def _do_approve():
+            console.print(
+                f"[bold cyan]Envio de arquivo executado da fila para {self.assignment_id}![/bold cyan] "
+                f"Disparando envio de {self.file_to_submit.name}..."
+            )
+            status_msg = await interaction.followup.send(
+                content=f"⏳ **Enviando arquivo no Moodle ({clean_title}):** `{self.file_to_submit.name}`...",
+                ephemeral=False
+            )
+            reporter = DiscordLiveReporter(
+                status_msg,
+                f"⏳ **Enviando arquivo no Moodle ({clean_title}):** `{self.file_to_submit.name}`..."
+            )
+
+            submitter = MoodleSubmitter()
+            current_time = datetime.now().strftime("%H:%M:%S")
+
+            success, message = await submitter.submit_assignment(
+                assignment_url=self.assignment_url,
+                file_path=self.file_to_submit,
+                on_log=reporter.log
+            )
+
+            if success:
+                st = DaemonState()
+                st.mark_submitted(self.assignment_id)
+
+                if embed:
+                    embed.color = discord.Color.green()
+                    embed.title = f"✅ Submetido com Sucesso: {clean_title}"
+                    embed.set_footer(
+                        text=f"Enviado no Moodle às {current_time} por {interaction.user.name}"
+                    )
+                await interaction.message.edit(embed=embed, view=self)
+                await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
+                if self.on_action:
+                    await self.on_action(self.assignment_id, "approved", interaction)
+            else:
+                self._build_buttons(draft_saved=False)
+                if embed:
+                    embed.color = discord.Color.red()
+                    embed.set_footer(
+                        text=f"Falha no envio às {current_time}: {message[:100]}"
+                    )
+                await interaction.message.edit(embed=embed, view=self)
+                await reporter.finish(f"⚠️ **Falha no envio:** {message}")
+
+            return success, message
+
+        item = QueueItem(
+            task_type=QueueTaskType.SUBMIT_ASSIGNMENT,
+            title=clean_title,
+            course=course_name,
+            requester=interaction.user.display_name,
+            coro_func=_do_approve
         )
-
-        if success:
-            state = DaemonState()
-            state.mark_submitted(self.assignment_id)
-
-            if embed:
-                embed.color = discord.Color.green()
-                embed.title = f"✅ Submetido com Sucesso: {embed.title.replace('📋 Revisão: ', '').replace('📋 Revisão de Atividade: ', '')}"
-                embed.set_footer(
-                    text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
-                )
-            await interaction.message.edit(embed=embed, view=self)
-            await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
-            if self.on_action:
-                await self.on_action(self.assignment_id, "approved", interaction)
-        else:
-            self._build_buttons(draft_saved=False)
-            if embed:
-                embed.color = discord.Color.red()
-                embed.set_footer(
-                    text=f"Falha no envio às {current_time}: {message[:100]}"
-                )
-            await interaction.message.edit(embed=embed, view=self)
-            await reporter.finish(f"⚠️ **Falha no envio:** {message}")
+        pos = await queue_manager.enqueue(item)
+        if pos > 1 or queue_manager.is_busy_except(item):
+            queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+            await interaction.followup.send(
+                f"📥 **Submissão de arquivo adicionada à fila!** (Posição: **#{pos}**)\n"
+                f"• Atividade: **{clean_title}**\n"
+                f"• Acompanhe a ordem e o andamento no {queue_mention}.",
+                ephemeral=True
+            )
 
     async def postpone_button(self, interaction: discord.Interaction):
         for child in self.children:
@@ -879,6 +966,13 @@ class MoodleBotClient(commands.Bot):
                 console.print(f"[green]✔ Comandos do servidor '{guild.name}' consolidados (duplicatas removidas)![/green]")
             except Exception as e:
                 console.print(f"[yellow]Aviso ao consolidar comandos no servidor {guild.name}: {e}[/yellow]")
+
+        # Inicializa o worker da Fila Centralizada e o Painel Dinâmico
+        try:
+            queue_manager.start_worker(self)
+            await queue_manager.update_discord_dashboard()
+        except Exception as q_err:
+            console.print(f"[yellow]Aviso ao inicializar fila de tarefas no Discord: {q_err}[/yellow]")
 
 
 # Instância global do Bot
@@ -1199,6 +1293,92 @@ async def _execute_solve_flow(
             await send_func(f"❌ Erro ao gerar resolução: {e}")
 
 
+async def enqueue_solve_flow(
+    send_func: Callable[..., asyncio.Future],
+    tarefa: str,
+    instrucoes: Optional[str] = None,
+    extra_files: Optional[List[Path]] = None,
+    is_refazer: bool = False,
+    requester: str = "Usuário",
+    channel: Optional[Any] = None
+) -> int:
+    """Enfileira a resolução de uma tarefa ou questionário no TaskQueueManager."""
+    state = DaemonState()
+    assignments = state.data.get("assignments", {})
+
+    target_item = None
+    if tarefa in assignments:
+        target_item = assignments[tarefa]
+    else:
+        norm_tarefa = normalize_text(tarefa)
+        for aid, item in assignments.items():
+            if norm_tarefa in normalize_text(item.get("title", "")) or tarefa.lower() in item.get("url", "").lower():
+                target_item = item
+                break
+
+    if not target_item:
+        target_item = {
+            "id": "custom_" + str(int(datetime.now().timestamp())),
+            "title": tarefa,
+            "course": "Geral / Sob Demanda",
+            "url": tarefa if "http" in tarefa else settings.MOODLE_BASE_URL,
+            "due_date": "Sob demanda",
+            "time_remaining": "N/A"
+        }
+
+    title = target_item.get("title", tarefa)
+    course = clean_display_course(target_item.get("course", "Geral"))
+    is_quiz = "mod/quiz" in target_item.get("url", "").lower() or target_item.get("activity_type") == "quiz"
+
+    if is_refazer:
+        task_type = QueueTaskType.REDO_TASK
+    elif is_quiz:
+        task_type = QueueTaskType.RESOLVE_QUIZ
+    else:
+        task_type = QueueTaskType.RESOLVE_ASSIGNMENT
+
+    # Criamos função de envio segura com fallback para channel.send
+    # caso o token da interação do Discord expire enquanto aguardava na fila
+    async def _safe_send(*args, **kwargs):
+        try:
+            return await send_func(*args, **kwargs)
+        except Exception:
+            if channel and hasattr(channel, "send"):
+                return await channel.send(*args, **kwargs)
+            raise
+
+    async def _do_solve():
+        await _execute_solve_flow(
+            send_func=_safe_send,
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            extra_files=extra_files,
+            is_refazer=is_refazer
+        )
+        return True, f"Resolução de '{title}' concluída"
+
+    item = QueueItem(
+        task_type=task_type,
+        title=title,
+        course=course,
+        requester=requester,
+        coro_func=_do_solve
+    )
+
+    pos = await queue_manager.enqueue(item)
+    if pos > 1 or queue_manager.is_busy_except(item):
+        queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+        verb = "Refazer atividade" if is_refazer else "Resolução com IA"
+        await _safe_send(
+            f"📥 **{verb} adicionada à fila de execução!** (Posição: **#{pos}**)\n"
+            f"• Atividade: **{title}**\n"
+            f"• Disciplina: **{course}**\n"
+            f"• Acompanhe a ordem e o andamento no {queue_mention}."
+        )
+
+    return pos
+
+
 @bot.tree.command(name="resolver", description="Resolve uma tarefa ou questionário pendente com IA")
 @app_commands.describe(
     tarefa="ID, link ou nome da tarefa pendente a ser resolvida",
@@ -1243,12 +1423,14 @@ async def cmd_resolver(
                     if p not in extra_files:
                         extra_files.append(p)
                     break
-        await _execute_solve_flow(
+        await enqueue_solve_flow(
             send_func=interaction.followup.send,
             tarefa=tarefa,
             instrucoes=instrucoes,
             extra_files=extra_files,
-            is_refazer=False
+            is_refazer=False,
+            requester=interaction.user.display_name,
+            channel=interaction.channel
         )
         return
 
@@ -1282,12 +1464,14 @@ async def cmd_resolver(
         return
 
     # Caso não haja materiais salvos para a disciplina:
-    await _execute_solve_flow(
+    await enqueue_solve_flow(
         send_func=interaction.followup.send,
         tarefa=tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
-        is_refazer=False
+        is_refazer=False,
+        requester=interaction.user.display_name,
+        channel=interaction.channel
     )
 
 
@@ -1334,12 +1518,14 @@ async def cmd_refazer(
                     if p not in extra_files:
                         extra_files.append(p)
                     break
-        await _execute_solve_flow(
+        await enqueue_solve_flow(
             send_func=interaction.followup.send,
             tarefa=tarefa,
             instrucoes=instrucoes,
             extra_files=extra_files,
-            is_refazer=True
+            is_refazer=True,
+            requester=interaction.user.display_name,
+            channel=interaction.channel
         )
         return
 
@@ -1371,12 +1557,14 @@ async def cmd_refazer(
         await interaction.followup.send(embed=embed, view=view)
         return
 
-    await _execute_solve_flow(
+    await enqueue_solve_flow(
         send_func=interaction.followup.send,
         tarefa=tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
-        is_refazer=True
+        is_refazer=True,
+        requester=interaction.user.display_name,
+        channel=interaction.channel
     )
 
 
@@ -1497,12 +1685,14 @@ async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Opt
         await ctx.send(embed=embed, view=view)
         return
 
-    await _execute_solve_flow(
+    await enqueue_solve_flow(
         send_func=ctx.send,
         tarefa=tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
-        is_refazer=False
+        is_refazer=False,
+        requester=ctx.author.display_name,
+        channel=ctx.channel
     )
 
 
@@ -1547,12 +1737,14 @@ async def prefix_refazer(ctx: commands.Context, tarefa: str, *, instrucoes: Opti
         await ctx.send(embed=embed, view=view)
         return
 
-    await _execute_solve_flow(
+    await enqueue_solve_flow(
         send_func=ctx.send,
         tarefa=tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
-        is_refazer=True
+        is_refazer=True,
+        requester=ctx.author.display_name,
+        channel=ctx.channel
     )
 
 

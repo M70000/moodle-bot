@@ -41,6 +41,10 @@ class Settings(BaseSettings):
         default=0,
         description="ID do canal exclusivo para avisos e comunicados dos professores (se 0, usa DISCORD_CHANNEL_ID)"
     )
+    DISCORD_QUEUE_CHANNEL_ID: int = Field(
+        default=0,
+        description="ID do canal exclusivo para acompanhamento da fila de tarefas em tempo real (se 0, usa DISCORD_CHANNEL_ID)"
+    )
 
     # Google Gemini AI (com Fallback Hierárquico)
     GEMINI_API_KEY: str = Field(

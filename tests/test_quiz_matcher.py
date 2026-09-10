@@ -440,6 +440,56 @@ class TestAdvancedQuizComponents(unittest.TestCase):
         self.assertEqual(target_val, "transport, insemination, semen, animal, fertilization, transgenic, human")
         self.assertNotEqual(target_val, "Figura 01")
 
+    def test_verify_buttons_filtering_logic_prevents_infinite_loop(self):
+        """Valida que botões já acionados ou de questões já verificadas são excluídos, impedindo loop."""
+        pending_questions = [
+            {
+                "qId": "q78308",
+                "btnName": "q78308:1_-submit",
+                "hasBtn": True,
+                "alreadyVerified": False
+            },
+            {
+                "qId": "q78315",
+                "btnName": "q78315:1_-submit",
+                "hasBtn": True,
+                "alreadyVerified": False
+            }
+        ]
+
+        attempted_buttons = set()
+        attempted_qids = set()
+
+        def get_next_candidate(questions_list):
+            for q_info in questions_list:
+                btn = q_info["btnName"]
+                qid = q_info["qId"]
+                q_pfx = btn.split(":")[0] if ":" in btn else ""
+                if q_info.get("alreadyVerified"):
+                    continue
+                if btn in attempted_buttons or qid in attempted_qids or (q_pfx and q_pfx in attempted_qids):
+                    continue
+                return q_info
+            return None
+
+        # 1. Primeira passada seleciona q78308
+        c1 = get_next_candidate(pending_questions)
+        self.assertIsNotNone(c1)
+        self.assertEqual(c1["btnName"], "q78308:1_-submit")
+        attempted_buttons.add(c1["btnName"])
+        attempted_qids.add(c1["qId"])
+
+        # 2. Segunda passada: mesmo que o DOM do Moodle ainda contenha q78308:1_-submit (sem disabled), pula para q78315
+        c2 = get_next_candidate(pending_questions)
+        self.assertIsNotNone(c2)
+        self.assertEqual(c2["btnName"], "q78315:1_-submit")
+        attempted_buttons.add(c2["btnName"])
+        attempted_qids.add(c2["qId"])
+
+        # 3. Terceira passada: todos já foram tentados, encerra sem entrar em loop
+        c3 = get_next_candidate(pending_questions)
+        self.assertIsNone(c3)
+
 
 if __name__ == "__main__":
     unittest.main()

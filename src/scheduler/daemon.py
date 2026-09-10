@@ -136,20 +136,28 @@ class MoodleDaemon:
                         f"{assign.title} ({assign.course_name})"
                     )
 
-                    # Gera o rascunho e PDF acadêmico com o Gemini
+                    # Gera o rascunho e PDF acadêmico com o Gemini através da fila centralizada
                     if self.solver.client:
                         try:
-                            draft = await self.solver.solve_assignment(assign)
-                            self.state.register_assignment(assign, draft_path=str(draft.output_path))
+                            from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
 
-                            # Envia para revisão humana no Discord
-                            if self.notifier.token and self.notifier.channel_id:
-                                await self.notifier.send_assignment_review(assign, draft)
-                            else:
-                                console.print("[yellow]Discord não configurado: rascunho gerado e salvo em disco.[/yellow]")
+                            async def _do_auto_solve(target_assign=assign):
+                                d = await self.solver.solve_assignment(target_assign)
+                                self.state.register_assignment(target_assign, draft_path=str(d.output_path))
+                                if self.notifier.token and self.notifier.channel_id:
+                                    await self.notifier.send_assignment_review(target_assign, d)
+                                return True, f"Rascunho gerado para '{target_assign.title}'"
 
+                            item = QueueItem(
+                                task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
+                                title=assign.title,
+                                course=assign.course_name,
+                                requester="Daemon (Automático)",
+                                coro_func=_do_auto_solve
+                            )
+                            await queue_manager.enqueue(item)
                         except Exception as sol_err:
-                            console.print(f"[red]Erro ao resolver tarefa {assign.title}: {sol_err}[/red]")
+                            console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
                     else:
                         console.print("[yellow]Gemini não configurado: rascunho não gerado.[/yellow]")
                 else:
