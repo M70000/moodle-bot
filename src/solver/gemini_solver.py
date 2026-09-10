@@ -16,6 +16,8 @@ from typing import Any, Dict, List, Optional
 
 # Silencia avisos informativos internos de AFC do SDK google-genai
 logging.getLogger("google.genai.models").setLevel(logging.ERROR)
+logging.getLogger("google_genai").setLevel(logging.ERROR)
+logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 from google import genai
 from google.genai import types
@@ -66,15 +68,30 @@ class SolutionDraft(BaseModel):
 
 
 class GeminiSolver:
-    """Motor de resolução com Fallback Hierárquico: 3.8-flash -> 3.7-flash -> 3.5-flash-lite."""
+    """Motor de resolução com Fallback Hierárquico e suporte a modelos inteligentes e ágeis."""
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or settings.GEMINI_API_KEY
-        self.model_hierarchy = [
+        raw_hierarchy = [
             settings.GEMINI_MODEL,
-            settings.GEMINI_FALLBACK_MODEL_1,
-            settings.GEMINI_FALLBACK_MODEL_2,
+            getattr(settings, "GEMINI_FALLBACK_MODEL_1", "gemini-3.8-flash"),
+            getattr(settings, "GEMINI_FALLBACK_MODEL_2", "gemini-3.7-flash"),
+            getattr(settings, "GEMINI_FALLBACK_MODEL_3", "gemini-3.5-flash-lite"),
         ]
+        self.model_hierarchy = []
+        for m in raw_hierarchy:
+            if m and m not in self.model_hierarchy:
+                self.model_hierarchy.append(m)
+
+        self.timeout_seconds = getattr(settings, "GEMINI_TIMEOUT_SECONDS", 90)
+        self.fallback_timeout_seconds = getattr(settings, "GEMINI_FALLBACK_TIMEOUT_SECONDS", 60)
+        self.fallback_delay_seconds = getattr(settings, "GEMINI_FALLBACK_DELAY_SECONDS", 2.0)
+
+        # Adiciona modelos rápidos de resguardo no fim da lista se ausentes
+        for safe_model in ["gemini-3.5-flash-lite", "gemini-flash-lite-latest"]:
+            if safe_model not in self.model_hierarchy:
+                self.model_hierarchy.append(safe_model)
+
         self.submissions_dir = settings.STORAGE_SUBMISSIONS_DIR
         self.materials_dir = settings.STORAGE_MATERIALS_DIR
 
@@ -85,28 +102,110 @@ class GeminiSolver:
             )
             self.client = None
         else:
-            self.client = genai.Client(api_key=self.api_key)
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(
+                    timeout=int(self.timeout_seconds * 1000),
+                    retry_options=types.HttpRetryOptions(attempts=1)
+                )
+            )
 
     def _collect_context_files(self, assignment: Assignment) -> List[Path]:
-        """Reúne todos os arquivos pertinentes à tarefa e à disciplina."""
+        """Reúne exclusivamente os arquivos anexos diretos da tarefa baixados do Moodle.
+        
+        Materiais gerais da disciplina não são mais incluídos automaticamente para evitar
+        sobrecarga, erros 503 e envio de conteúdo desnecessário. O usuário seleciona
+        explicitamente os materiais desejados via Discord (/resolver e seletor).
+        """
         collected: List[Path] = []
-        safe_course = sanitize_filename(assignment.course_name)
-        course_path = self.materials_dir / safe_course
 
-        # 1. Anexos diretos da tarefa (enunciado, dados CSV, roteiros)
+        # Anexos diretos da tarefa baixados da página do Moodle (enunciado, dados CSV, roteiros)
         for att in assignment.attachments:
             if att.local_path and att.local_path.exists() and att.local_path.stat().st_size > 0:
-                collected.append(att.local_path)
-
-        # 2. Materiais gerais da disciplina (slides, apostilas, listas)
-        if course_path.exists():
-            for p in course_path.iterdir():
-                if p.is_file() and p.suffix.lower() in [".pdf", ".csv", ".txt", ".docx"]:
-                    # Não re-adiciona se já estiver na lista
-                    if p not in collected:
-                        collected.append(p)
+                # Limite de segurança de 15MB por anexo direto
+                if att.local_path.stat().st_size <= 15 * 1024 * 1024:
+                    collected.append(att.local_path)
 
         return collected
+
+    async def _generate_with_fallback(
+        self,
+        contents: List[Any],
+        system_instruction: Optional[str] = None,
+        temperature: float = 0.1,
+        on_log: Optional[Any] = None
+    ) -> tuple[Any, str]:
+        """Executa a geração de conteúdo percorrendo a hierarquia de modelos com timeouts e transição ágil."""
+        if not self.client:
+            raise RuntimeError("Chave GEMINI_API_KEY não informada. Configure a variável no arquivo .env.")
+
+        last_error = None
+        total_models = len(self.model_hierarchy)
+
+        for idx, model_candidate in enumerate(self.model_hierarchy):
+            is_primary = (idx == 0)
+            timeout = self.timeout_seconds if is_primary else self.fallback_timeout_seconds
+            role_label = "modelo principal" if is_primary else f"fallback {idx}"
+
+            console.print(f"  [cyan]Tentando geração com {role_label}: [bold]{model_candidate}[/bold] (limite: {timeout}s)...[/cyan]")
+            await _emit_log(on_log, f"Consultando {model_candidate} ({role_label})...")
+
+            try:
+                # Usa cliente assíncrono nativo com limite estrito de timeout por tentativa
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=model_candidate,
+                        contents=contents,
+                        config=types.GenerateContentConfig(
+                            system_instruction=system_instruction,
+                            temperature=temperature,
+                            http_options=types.HttpOptions(
+                                timeout=int(max(timeout, 1) * 1000),
+                                retry_options=types.HttpRetryOptions(attempts=1)
+                            )
+                        )
+                    ),
+                    timeout=timeout
+                )
+
+                if response and response.text:
+                    console.print(f"  [green]✔ Resposta gerada com sucesso via {model_candidate}![/green]")
+                    await _emit_log(on_log, f"✔ Resolução concluída via {model_candidate}")
+                    return response, model_candidate
+
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Tempo limite de {timeout}s esgotado em {model_candidate}")
+                console.print(f"  [yellow]⏱ {model_candidate} excedeu o tempo limite ({timeout}s).[/yellow]")
+                if idx < total_models - 1:
+                    next_model = self.model_hierarchy[idx + 1]
+                    await _emit_log(on_log, f"⏱ {model_candidate}: limite de {timeout}s esgotado. Alternando para {next_model}...")
+                    if self.fallback_delay_seconds > 0:
+                        await asyncio.sleep(self.fallback_delay_seconds)
+                else:
+                    await _emit_log(on_log, f"⏱ {model_candidate}: tempo limite esgotado.")
+
+            except Exception as gen_err:
+                last_error = gen_err
+                err_str = str(gen_err)
+                if "503" in err_str or "high demand" in err_str.lower() or "UNAVAILABLE" in err_str:
+                    err_desc = "Servidores com alta demanda (503)"
+                elif "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    err_desc = "Cota temporariamente excedida (429)"
+                elif "404" in err_str or "NOT_FOUND" in err_str:
+                    err_desc = "Modelo descontinuado ou não encontrado (404)"
+                else:
+                    err_desc = err_str[:90]
+
+                console.print(f"  [yellow]Aviso: Falha com {model_candidate} ({err_desc}).[/yellow]")
+                if idx < total_models - 1:
+                    next_model = self.model_hierarchy[idx + 1]
+                    await _emit_log(on_log, f"⚠️ {model_candidate}: {err_desc}. Alternando para fallback {next_model}...")
+                    if self.fallback_delay_seconds > 0:
+                        await asyncio.sleep(self.fallback_delay_seconds)
+                else:
+                    await _emit_log(on_log, f"❌ {model_candidate}: {err_desc}.")
+
+        raise RuntimeError(f"Todos os modelos da hierarquia falharam. Último erro: {last_error}")
 
     async def solve_assignment(
         self,
@@ -141,7 +240,13 @@ class GeminiSolver:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
                     await _emit_log(on_log, f"Carregando material de apoio: {file_path.name}")
-                    uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
+                    if hasattr(self.client, "aio"):
+                        uploaded = await asyncio.wait_for(
+                            self.client.aio.files.upload(file=str(file_path)),
+                            timeout=25
+                        )
+                    else:
+                        uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
                 except Exception as up_err:
@@ -196,35 +301,13 @@ class GeminiSolver:
 
             contents = prompt_content + uploaded_gemini_files
 
-            # Loop de Fallback Hierárquico: 3.8-flash -> 3.7-flash -> 3.5-flash-lite
-            response = None
-            successful_model = self.model_hierarchy[0]
-            last_error = None
-
-            for model_candidate in self.model_hierarchy:
-                try:
-                    console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
-                    await _emit_log(on_log, f"Consultando modelo de IA: {model_candidate}...")
-                    response = await asyncio.to_thread(
-                        self.client.models.generate_content,
-                        model=model_candidate,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            temperature=0.2,
-                            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-                        )
-                    )
-                    if response and response.text:
-                        successful_model = model_candidate
-                        console.print(f"  [green]✔ Resolução concluída com sucesso via {model_candidate}![/green]")
-                        await _emit_log(on_log, f"✔ Resolução concluída via {model_candidate}")
-                        break
-                except Exception as gen_err:
-                    console.print(f"  [yellow]Aviso: Falha com {model_candidate} ({gen_err}). Acionando próximo modelo...[/yellow]")
-                    last_error = gen_err
-
-            if not response or not response.text:
-                raise RuntimeError(f"Todos os modelos da hierarquia falharam. Último erro: {last_error}")
+            # Geração com Fallback Hierárquico e Timeouts Rigorosos
+            response, successful_model = await self._generate_with_fallback(
+                contents=contents,
+                system_instruction=system_instruction,
+                temperature=0.2,
+                on_log=on_log
+            )
 
             full_text = response.text
 
@@ -297,7 +380,10 @@ class GeminiSolver:
             # Limpeza dos arquivos temporários carregados na nuvem do Gemini
             for up in uploaded_gemini_files:
                 try:
-                    await asyncio.to_thread(self.client.files.delete, name=up.name)
+                    if self.client and hasattr(self.client, "aio"):
+                        await self.client.aio.files.delete(name=up.name)
+                    else:
+                        await asyncio.to_thread(self.client.files.delete, name=up.name)
                 except Exception:
                     pass
 
@@ -332,7 +418,13 @@ class GeminiSolver:
                 try:
                     console.print(f"  [dim]Carregando contexto: {file_path.name}...[/dim]")
                     await _emit_log(on_log, f"Carregando material de apoio: {file_path.name}")
-                    uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
+                    if hasattr(self.client, "aio"):
+                        uploaded = await asyncio.wait_for(
+                            self.client.aio.files.upload(file=str(file_path)),
+                            timeout=25
+                        )
+                    else:
+                        uploaded = await asyncio.to_thread(self.client.files.upload, file=str(file_path))
                     uploaded_gemini_files.append(uploaded)
                     used_material_names.append(file_path.name)
                 except Exception:
@@ -352,21 +444,26 @@ class GeminiSolver:
             system_instruction = (
                 "Você é um estudante universitário da UFMG realizando uma atividade avaliativa no Moodle.\n"
                 "Abaixo está o conteúdo extraído da tela do questionário, contendo questões avaliativas que podem conter:\n"
-                "- Marcadores pontuais [[CAMPO_1]], [[CAMPO_2]]... que representam lacunas ou caixas de texto a serem preenchidas;\n"
-                "- Questões de múltipla escolha com alternativas (ex: a, b, c, d).\n\n"
+                "- Marcadores pontuais [[CAMPO_1]], [[CAMPO_2]]... que representam lacunas, caixas de texto, áreas de arrastar/soltar ou questões dissertativas;\n"
+                "- Questões de múltipla escolha com alternativas (ex: a, b, c, d);\n"
+                "- Questões de seleção múltipla (caixas de seleção / checkboxes) onde mais de uma opção pode estar correta;\n"
+                "- Questões abertas/dissertativas que exigem redação de resposta fundamentada (ex: caixas de texto TinyMCE / Atto).\n\n"
                 "DIRETRIZES DE RESOLUÇÃO:\n"
-                "1. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]] e para cada questão de múltipla escolha (Q1, Q2, etc.).\n"
+                "1. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]], questão de múltipla escolha (Q1, Q2, etc.) e questão dissertativa.\n"
                 "2. ALTERNATIVAS DE MÚLTIPLA ESCOLHA: Para garantir precisão caso o Moodle embaralhe a ordem das alternativas, sempre indique a letra E o texto completo da alternativa escolhida (ex: 'c. de instruções para o uso correto de algo').\n"
-                "3. ADEQUAÇÃO AO CONTEXTO: Responda com a máxima precisão e coerência conforme o enunciado e as regras da matéria.\n"
-                "4. COERÊNCIA GRAMATICAL: Respeite a concordância gramatical, sintaxe e tempo verbal.\n\n"
+                "3. CAIXAS DE SELEÇÃO / CHECKBOXES: Se a questão permitir mais de uma alternativa correta, liste todas as letras e textos das alternativas corretas (ex: 'a. ..., c. ...').\n"
+                "4. QUESTÕES DISSERTATIVAS / TEXTO ABERTO: Elabore respostas completas, acadêmicas e fundamentadas, mapeadas tanto para o respectivo [[CAMPO_X]] quanto para QX no JSON e na Folha de Respostas.\n"
+                "5. ARRASTAR E SOLTAR (DRAG & DROP): Preencha cada [[CAMPO_X]] com o texto exato da palavra a ser arrastada para aquela posição.\n"
+                "6. ADEQUAÇÃO AO CONTEXTO: Responda com a máxima precisão e coerência conforme o enunciado e as regras da matéria.\n"
+                "7. COERÊNCIA GRAMATICAL: Respeite a concordância gramatical, sintaxe e tempo verbal.\n\n"
                 "FORMATO OBRIGATÓRIO DE SAÍDA:\n"
                 "Sua resposta deve conter DUAS PARTES:\n\n"
                 "PARTE 1: Bloco JSON estruturado (no início, usado pelo robô para preenchimento automático no Moodle):\n"
                 "```json:answers\n"
                 "{\n"
-                '  "CAMPO_1": "resposta da lacuna 1",\n'
+                '  "CAMPO_1": "resposta da lacuna 1 ou palavra arrastada",\n'
                 '  "Q1": "letra e texto completo da alternativa escolhida (ex: c. de instruções para o uso correto de algo)",\n'
-                '  "Q2": "letra e texto completo da alternativa escolhida (ex: b. a pessoa utilizando o produto)"\n'
+                '  "Q2": "texto da resposta dissertativa elaborada ou alternativas"\n'
                 "}\n"
                 "```\n\n"
                 "PARTE 2: Folha de Respostas Acadêmica (renderizada no PDF do estudante):\n"
@@ -376,7 +473,7 @@ class GeminiSolver:
                 "  1. **palavra 1**\n"
                 "  2. **palavra 2**\n"
                 "- Para questões discursivas ou de múltipla escolha:\n"
-                "  - **Resposta:** [letra e texto completo da alternativa]\n"
+                "  - **Resposta:** [letra e texto completo da alternativa, ou texto completo da resposta dissertativa]\n"
                 "- PROIBIÇÃO ESTRITA DE RUÍDOS DE TELA:\n"
                 "  * NUNCA inclua seções como '### Informação' ou blocos de texto introdutórios.\n"
                 "  * NUNCA reproduza lixo do Moodle como 'Texto da questão', 'Texto informativo', 'Resposta 1 Questão 1', 'Verificar Questão', 'Feedback' ou botões.\n"
@@ -395,31 +492,13 @@ class GeminiSolver:
 
             contents = prompt_content + uploaded_gemini_files
 
-            response = None
-            successful_model = self.model_hierarchy[0]
-            for model_candidate in self.model_hierarchy:
-                try:
-                    console.print(f"  [cyan]Tentando geração com: [bold]{model_candidate}[/bold]...[/cyan]")
-                    await _emit_log(on_log, f"Consultando modelo de IA: {model_candidate}...")
-                    response = await asyncio.to_thread(
-                        self.client.models.generate_content,
-                        model=model_candidate,
-                        contents=contents,
-                        config=types.GenerateContentConfig(
-                            temperature=0.1,
-                            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True)
-                        )
-                    )
-                    if response and response.text:
-                        successful_model = model_candidate
-                        console.print(f"  [green]✔ Resolução ao vivo concluída com sucesso via {model_candidate}![/green]")
-                        await _emit_log(on_log, f"✔ Resolução das questões concluída via {model_candidate}")
-                        break
-                except Exception as gen_err:
-                    console.print(f"  [yellow]Aviso: Falha com {model_candidate} ({gen_err}). Acionando próximo modelo...[/yellow]")
-
-            if not response or not response.text:
-                raise RuntimeError("Falha ao gerar respostas com IA para o questionário.")
+            # Geração com Fallback Hierárquico e Timeouts Rigorosos
+            response, successful_model = await self._generate_with_fallback(
+                contents=contents,
+                system_instruction=system_instruction,
+                temperature=0.1,
+                on_log=on_log
+            )
 
             full_text = response.text
 
@@ -450,9 +529,9 @@ class GeminiSolver:
                 q_body = m.group(2).strip()
                 ans_key = f"Q{q_num}"
                 if ans_key not in structured_dict:
-                    # Captura "- **Resposta:** c. ..." ou "**Resposta:** c. ..."
-                    resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*(.+)", q_body, re.IGNORECASE)
-                    if resp_m:
+                    # Captura "- **Resposta:** c. ..." ou "**Resposta:** c. ..." (inclusive múltiplas linhas)
+                    resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*([\s\S]+?)(?=\n\*\*(?:Explicação|Justificativa):|\n###|\Z)", q_body, re.IGNORECASE)
+                    if resp_m and resp_m.group(1).strip():
                         structured_dict[ans_key] = resp_m.group(1).strip()
                     else:
                         # Captura listas numeradas 1. **palavra**
@@ -470,6 +549,11 @@ class GeminiSolver:
                                             if k_label and v_target:
                                                 structured_dict[f"Q{q_num}_{k_label}"] = v_target
                                                 structured_dict[k_label] = v_target
+                        else:
+                            # Resposta dissertativa / texto aberto sem marcador
+                            clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()
+                            if clean_body:
+                                structured_dict[ans_key] = clean_body
 
             summary_lines = [l for l in clean_markdown.splitlines() if l.strip() and not l.startswith("#")]
             summary = "\n".join(summary_lines[:8]) if summary_lines else clean_markdown[:400]
@@ -513,7 +597,10 @@ class GeminiSolver:
         finally:
             for up in uploaded_gemini_files:
                 try:
-                    await asyncio.to_thread(self.client.files.delete, name=up.name)
+                    if self.client and hasattr(self.client, "aio"):
+                        await self.client.aio.files.delete(name=up.name)
+                    else:
+                        await asyncio.to_thread(self.client.files.delete, name=up.name)
                 except Exception:
                     pass
 

@@ -48,16 +48,32 @@ class Settings(BaseSettings):
         description="Chave de API do Google Gemini (Google AI Studio)"
     )
     GEMINI_MODEL: str = Field(
-        default="gemini-3.8-flash",
+        default="gemini-3.5-flash",
         description="Modelo principal (oficial) do Gemini para resolução"
     )
     GEMINI_FALLBACK_MODEL_1: str = Field(
-        default="gemini-3.7-flash",
+        default="gemini-3.8-flash",
         description="Modelo secundário de fallback em caso de indisponibilidade"
     )
     GEMINI_FALLBACK_MODEL_2: str = Field(
+        default="gemini-3.7-flash",
+        description="Modelo terciário de fallback (raciocínio)"
+    )
+    GEMINI_FALLBACK_MODEL_3: str = Field(
         default="gemini-3.5-flash-lite",
-        description="Modelo terciário de fallback (ultra rápido/leve)"
+        description="Modelo quaternário de fallback (rede de segurança)"
+    )
+    GEMINI_TIMEOUT_SECONDS: int = Field(
+        default=90,
+        description="Tempo limite em segundos para o modelo principal responder"
+    )
+    GEMINI_FALLBACK_TIMEOUT_SECONDS: int = Field(
+        default=60,
+        description="Tempo limite em segundos para cada modelo de fallback responder"
+    )
+    GEMINI_FALLBACK_DELAY_SECONDS: float = Field(
+        default=2.0,
+        description="Intervalo em segundos entre tentativas de modelos de fallback"
     )
 
     # Agendamento & Regras de Prazos

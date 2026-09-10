@@ -10,6 +10,7 @@ Inclui comandos interativos:
 
 import argparse
 import asyncio
+import json
 import os
 import sys
 import time
@@ -256,6 +257,192 @@ async def completed_task_autocomplete(
         return []
 
 
+def get_course_materials_for_task(tarefa_or_course: str) -> List[Path]:
+    """Retorna lista de caminhos de materiais disponíveis em storage/materials/ para a tarefa ou disciplina."""
+    if not settings.STORAGE_MATERIALS_DIR.exists():
+        return []
+
+    state = DaemonState()
+    assignments = state.data.get("assignments", {})
+    target_course = ""
+
+    if tarefa_or_course in assignments:
+        target_course = assignments[tarefa_or_course].get("course", "")
+    else:
+        norm = normalize_text(tarefa_or_course)
+        for aid, item in assignments.items():
+            t_norm = normalize_text(item.get("title", ""))
+            aid_norm = normalize_text(str(aid))
+            if norm and (norm in t_norm or norm in aid_norm or t_norm in norm):
+                target_course = item.get("course", "")
+                break
+
+    if not target_course:
+        target_course = tarefa_or_course
+
+    dest_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(target_course)
+    if not dest_dir.exists() or not dest_dir.is_dir():
+        norm_c = normalize_text(target_course)
+        for p in settings.STORAGE_MATERIALS_DIR.iterdir():
+            if p.is_dir() and norm_c and (norm_c in normalize_text(p.name) or normalize_text(p.name) in norm_c):
+                dest_dir = p
+                break
+
+    if not dest_dir.exists() or not dest_dir.is_dir():
+        return []
+
+    valid_exts = {".pdf", ".csv", ".docx", ".txt", ".zip", ".xlsx", ".pptx"}
+    files = [
+        f for f in dest_dir.iterdir()
+        if f.is_file() and f.suffix.lower() in valid_exts and f.stat().st_size <= 15 * 1024 * 1024
+    ]
+    files.sort(key=lambda x: natural_sort_key(x.name))
+    return files
+
+
+async def task_material_autocomplete(
+    interaction: discord.Interaction,
+    current: Optional[str] = ""
+) -> List[app_commands.Choice[str]]:
+    """Autocomplete para materiais salvos da disciplina vinculada à tarefa em digitação."""
+    try:
+        selected_task = ""
+        already_chosen = set()
+        options = interaction.data.get("options", [])
+        for opt in options:
+            if opt.get("name") == "tarefa":
+                selected_task = str(opt.get("value") or "").strip()
+            elif opt.get("name") in ["material_1", "material_2", "material_3"]:
+                val = str(opt.get("value") or "").strip()
+                if val:
+                    already_chosen.add(val)
+
+        materials = get_course_materials_for_task(selected_task) if selected_task else []
+        if not materials and settings.STORAGE_MATERIALS_DIR.exists():
+            for cdir in settings.STORAGE_MATERIALS_DIR.iterdir():
+                if cdir.is_dir():
+                    for f in cdir.iterdir():
+                        if f.is_file() and f.suffix.lower() in [".pdf", ".csv", ".docx", ".txt", ".zip"]:
+                            materials.append(f)
+
+        norm_curr = normalize_text(current)
+        choices = []
+        for mat in materials:
+            if mat.name in already_chosen:
+                continue
+            if not norm_curr or norm_curr in normalize_text(mat.name):
+                choices.append(app_commands.Choice(name=mat.name[:100], value=mat.name))
+                if len(choices) >= 25:
+                    break
+        return choices
+    except Exception as err:
+        console.print(f"[bold red]Aviso no task_material_autocomplete: {err}[/bold red]")
+        return []
+
+
+class MaterialSelectionView(ui.View):
+    """View interativa com Dropdown multi-select para o usuário escolher até 3 materiais de apoio salvos."""
+
+    def __init__(
+        self,
+        tarefa: str,
+        instrucoes: Optional[str],
+        attached_files: List[Path],
+        available_materials: List[Path],
+        send_func: Callable[[str], asyncio.Future],
+        interaction_or_ctx: Any,
+        is_refazer: bool = False
+    ):
+        super().__init__(timeout=180)
+        self.tarefa = tarefa
+        self.instrucoes = instrucoes
+        self.attached_files = list(attached_files)
+        self.available_materials = available_materials
+        self.send_func = send_func
+        self.context_handle = interaction_or_ctx
+        self.is_refazer = is_refazer
+        self.selected_files: List[Path] = []
+
+        options = []
+        for p in self.available_materials[:25]:
+            size_kb = p.stat().st_size // 1024 if p.exists() else 0
+            size_str = f"{size_kb} KB" if size_kb < 1024 else f"{size_kb / 1024:.1f} MB"
+            options.append(
+                discord.SelectOption(
+                    label=p.name[:100],
+                    value=p.name,
+                    description=f"Tamanho: {size_str}"[:100]
+                )
+            )
+
+        max_pick = min(3, len(options))
+        self.select_menu = ui.Select(
+            placeholder=f"Selecione de 1 a {max_pick} materiais de apoio salvos...",
+            min_values=0,
+            max_values=max_pick,
+            options=options,
+            row=0
+        )
+        self.select_menu.callback = self.on_select_materials
+        self.add_item(self.select_menu)
+
+    async def on_select_materials(self, interaction: discord.Interaction):
+        chosen_names = set(self.select_menu.values)
+        self.selected_files = [p for p in self.available_materials if p.name in chosen_names]
+        chosen_str = ", ".join(f"`{p.name}`" for p in self.selected_files) or "Nenhum material selecionado"
+        await interaction.response.send_message(
+            f"✅ Selecionado ({len(self.selected_files)}/3): {chosen_str}\nClique em **'🚀 Iniciar Resolução'** para prosseguir.",
+            ephemeral=True
+        )
+
+    @ui.button(label="🚀 Iniciar Resolução", style=discord.ButtonStyle.green, row=1)
+    async def btn_start(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        try:
+            if hasattr(self.context_handle, "edit_original_response"):
+                await self.context_handle.edit_original_response(view=self)
+            elif hasattr(interaction, "message") and interaction.message:
+                await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        combined_files = list(self.attached_files)
+        for sf in self.selected_files:
+            if sf not in combined_files:
+                combined_files.append(sf)
+
+        await _execute_solve_flow(
+            send_func=self.send_func,
+            tarefa=self.tarefa,
+            instrucoes=self.instrucoes,
+            extra_files=combined_files,
+            is_refazer=self.is_refazer
+        )
+
+    @ui.button(label="⏩ Resolver sem materiais extras", style=discord.ButtonStyle.secondary, row=1)
+    async def btn_skip(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        for item in self.children:
+            item.disabled = True
+        try:
+            if hasattr(self.context_handle, "edit_original_response"):
+                await self.context_handle.edit_original_response(view=self)
+            elif hasattr(interaction, "message") and interaction.message:
+                await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+        await _execute_solve_flow(
+            send_func=self.send_func,
+            tarefa=self.tarefa,
+            instrucoes=self.instrucoes,
+            extra_files=self.attached_files,
+            is_refazer=self.is_refazer
+        )
+
+
 class ReviewActionView(ui.View):
     """Componente interativo com botões dinâmicos de decisão e persistência imediata em disco."""
 
@@ -373,28 +560,46 @@ class ReviewActionView(ui.View):
             if target_md and target_md.exists():
                 try:
                     text = target_md.read_text(encoding="utf-8")
+                    # 1. Tenta recuperar bloco JSON estruturado se presente no arquivo
+                    json_match = re.search(r"```(?:json:answers|json)\s*\n(.*?)\n```", text, re.DOTALL)
+                    if json_match:
+                        try:
+                            parsed_json = json.loads(json_match.group(1).strip())
+                            if isinstance(parsed_json, dict):
+                                ans_payload.update(parsed_json)
+                        except Exception:
+                            pass
+
+                    # 2. Parsing das seções de questões
                     q_matches = list(re.finditer(r"###\s*(?:Quest[ãa]o|Q)\s*(\d+)\s*\n+(.*?)(?=\n###|\Z)", text, re.DOTALL | re.IGNORECASE))
                     for m in q_matches:
                         q_num = m.group(1)
                         q_body = m.group(2).strip()
-                        resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*(.+)", q_body, re.IGNORECASE)
-                        if resp_m:
-                            ans_payload[f"Q{q_num}"] = resp_m.group(1).strip()
-                        else:
-                            items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
-                            if items:
-                                for idx_sub, sub_val in enumerate(items, 1):
-                                    clean_val = sub_val.strip("* ").strip()
-                                    if clean_val:
-                                        ans_payload[f"Q{q_num}_{idx_sub}"] = clean_val
-                                        if any(sep in clean_val for sep in ["→", "->", ":"]):
-                                            parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
-                                            if len(parts) == 2:
-                                                k_label = parts[0].strip("* ").strip()
-                                                v_target = parts[1].strip("* ").strip()
-                                                if k_label and v_target:
-                                                    ans_payload[f"Q{q_num}_{k_label}"] = v_target
-                                                    ans_payload[k_label] = v_target
+                        ans_key = f"Q{q_num}"
+                        if ans_key not in ans_payload:
+                            resp_m = re.search(r"\*\*(?:Resposta|Alternativa):\*\*\s*([\s\S]+?)(?=\n\*\*(?:Explicação|Justificativa):|\n###|\Z)", q_body, re.IGNORECASE)
+                            if resp_m and resp_m.group(1).strip():
+                                ans_payload[ans_key] = resp_m.group(1).strip()
+                            else:
+                                items = re.findall(r"^\s*\d+\.\s*\*{0,2}(.*?)\*{0,2}\s*$", q_body, re.MULTILINE)
+                                if items:
+                                    for idx_sub, sub_val in enumerate(items, 1):
+                                        clean_val = sub_val.strip("* ").strip()
+                                        if clean_val:
+                                            ans_payload[f"Q{q_num}_{idx_sub}"] = clean_val
+                                            if any(sep in clean_val for sep in ["→", "->", ":"]):
+                                                parts = re.split(r"[→\->:]", clean_val, maxsplit=1)
+                                                if len(parts) == 2:
+                                                    k_label = parts[0].strip("* ").strip()
+                                                    v_target = parts[1].strip("* ").strip()
+                                                    if k_label and v_target:
+                                                        ans_payload[f"Q{q_num}_{k_label}"] = v_target
+                                                        ans_payload[k_label] = v_target
+                                else:
+                                    # Fallback de resposta dissertativa aberta
+                                    clean_body = re.sub(r"^(?:Texto da questão|Enunciado:?|Pergunta:?)\s*", "", q_body, flags=re.IGNORECASE).strip()
+                                    if clean_body:
+                                        ans_payload[ans_key] = clean_body
                 except Exception:
                     pass
 
@@ -885,19 +1090,18 @@ async def cmd_materiais(interaction: discord.Interaction, disciplina: str):
 
 def format_reference_materials_msg(course_name: str, extra_files: List[Path]) -> str:
     """Gera texto informativo claro sobre os arquivos que a IA utilizará como referência."""
-    dest_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(course_name)
-    stored_files = []
-    if dest_dir.exists():
-        stored_files = [p.name for p in dest_dir.iterdir() if p.is_file() and p.suffix.lower() in [".pdf", ".csv", ".docx", ".txt", ".zip"]]
-
-    extra_names = [p.name for p in extra_files]
     lines = []
-    if extra_names:
-        lines.append(f"📎 **Arquivo(s) enviado(s) como referência por você:** {', '.join(f'`{n}`' for n in extra_names)}")
-    if stored_files:
-        lines.append(f"📚 **Material da disciplina encontrado em `storage/materials/`:** {', '.join(f'`{n}`' for n in stored_files[:3])}{' (e outros)' if len(stored_files) > 3 else ''}")
-    if not extra_names and not stored_files:
-        lines.append("ℹ️ **Nenhum arquivo externo anexado ou catalogado.** A IA resolverá com base estritamente no enunciado e nas questões extraídos diretamente do Moodle.")
+    if extra_files:
+        attached_user = [p.name for p in extra_files if "temp_uploads" in str(p)]
+        selected_mats = [p.name for p in extra_files if "temp_uploads" not in str(p)]
+
+        if attached_user:
+            lines.append(f"📎 **Arquivo(s) anexado(s) por você:** {', '.join(f'`{n}`' for n in attached_user)}")
+        if selected_mats:
+            lines.append(f"📚 **Material(is) de apoio selecionado(s) da matéria:** {', '.join(f'`{n}`' for n in selected_mats)}")
+    else:
+        lines.append("ℹ️ **Nenhum material de apoio externo selecionado.** A IA resolverá com base estritamente no enunciado e nas questões extraídos diretamente do Moodle.")
+
     return "\n".join(lines)
 
 
@@ -999,17 +1203,28 @@ async def _execute_solve_flow(
 @app_commands.describe(
     tarefa="ID, link ou nome da tarefa pendente a ser resolvida",
     instrucoes="Instruções adicionais personalizadas (ex: use linguagem R ou deduza passo a passo)",
-    arquivo="Arquivo de referência complementar (enunciado, foto ou PDF)"
+    arquivo="Arquivo de referência complementar anexado por você (enunciado, foto ou PDF)",
+    material_1="Material 1 salvo da matéria para usar como apoio (opcional)",
+    material_2="Material 2 salvo da matéria para usar como apoio (opcional)",
+    material_3="Material 3 salvo da matéria para usar como apoio (opcional)"
 )
-@app_commands.autocomplete(tarefa=pending_task_autocomplete)
+@app_commands.autocomplete(
+    tarefa=pending_task_autocomplete,
+    material_1=task_material_autocomplete,
+    material_2=task_material_autocomplete,
+    material_3=task_material_autocomplete
+)
 async def cmd_resolver(
     interaction: discord.Interaction,
     tarefa: str,
     instrucoes: Optional[str] = None,
-    arquivo: Optional[discord.Attachment] = None
+    arquivo: Optional[discord.Attachment] = None,
+    material_1: Optional[str] = None,
+    material_2: Optional[str] = None,
+    material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
-    extra_files = []
+    extra_files: List[Path] = []
     if arquivo:
         temp_dir = Path("storage/submissions/temp_uploads")
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -1017,6 +1232,56 @@ async def cmd_resolver(
         await arquivo.save(dest_file)
         extra_files.append(dest_file)
 
+    available_mats = get_course_materials_for_task(tarefa)
+
+    # Verifica se o usuário especificou materiais diretamente nos parâmetros do comando
+    specified_mats = [m for m in [material_1, material_2, material_3] if m]
+    if specified_mats:
+        for m_name in specified_mats:
+            for p in available_mats:
+                if p.name == m_name or normalize_text(p.name) == normalize_text(m_name):
+                    if p not in extra_files:
+                        extra_files.append(p)
+                    break
+        await _execute_solve_flow(
+            send_func=interaction.followup.send,
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            extra_files=extra_files,
+            is_refazer=False
+        )
+        return
+
+    # Se não especificou materiais nos parâmetros e há materiais salvos da matéria:
+    if available_mats:
+        embed = discord.Embed(
+            title="📚 Seleção de Materiais de Apoio",
+            description=(
+                f"Foram identificados **{len(available_mats)} material(is)** salvos para esta disciplina.\n\n"
+                "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
+                "*(Ou clique diretamente em 'Resolver sem materiais extras')*"
+            ),
+            color=discord.Color.blue()
+        )
+        if extra_files:
+            embed.add_field(
+                name="📎 Arquivo Anexado por Você",
+                value=f"`{extra_files[0].name}` (será enviado obrigatoriamente)",
+                inline=False
+            )
+        view = MaterialSelectionView(
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            attached_files=extra_files,
+            available_materials=available_mats,
+            send_func=interaction.followup.send,
+            interaction_or_ctx=interaction,
+            is_refazer=False
+        )
+        await interaction.followup.send(embed=embed, view=view)
+        return
+
+    # Caso não haja materiais salvos para a disciplina:
     await _execute_solve_flow(
         send_func=interaction.followup.send,
         tarefa=tarefa,
@@ -1030,23 +1295,81 @@ async def cmd_resolver(
 @app_commands.describe(
     tarefa="ID, link ou nome da tarefa concluída a ser refeita",
     instrucoes="Novas instruções ou ajustes desejados (ex: refazer questão 2 com mais detalhes)",
-    arquivo="Arquivo de referência complementar (enunciado, foto ou PDF)"
+    arquivo="Arquivo de referência complementar anexado por você (enunciado, foto ou PDF)",
+    material_1="Material 1 salvo da matéria para usar como apoio (opcional)",
+    material_2="Material 2 salvo da matéria para usar como apoio (opcional)",
+    material_3="Material 3 salvo da matéria para usar como apoio (opcional)"
 )
-@app_commands.autocomplete(tarefa=completed_task_autocomplete)
+@app_commands.autocomplete(
+    tarefa=completed_task_autocomplete,
+    material_1=task_material_autocomplete,
+    material_2=task_material_autocomplete,
+    material_3=task_material_autocomplete
+)
 async def cmd_refazer(
     interaction: discord.Interaction,
     tarefa: str,
     instrucoes: Optional[str] = None,
-    arquivo: Optional[discord.Attachment] = None
+    arquivo: Optional[discord.Attachment] = None,
+    material_1: Optional[str] = None,
+    material_2: Optional[str] = None,
+    material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
-    extra_files = []
+    extra_files: List[Path] = []
     if arquivo:
         temp_dir = Path("storage/submissions/temp_uploads")
         temp_dir.mkdir(parents=True, exist_ok=True)
         dest_file = temp_dir / sanitize_filename(arquivo.filename)
         await arquivo.save(dest_file)
         extra_files.append(dest_file)
+
+    available_mats = get_course_materials_for_task(tarefa)
+
+    specified_mats = [m for m in [material_1, material_2, material_3] if m]
+    if specified_mats:
+        for m_name in specified_mats:
+            for p in available_mats:
+                if p.name == m_name or normalize_text(p.name) == normalize_text(m_name):
+                    if p not in extra_files:
+                        extra_files.append(p)
+                    break
+        await _execute_solve_flow(
+            send_func=interaction.followup.send,
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            extra_files=extra_files,
+            is_refazer=True
+        )
+        return
+
+    if available_mats:
+        embed = discord.Embed(
+            title="📚 Seleção de Materiais de Apoio (Refazer)",
+            description=(
+                f"Foram identificados **{len(available_mats)} material(is)** salvos para esta disciplina.\n\n"
+                "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
+                "*(Ou clique diretamente em 'Refazer sem materiais extras')*"
+            ),
+            color=discord.Color.blue()
+        )
+        if extra_files:
+            embed.add_field(
+                name="📎 Arquivo Anexado por Você",
+                value=f"`{extra_files[0].name}` (será enviado obrigatoriamente)",
+                inline=False
+            )
+        view = MaterialSelectionView(
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            attached_files=extra_files,
+            available_materials=available_mats,
+            send_func=interaction.followup.send,
+            interaction_or_ctx=interaction,
+            is_refazer=True
+        )
+        await interaction.followup.send(embed=embed, view=view)
+        return
 
     await _execute_solve_flow(
         send_func=interaction.followup.send,
@@ -1145,6 +1468,35 @@ async def prefix_resolver(ctx: commands.Context, tarefa: str, *, instrucoes: Opt
             await att.save(dest_file)
             extra_files.append(dest_file)
 
+    available_mats = get_course_materials_for_task(tarefa)
+    if available_mats:
+        embed = discord.Embed(
+            title="📚 Seleção de Materiais de Apoio",
+            description=(
+                f"Foram identificados **{len(available_mats)} material(is)** salvos para esta disciplina.\n\n"
+                "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
+                "*(Ou clique diretamente em 'Resolver sem materiais extras')*"
+            ),
+            color=discord.Color.blue()
+        )
+        if extra_files:
+            embed.add_field(
+                name="📎 Arquivo Anexado por Você",
+                value=f"`{extra_files[0].name}` (será enviado obrigatoriamente)",
+                inline=False
+            )
+        view = MaterialSelectionView(
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            attached_files=extra_files,
+            available_materials=available_mats,
+            send_func=ctx.send,
+            interaction_or_ctx=ctx,
+            is_refazer=False
+        )
+        await ctx.send(embed=embed, view=view)
+        return
+
     await _execute_solve_flow(
         send_func=ctx.send,
         tarefa=tarefa,
@@ -1165,6 +1517,35 @@ async def prefix_refazer(ctx: commands.Context, tarefa: str, *, instrucoes: Opti
             dest_file = temp_dir / sanitize_filename(att.filename)
             await att.save(dest_file)
             extra_files.append(dest_file)
+
+    available_mats = get_course_materials_for_task(tarefa)
+    if available_mats:
+        embed = discord.Embed(
+            title="📚 Seleção de Materiais de Apoio (Refazer)",
+            description=(
+                f"Foram identificados **{len(available_mats)} material(is)** salvos para esta disciplina.\n\n"
+                "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
+                "*(Ou clique diretamente em 'Refazer sem materiais extras')*"
+            ),
+            color=discord.Color.blue()
+        )
+        if extra_files:
+            embed.add_field(
+                name="📎 Arquivo Anexado por Você",
+                value=f"`{extra_files[0].name}` (será enviado obrigatoriamente)",
+                inline=False
+            )
+        view = MaterialSelectionView(
+            tarefa=tarefa,
+            instrucoes=instrucoes,
+            attached_files=extra_files,
+            available_materials=available_mats,
+            send_func=ctx.send,
+            interaction_or_ctx=ctx,
+            is_refazer=True
+        )
+        await ctx.send(embed=embed, view=view)
+        return
 
     await _execute_solve_flow(
         send_func=ctx.send,

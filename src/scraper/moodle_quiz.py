@@ -12,6 +12,7 @@ Recursos principais:
 
 import asyncio
 import json
+import logging
 import random
 import re
 import sys
@@ -22,6 +23,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from playwright.async_api import async_playwright
 from rich.console import Console
+
+logger = logging.getLogger(__name__)
 
 from config.settings import settings
 from src.auth.moodle_auth import MoodleAuth
@@ -43,6 +46,48 @@ def normalize_str(text: str) -> str:
     if not text:
         return ""
     return unicodedata.normalize("NFKD", text).encode("ASCII", "ignore").decode("utf-8").strip().lower()
+
+
+def extract_checkbox_letters(target_text: str) -> Set[str]:
+    """Extrai letras de alternativas pretendidas (ex: 'a, c', 'A e D', '[a, c]')
+    evitando falsos positivos com preposições e artigos na língua portuguesa (como 'a' em 'a pessoa')."""
+    if not target_text:
+        return set()
+    clean = target_text.strip()
+    # 1. Se for uma lista pura de letras ou letras com pontuação (ex: 'a, c', 'A e D', '[a, c]', 'a; b; d')
+    letters_only = re.sub(r"[\[\]\(\)\s,;/]+|\s+(?:e|and)\s+", " ", clean, flags=re.IGNORECASE).strip()
+    if re.fullmatch(r"(?:[a-eA-E]\s*)+", letters_only):
+        return set(re.findall(r"[a-eA-E]", letters_only.lower()))
+
+    # 2. Marcadores explícitos de alternativa: "a.", "a)", "a:", "a -", "- a."
+    explicit = set(re.findall(r"(?:^|[\s,;(\[])([a-eA-E])(?:\.|\)|\:|\s*-)", clean.lower()))
+    if explicit:
+        return explicit
+
+    # 3. Frases como "alternativas A e D", "opções A, B e C", "itens A e C"
+    alt_match = re.search(r"(?:alternativas?|opç[õo]es?|itens?)\s+([a-eA-E](?:(?:\s*[,;/]\s*|\s+(?:e|and)\s+)[a-eA-E])*)", clean, re.IGNORECASE)
+    if alt_match:
+        tokens = re.split(r"\s+(?:e|and)\s+|\s*[,;/]\s*", alt_match.group(1).strip())
+        return set(t.lower().strip() for t in tokens if t.lower().strip() in "abcde")
+
+    return set()
+
+
+def split_association_item(val_str: str) -> Tuple[str, str]:
+    """Separa enunciado da linha e valor pretendido em questões de associação.
+    Evita que hífens contidos no próprio texto (ex: '1978 - The birth...') sejam confundidos com separadores."""
+    clean = re.sub(r"^\s*\d+[\.\)\-]\s*", "", str(val_str)).strip()
+    if "→" in clean:
+        parts = clean.rsplit("→", 1)
+    elif "->" in clean:
+        parts = clean.rsplit("->", 1)
+    elif ":" in clean:
+        parts = clean.rsplit(":", 1)
+    else:
+        parts = [clean]
+    left = re.sub(r"^(?:Q\d+(?:_\d+)?|CAMPO_\d+)\s*:\s*", "", parts[0].strip("* ").strip(), flags=re.IGNORECASE)
+    right = parts[1].strip("* ").strip() if len(parts) > 1 else ""
+    return left, right
 
 
 async def _emit_log(callback: Optional[Any], msg: str):
@@ -211,12 +256,13 @@ class MoodleQuizAutomator:
                         
                         const clone = contentEl.cloneNode(true);
 
-                        // Remove todos os spans de acessibilidade, controles internos, botões e mensagens do Moodle
+                        // Remove todos os spans de acessibilidade, controles internos, botões, barras de ferramentas e containeres de editores
                         clone.querySelectorAll(
-                            '.accesshide, .sr-only, .im-controls, input[type="submit"], input[type="button"], button, .comment, .feedback, .grading, .history'
+                            '.accesshide, .sr-only, .im-controls, .editor_atto_toolbar, .tox, .tox-tinymce, .tox-toolbar, .tox-menubar, .tox-statusbar, .editor_atto_content, input[type="submit"], input[type="button"], button, .comment, .feedback, .grading, .history'
                         ).forEach(el => el.remove());
 
-                        const inputs = clone.querySelectorAll("input[type='text'], textarea");
+                        // 1. Inputs de texto, números, textareas e caixas de redação/editor
+                        const inputs = clone.querySelectorAll("input:not([type='submit']):not([type='button']):not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='file']), textarea");
                         const inputMap = [];
 
                         inputs.forEach(inp => {
@@ -227,14 +273,31 @@ class MoodleQuizAutomator:
                                 name: inp.getAttribute("name"),
                                 id: inp.getAttribute("id"),
                                 index: globalInputIdx,
-                                type: "text"
+                                type: inp.tagName.toLowerCase() === "textarea" ? "textarea" : (inp.getAttribute("type") || "text")
                             });
                             const textNode = document.createTextNode(` ${token} `);
                             inp.parentNode.replaceChild(textNode, inp);
                             globalInputIdx++;
                         });
 
-                        // Menus suspensos / Comboboxes (select)
+                        // 2. Lacunas de Arrastar e Soltar (Drag and Drop into text - ddwtos)
+                        const dropZones = clone.querySelectorAll(".dropzone, span.drop, [class*='drop'][class*='place']");
+                        dropZones.forEach((dz, dzIdx) => {
+                            const token = `[[CAMPO_${globalInputIdx}]]`;
+                            inputMap.push({
+                                token: token,
+                                key: `CAMPO_${globalInputIdx}`,
+                                name: dz.getAttribute("name") || `dd_${dzIdx+1}`,
+                                id: dz.getAttribute("id") || `dd_${dzIdx+1}`,
+                                index: globalInputIdx,
+                                type: "dragdrop"
+                            });
+                            const textNode = document.createTextNode(` ${token} `);
+                            dz.parentNode.replaceChild(textNode, dz);
+                            globalInputIdx++;
+                        });
+
+                        // 3. Menus suspensos / Comboboxes (select)
                         const selects = clone.querySelectorAll("select");
                         selects.forEach(sel => {
                             const token = `[[CAMPO_${globalInputIdx}]]`;
@@ -257,9 +320,10 @@ class MoodleQuizAutomator:
                             globalInputIdx++;
                         });
 
-                        // Opções de rádio (múltipla escolha)
+                        // 4. Opções de rádio e checkbox (múltipla escolha)
                         const radioOptions = [];
-                        const answerNode = q.querySelector(".answer");
+                        const checkboxOptions = [];
+                        const answerNode = q.querySelector(".answer") || q;
                         if (answerNode) {
                             const radios = answerNode.querySelectorAll("input[type='radio']");
                             radios.forEach(r => {
@@ -270,7 +334,20 @@ class MoodleQuizAutomator:
                                     text: lbl ? lbl.innerText.trim() : ""
                                 });
                             });
+
+                            const checkboxes = answerNode.querySelectorAll("input[type='checkbox']");
+                            checkboxes.forEach(cb => {
+                                const lbl = cb.closest("div, label, tr");
+                                checkboxOptions.push({
+                                    name: cb.getAttribute("name"),
+                                    value: cb.getAttribute("value"),
+                                    text: lbl ? lbl.innerText.trim() : ""
+                                });
+                            });
                         }
+
+                        // Palavras arrastáveis disponíveis no enunciado (ddwtos)
+                        const dragHomes = Array.from(q.querySelectorAll(".draghome, .drag")).map(d => d.innerText.trim()).filter(Boolean);
 
                         // Limpeza de resíduos de texto do Moodle
                         let cleanText = clone.innerText.trim();
@@ -280,8 +357,16 @@ class MoodleQuizAutomator:
                         cleanText = cleanText.replace(/Questão \d+\s*Anot/gi, 'Anot');
                         cleanText = cleanText.replace(/\n{3,}/g, '\n\n').trim();
 
+                        if (checkboxOptions.length > 0) {
+                            cleanText += "\n(Atenção: Questão de múltipla escolha com caixas de seleção / checkboxes. Mais de uma alternativa pode estar correta. Indique todas as opções corretas.)";
+                        }
+                        if (dragHomes.length > 0) {
+                            const uniqueDrags = [...new Set(dragHomes)];
+                            cleanText += `\n(Palavras disponíveis para arrastar: ${uniqueDrags.join(" | ")})`;
+                        }
+
                         // Se for apenas bloco informativo do Moodle (.que.description) sem campos a responder
-                        const isInfoOnly = q.classList.contains("description") || (inputMap.length === 0 && radioOptions.length === 0 && !cleanText.includes("?"));
+                        const isInfoOnly = q.classList.contains("description") || (inputMap.length === 0 && radioOptions.length === 0 && checkboxOptions.length === 0 && !cleanText.includes("?"));
 
                         questions.push({
                             qIndex: qIndex + 1,
@@ -290,6 +375,7 @@ class MoodleQuizAutomator:
                             inputsCount: inputMap.length,
                             inputs: inputMap,
                             radios: radioOptions,
+                            checkboxes: checkboxOptions,
                             isInfoOnly: isInfoOnly
                         });
                     });
@@ -388,17 +474,23 @@ class MoodleQuizAutomator:
         if isinstance(answers, dict):
             for k, v in answers.items():
                 clean_k = str(k).upper().replace("[[", "").replace("]]", "").strip()
-                answers_dict[clean_k] = str(v)
+                if isinstance(v, list):
+                    answers_dict[clean_k] = ", ".join(str(x) for x in v)
+                    for s_idx, sv in enumerate(v):
+                        answers_dict[f"{clean_k}_{s_idx+1}"] = str(sv)
+                else:
+                    answers_dict[clean_k] = str(v)
+
                 q_m = re.search(r"^(?:QUEST[ÃA]O|Q)\s*(\d+)(?:_(\d+))?$", clean_k)
                 if q_m:
                     num = q_m.group(1)
                     sub = q_m.group(2)
                     if sub:
-                        answers_dict[f"Q{num}_{sub}"] = str(v)
+                        answers_dict[f"Q{num}_{sub}"] = answers_dict[clean_k]
                     else:
-                        answers_dict[f"Q{num}"] = str(v)
+                        answers_dict[f"Q{num}"] = answers_dict[clean_k]
                 elif clean_k.isdigit():
-                    answers_dict[f"Q{clean_k}"] = str(v)
+                    answers_dict[f"Q{clean_k}"] = answers_dict[clean_k]
         elif isinstance(answers, list):
             for item in answers:
                 if isinstance(item, dict):
@@ -406,21 +498,28 @@ class MoodleQuizAutomator:
                     v = item.get("value")
                     if k is not None and v is not None:
                         clean_k = str(k).upper().replace("[[", "").replace("]]", "").strip()
-                        answers_dict[clean_k] = str(v)
+                        if isinstance(v, list):
+                            answers_dict[clean_k] = ", ".join(str(x) for x in v)
+                            for s_idx, sv in enumerate(v):
+                                answers_dict[f"{clean_k}_{s_idx+1}"] = str(sv)
+                        else:
+                            answers_dict[clean_k] = str(v)
                         q_m = re.search(r"^(?:QUEST[ÃA]O|Q)\s*(\d+)(?:_(\d+))?$", clean_k)
                         if q_m:
                             num = q_m.group(1)
                             sub = q_m.group(2)
                             if sub:
-                                answers_dict[f"Q{num}_{sub}"] = str(v)
+                                answers_dict[f"Q{num}_{sub}"] = answers_dict[clean_k]
                             else:
-                                answers_dict[f"Q{num}"] = str(v)
+                                answers_dict[f"Q{num}"] = answers_dict[clean_k]
                         elif clean_k.isdigit():
-                            answers_dict[f"Q{clean_k}"] = str(v)
+                            answers_dict[f"Q{clean_k}"] = answers_dict[clean_k]
                     elif "question" in item:
                         q_num = item["question"]
                         ans_val = item.get("answer") or item.get("answers")
                         if isinstance(ans_val, list):
+                            joined = ", ".join(str(sv) for sv in ans_val)
+                            answers_dict[f"Q{q_num}"] = joined
                             for s_idx, sv in enumerate(ans_val):
                                 answers_dict[f"Q{q_num}_{s_idx+1}"] = str(sv)
                         else:
@@ -463,154 +562,506 @@ class MoodleQuizAutomator:
                         num_match = re.search(r"\d+", no_text)
                         q_num = int(num_match.group(0)) if num_match else (i + 1)
 
-                        # 1. Inputs de texto / Lacunas
-                        text_inputs = q_el.locator("input[type='text'], textarea")
+                        # 1. Inputs de texto, numéricos e caixas de redação/editores ricos
+                        text_inputs = q_el.locator("input:not([type='submit']):not([type='button']):not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='file']), textarea")
                         text_count = await text_inputs.count()
 
                         for t_idx in range(text_count):
                             inp = text_inputs.nth(t_idx)
                             token_key = f"CAMPO_{global_input_idx}"
                             
-                            # Busca a resposta correspondente
-                            target_val = answers_dict.get(token_key)
-                            if not target_val:
-                                target_val = answers_dict.get(f"Q{q_num}_{t_idx+1}")
-                            if not target_val:
-                                target_val = answers_dict.get(f"Q{q_num}")
+                            # Busca a resposta correspondente (com suporte amplo a aliases de chaves)
+                            if text_count == 1:
+                                # Questão com campo único de resposta: prioriza sempre a chave direta da questão (Q3, QUESTÃO 3, etc.)
+                                target_val = (
+                                    answers_dict.get(f"Q{q_num}") or
+                                    answers_dict.get(f"QUESTAO_{q_num}") or
+                                    answers_dict.get(f"QUESTAO {q_num}") or
+                                    answers_dict.get(f"Questão {q_num}") or
+                                    answers_dict.get(str(q_num)) or
+                                    answers_dict.get(f"Q{q_num}_{t_idx+1}") or
+                                    answers_dict.get(token_key)
+                                )
+                            else:
+                                # Questão com múltiplas lacunas no texto: prioriza a lacuna específica ou token
+                                target_val = (
+                                    answers_dict.get(f"Q{q_num}_{t_idx+1}") or
+                                    answers_dict.get(token_key) or
+                                    answers_dict.get(f"Q{q_num}") or
+                                    answers_dict.get(f"QUESTAO_{q_num}") or
+                                    answers_dict.get(f"QUESTAO {q_num}") or
+                                    answers_dict.get(f"Questão {q_num}") or
+                                    answers_dict.get(str(q_num))
+                                )
 
-                            # Limpa barras e escolhe apenas a primeira opção se vier com barra
-                            if target_val and "/" in target_val:
-                                options = [o.strip() for o in target_val.split("/") if o.strip()]
+                            # Limpa barras e escolhe apenas a primeira opção se vier com barra (apenas para lacunas curtas)
+                            if target_val and "/" in str(target_val) and len(str(target_val)) < 60:
+                                options = [o.strip() for o in str(target_val).split("/") if o.strip()]
                                 target_val = options[0] if options else target_val
 
                             if target_val:
-                                target_val = target_val.strip()
-                                # Foco e digitação simulada tecla a tecla
-                                await inp.focus()
-                                await inp.fill("") # Limpa valor anterior
-                                await asyncio.sleep(random.uniform(0.2, 0.5))
-                                await inp.press_sequentially(target_val, delay=random.randint(40, 85))
-                                total_filled += 1
-                                console.print(f"  ✔ [{token_key}] Preenchido com cadência humana: '{target_val}'")
-                                await _emit_log(on_log, f"✔ [{token_key}] Preenchido: '{target_val[:25]}'")
-                                
-                                # Pausa natural entre preenchimentos (simulando leitura)
-                                await asyncio.sleep(random.uniform(1.2, 3.0))
+                                target_val = str(target_val).strip()
+
+                                # Limpa eventuais marcadores como "**Resposta:**" ou "- **Resposta:**" e asteriscos
+                                target_val = re.sub(r"^\s*-\s*\*\*Resposta:\*\*\s*", "", target_val, flags=re.IGNORECASE).strip()
+                                target_val = re.sub(r"^\s*\*\*Resposta:\*\*\s*", "", target_val, flags=re.IGNORECASE).strip()
+                                target_val = re.sub(r"^\s*Resposta:\s*", "", target_val, flags=re.IGNORECASE).strip()
+                                target_val = target_val.strip("*").strip()
+
+                                is_visible = False
+                                try:
+                                    is_visible = await inp.is_visible()
+                                except Exception:
+                                    is_visible = False
+
+                                inp_id = ""
+                                try:
+                                    inp_id = (await inp.get_attribute("id")) or ""
+                                except Exception:
+                                    pass
+
+                                field_type = ""
+                                try:
+                                    field_type = (await inp.get_attribute("data-fieldtype")) or ""
+                                except Exception:
+                                    pass
+
+                                # Trata editores ricos do Moodle (TinyMCE 6 / TinyMCE 5 / Atto / Questões discursivas)
+                                is_tinymce_present = (await q_el.locator(".tox, .tox-tinymce, iframe.tox-edit-area__iframe, iframe[id$='_ifr']").count() > 0)
+                                inp_tag = ""
+                                try:
+                                    inp_tag = await inp.evaluate("el => el.tagName.toLowerCase()")
+                                except Exception:
+                                    pass
+                                is_rich_editor = (field_type == "editor") or is_tinymce_present or (inp_tag == "textarea") or (not is_visible and "answer" in inp_id)
+
+                                if is_rich_editor:
+                                    console.print(f"  [cyan]Detectado editor rico/discursivo no Moodle para [{token_key}][/cyan]")
+                                    await _emit_log(on_log, f"Preenchendo resposta dissertativa para [{token_key}]...")
+
+                                    visual_typed = False
+
+                                    # A. TinyMCE 6 / TinyMCE 5 (Moodle 4.x) via API JavaScript oficial do navegador
+                                    try:
+                                        tinymce_updated = await page.evaluate(r"""([inpId, val]) => {
+                                            if (!window.tinymce) return false;
+                                            let ed = window.tinymce.get(inpId);
+                                            if (!ed && window.tinymce.editors) {
+                                                for (let i = 0; i < window.tinymce.editors.length; i++) {
+                                                    const item = window.tinymce.editors[i];
+                                                    if (item.id === inpId || item.id === inpId + '_ifr' || 
+                                                        (item.targetElm && (item.targetElm.id === inpId || item.targetElm.name === inpId || item.targetElm.id.includes(inpId)))) {
+                                                        ed = item;
+                                                        break;
+                                                    }
+                                                }
+                                                if (!ed && window.tinymce.editors.length === 1) {
+                                                    ed = window.tinymce.editors[0];
+                                                }
+                                            }
+                                            if (!ed && window.tinymce.activeEditor) {
+                                                ed = window.tinymce.activeEditor;
+                                            }
+                                            if (ed) {
+                                                const formatted = val.includes('<p>') ? val : '<p>' + val.replace(/\n/g, '<br>') + '</p>';
+                                                ed.setContent(formatted);
+                                                if (typeof ed.save === 'function') ed.save();
+                                                ed.fire('change');
+                                                ed.fire('input');
+                                                return true;
+                                            }
+                                            return false;
+                                        }""", [inp_id, target_val])
+                                        if tinymce_updated:
+                                            visual_typed = True
+                                    except Exception as tiny_js_err:
+                                        logger.debug(f"TinyMCE JS API check: {tiny_js_err}")
+
+                                    # B. Se não atualizou via JS API (ex: AMD module), usa Iframe do Playwright diretamente
+                                    if not visual_typed:
+                                        tinymce_frames = [
+                                            q_el.frame_locator("iframe.tox-edit-area__iframe, iframe[id$='_ifr'], .tox iframe, iframe"),
+                                            page.frame_locator(f"iframe[id*='{inp_id}'], iframe.tox-edit-area__iframe") if inp_id else q_el.frame_locator("iframe")
+                                        ]
+                                        for fr in tinymce_frames:
+                                            try:
+                                                body_loc = fr.locator("body#tinymce, body.mce-content-body, body[contenteditable='true']").first
+                                                if await body_loc.count() > 0:
+                                                    await body_loc.focus()
+                                                    await body_loc.evaluate("(el) => { el.innerHTML = ''; }")
+                                                    if len(target_val) <= 250:
+                                                        await body_loc.press_sequentially(target_val, delay=random.randint(20, 50))
+                                                    else:
+                                                        await body_loc.evaluate(r"""(el, val) => {
+                                                            const p = document.createElement('p');
+                                                            p.textContent = val;
+                                                            el.innerHTML = '';
+                                                            el.appendChild(p);
+                                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                                        }""", target_val)
+                                                        await body_loc.press("End")
+                                                    visual_typed = True
+                                                    await body_loc.dispatch_event("input")
+                                                    await body_loc.dispatch_event("change")
+                                                    break
+                                            except Exception as fr_err:
+                                                logger.debug(f"Tentativa de digitação no iframe TinyMCE: {fr_err}")
+
+                                    # Sincroniza TinyMCE via save() se disponível
+                                    try:
+                                        await page.evaluate(r"""([inpId]) => {
+                                            if (!window.tinymce) return;
+                                            let ed = window.tinymce.get(inpId);
+                                            if (!ed && window.tinymce.editors && window.tinymce.editors.length > 0) ed = window.tinymce.editors[0];
+                                            if (ed && typeof ed.save === 'function') ed.save();
+                                        }""", [inp_id])
+                                    except Exception:
+                                        pass
+
+                                    # C. Atto Editor (Moodle 3.x) ou DIVs com contenteditable="true"
+                                    if not visual_typed:
+                                        editor_locators = []
+                                        if inp_id:
+                                            editor_locators.append(q_el.locator(f"[id='{inp_id}editable']"))
+                                        editor_locators.extend([
+                                            q_el.locator("div.editor_atto_content"),
+                                            q_el.locator("div[contenteditable='true']"),
+                                            q_el.locator(".form-editor div[role='textbox']")
+                                        ])
+
+                                        for ed_loc in editor_locators:
+                                            try:
+                                                if await ed_loc.count() > 0 and await ed_loc.first.is_visible():
+                                                    target_ed = ed_loc.first
+                                                    await target_ed.focus()
+                                                    await target_ed.evaluate("(el) => { el.innerHTML = ''; }")
+                                                    if len(target_val) <= 250:
+                                                        await target_ed.press_sequentially(target_val, delay=random.randint(20, 50))
+                                                    else:
+                                                        await target_ed.evaluate(r"""(el, val) => {
+                                                            const p = document.createElement('p');
+                                                            p.textContent = val;
+                                                            el.innerHTML = '';
+                                                            el.appendChild(p);
+                                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                                        }""", target_val)
+                                                        await target_ed.press("End")
+                                                    visual_typed = True
+                                                    break
+                                            except Exception as ed_err:
+                                                logger.debug(f"Foco no editor visual falhou: {ed_err}")
+
+                                    # D. Injeção direta no <textarea> subjacente (garante envio no POST do Moodle)
+                                    try:
+                                        await inp.evaluate(r"""(el, val) => {
+                                            if (!el.value || el.value.trim() === '') {
+                                                el.value = val;
+                                            }
+                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }""", target_val)
+                                    except Exception as tx_err:
+                                        logger.warning(f"Falha ao injetar valor no textarea: {tx_err}")
+
+                                    total_filled += 1
+                                    console.print(f"  ✔ [{token_key}] Preenchido editor rico (TinyMCE/Atto) com sucesso!")
+                                    await _emit_log(on_log, f"✔ [{token_key}] Preenchido (Dissertativa): '{target_val[:30]}...'")
+                                    await asyncio.sleep(random.uniform(1.0, 2.5))
+
+                                elif is_visible:
+                                    # Campo visível padrão (lacuna de texto, número, etc.)
+                                    try:
+                                        await inp.focus()
+                                        await inp.fill("") # Limpa valor anterior
+                                        await asyncio.sleep(random.uniform(0.2, 0.4))
+                                        await inp.press_sequentially(target_val, delay=random.randint(35, 75))
+                                        total_filled += 1
+                                        console.print(f"  ✔ [{token_key}] Preenchido com cadência humana: '{target_val}'")
+                                        await _emit_log(on_log, f"✔ [{token_key}] Preenchido: '{target_val[:25]}'")
+                                        await asyncio.sleep(random.uniform(0.8, 2.0))
+                                    except Exception as fill_err:
+                                        console.print(f"  [yellow]Aviso: fallback para evaluate em [{token_key}] ({fill_err})[/yellow]")
+                                        await inp.evaluate(r"""(el, val) => {
+                                            el.value = val;
+                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                        }""", target_val)
+                                        total_filled += 1
+                                else:
+                                    # Campo oculto não-editor (fallback seguro sem Playwright timeout)
+                                    console.print(f"  [cyan]Campo [{token_key}] oculto; aplicando valor diretamente via DOM[/cyan]")
+                                    await inp.evaluate(r"""(el, val) => {
+                                        el.value = val;
+                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                    }""", target_val)
+                                    total_filled += 1
 
                             global_input_idx += 1
 
-                        # 2. Alternativas de Múltipla Escolha (Radio buttons) - Imune ao embaralhamento do Moodle
+                        # Se não encontrou nenhum input/textarea tradicional mas há editor rico isolado (TinyMCE / Atto) na questão
+                        if text_count == 0:
+                            has_isolated_editor = (await q_el.locator(".tox, .tox-tinymce, iframe.tox-edit-area__iframe, .editor_atto_content, div[contenteditable='true']").count() > 0)
+                            if has_isolated_editor:
+                                token_key = f"CAMPO_{global_input_idx}"
+                                target_val = (
+                                    answers_dict.get(f"Q{q_num}") or
+                                    answers_dict.get(f"QUESTAO_{q_num}") or
+                                    answers_dict.get(f"QUESTAO {q_num}") or
+                                    answers_dict.get(f"Questão {q_num}") or
+                                    answers_dict.get(str(q_num)) or
+                                    answers_dict.get(token_key)
+                                )
+                                if target_val:
+                                    console.print(f"  [cyan]Detectado editor rico isolado sem textarea visível para [{token_key}][/cyan]")
+                                    await _emit_log(on_log, f"Preenchendo editor dissertativo para [{token_key}]...")
+                                    filled_isolated = False
+                                    try:
+                                        filled_isolated = await page.evaluate(r"""(val) => {
+                                            if (!window.tinymce || !window.tinymce.editors || window.tinymce.editors.length === 0) return false;
+                                            const ed = window.tinymce.activeEditor || window.tinymce.editors[0];
+                                            if (ed) {
+                                                const formatted = val.includes('<p>') ? val : '<p>' + val.replace(/\n/g, '<br>') + '</p>';
+                                                ed.setContent(formatted);
+                                                if (typeof ed.save === 'function') ed.save();
+                                                ed.fire('change');
+                                                ed.fire('input');
+                                                return true;
+                                            }
+                                            return false;
+                                        }""", str(target_val))
+                                    except Exception:
+                                        pass
+                                    if not filled_isolated:
+                                        try:
+                                            fr = q_el.frame_locator("iframe.tox-edit-area__iframe, iframe[id$='_ifr'], .tox iframe, iframe")
+                                            body_loc = fr.locator("body#tinymce, body.mce-content-body, body[contenteditable='true']").first
+                                            if await body_loc.count() > 0:
+                                                await body_loc.focus()
+                                                await body_loc.evaluate("(el) => { el.innerHTML = ''; }")
+                                                if len(str(target_val)) <= 250:
+                                                    await body_loc.press_sequentially(str(target_val), delay=random.randint(20, 50))
+                                                else:
+                                                    await body_loc.evaluate(r"""(el, val) => {
+                                                        const p = document.createElement('p');
+                                                        p.textContent = val;
+                                                        el.innerHTML = '';
+                                                        el.appendChild(p);
+                                                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                                                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                                                    }""", str(target_val))
+                                                filled_isolated = True
+                                        except Exception:
+                                            pass
+                                    if filled_isolated:
+                                        total_filled += 1
+                                        console.print(f"  ✔ [{token_key}] Editor isolado preenchido com sucesso!")
+                                        await _emit_log(on_log, f"✔ [{token_key}] Preenchido (Dissertativa): '{str(target_val)[:30]}...'")
+                                global_input_idx += 1
+
+                        # 2. Alternativas de Múltipla Escolha (Radio buttons) - Suporta escolha única e matrizes (V/F por linha)
                         radios = q_el.locator("input[type='radio']")
                         r_count = await radios.count()
                         if r_count > 0:
-                            target_val = (
-                                answers_dict.get(f"Q{q_num}") or
-                                answers_dict.get(f"QUESTAO_{q_num}") or
-                                answers_dict.get(f"QUESTAO {q_num}") or
-                                answers_dict.get(str(q_num)) or
-                                answers_dict.get(f"CAMPO_{global_input_idx}")
-                            )
-                            if target_val:
-                                clean_target = str(target_val).strip()
-                                clean_target = re.sub(r"^\s*-\s*\*\*Resposta:\*\*\s*", "", clean_target, flags=re.IGNORECASE).strip()
-                                clean_target = re.sub(r"^\s*\*\*Resposta:\*\*\s*", "", clean_target, flags=re.IGNORECASE).strip()
-                                clean_target = re.sub(r"^\s*Resposta:\s*", "", clean_target, flags=re.IGNORECASE).strip()
+                            # Identifica grupos de radio pelo atributo 'name' (suporta matrizes e tabelas de Verdadeiro/Falso)
+                            radio_names = []
+                            for r_idx in range(r_count):
+                                r_name = await radios.nth(r_idx).get_attribute("name") or "default"
+                                if r_name not in radio_names:
+                                    radio_names.append(r_name)
 
-                                # Letra do alvo (se houver, ex: 'c' de 'c. texto' ou apenas 'C')
-                                target_letter_match = re.match(r"^\s*([a-eA-E])(?:\.|\)|\:|\s|$)", clean_target)
-                                target_letter = target_letter_match.group(1).lower() if target_letter_match else None
+                            for g_idx, group_name in enumerate(radio_names):
+                                group_radios = q_el.locator(f"input[type='radio'][name='{group_name}']")
+                                gr_count = await group_radios.count()
+                                if gr_count == 0:
+                                    continue
 
-                                # Conteúdo textual do alvo (sem prefixo de letra)
-                                target_content = re.sub(r"^\s*([a-eA-E])(?:\.|\)|\:|\s|-)+", "", clean_target).strip()
-                                norm_target_content = normalize_str(target_content)
+                                # Rótulo textual da linha/pergunta associada (para matrizes)
+                                row_label = await group_radios.first.evaluate('''el => {
+                                    const row = el.closest('tr, .form-inline, .row, div.d-flex');
+                                    if (!row) return '';
+                                    const clone = row.cloneNode(true);
+                                    clone.querySelectorAll('input, .accesshide, .sr-only').forEach(e => e.remove());
+                                    return clone.innerText.trim();
+                                }''')
 
-                                # Extrai as opções renderizadas ao vivo nesta tentativa no Moodle
-                                candidate_options = []
-                                for r_idx in range(r_count):
-                                    r_inp = radios.nth(r_idx)
-                                    r_id = await r_inp.get_attribute("id")
-                                    opt_raw_text = ""
+                                if len(radio_names) == 1:
+                                    target_val = (
+                                        answers_dict.get(f"Q{q_num}") or
+                                        answers_dict.get(f"QUESTAO_{q_num}") or
+                                        answers_dict.get(f"QUESTAO {q_num}") or
+                                        answers_dict.get(f"Questão {q_num}") or
+                                        answers_dict.get(str(q_num)) or
+                                        answers_dict.get(f"CAMPO_{global_input_idx}")
+                                    )
+                                else:
+                                    target_val = (
+                                        answers_dict.get(f"Q{q_num}_{g_idx+1}") or
+                                        answers_dict.get(f"Q{q_num}_{chr(97+g_idx)}") or
+                                        answers_dict.get(f"CAMPO_{global_input_idx}")
+                                    )
+                                    if not target_val and row_label:
+                                        norm_row = normalize_str(row_label)
+                                        for k, v in answers_dict.items():
+                                            parts = re.split(r"[→\->:]", str(v), maxsplit=1)
+                                            if len(parts) == 2 and (norm_row in normalize_str(parts[0]) or normalize_str(parts[0]) in norm_row):
+                                                target_val = parts[1].strip()
+                                                break
 
-                                    if r_id:
-                                        lbl_loc = q_el.locator(f"label[for='{r_id}']")
-                                        if await lbl_loc.count() > 0:
-                                            opt_raw_text = await lbl_loc.first.inner_text()
+                                if target_val:
+                                    clean_target = str(target_val).strip()
+                                    clean_target = re.sub(r"^\s*-\s*\*\*Resposta:\*\*\s*", "", clean_target, flags=re.IGNORECASE).strip()
+                                    clean_target = re.sub(r"^\s*\*\*Resposta:\*\*\s*", "", clean_target, flags=re.IGNORECASE).strip()
+                                    clean_target = re.sub(r"^\s*Resposta:\s*", "", clean_target, flags=re.IGNORECASE).strip()
 
-                                    if not opt_raw_text.strip():
-                                        opt_raw_text = await r_inp.evaluate(
-                                            """el => {
+                                    target_letter_match = re.match(r"^\s*([a-eA-E])(?:\.|\)|\:|\s|$)", clean_target)
+                                    target_letter = target_letter_match.group(1).lower() if target_letter_match else None
+                                    target_content = re.sub(r"^\s*([a-eA-E])(?:\.|\)|\:|\s|-)+", "", clean_target).strip()
+                                    norm_target_content = normalize_str(target_content)
+
+                                    candidate_options = []
+                                    for r_idx in range(gr_count):
+                                        r_inp = group_radios.nth(r_idx)
+                                        r_id = await r_inp.get_attribute("id")
+                                        opt_raw_text = ""
+                                        if r_id:
+                                            lbl_loc = q_el.locator(f"label[for='{r_id}']")
+                                            if await lbl_loc.count() > 0:
+                                                opt_raw_text = await lbl_loc.first.inner_text()
+                                        if not opt_raw_text.strip():
+                                            opt_raw_text = await r_inp.evaluate("""el => {
                                                 const lbl = el.closest('label');
                                                 if (lbl && lbl.innerText && lbl.innerText.trim()) return lbl.innerText;
                                                 const container = el.closest('.r0, .r1, .answer, [class*="answer"], div.d-flex');
                                                 if (container && container.innerText && container.innerText.trim()) return container.innerText;
                                                 return '';
-                                            }"""
-                                        ) or ""
+                                            }""") or ""
 
-                                    clean_opt = opt_raw_text.replace("\n", " ").strip()
-                                    clean_opt = re.sub(r"(?i)não respondido|marcado|selecionado", "", clean_opt).strip()
+                                        clean_opt = opt_raw_text.replace("\n", " ").strip()
+                                        clean_opt = re.sub(r"(?i)não respondido|marcado|selecionado", "", clean_opt).strip()
+                                        opt_letter_match = re.search(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", clean_opt)
+                                        opt_letter = opt_letter_match.group(1).lower() if opt_letter_match else None
+                                        opt_content = re.sub(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", "", clean_opt).strip()
+                                        norm_opt_content = normalize_str(opt_content)
 
-                                    opt_letter_match = re.search(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", clean_opt)
-                                    opt_letter = opt_letter_match.group(1).lower() if opt_letter_match else None
+                                        candidate_options.append({
+                                            "locator": r_inp,
+                                            "raw_text": clean_opt,
+                                            "letter": opt_letter,
+                                            "content": opt_content,
+                                            "norm_content": norm_opt_content
+                                        })
 
-                                    opt_content = re.sub(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", "", clean_opt).strip()
-                                    norm_opt_content = normalize_str(opt_content)
+                                    best_match = None
+                                    best_score = -1
+                                    for opt in candidate_options:
+                                        score = 0
+                                        if len(norm_target_content) >= 3 and len(opt["norm_content"]) >= 3:
+                                            if norm_target_content == opt["norm_content"]:
+                                                score = 100
+                                            elif norm_target_content in opt["norm_content"] and len(norm_target_content) >= 8:
+                                                score = 90
+                                            elif opt["norm_content"] in norm_target_content and len(opt["norm_content"]) >= 8:
+                                                score = 90
+                                            else:
+                                                words_target = set(w for w in norm_target_content.split() if len(w) > 2)
+                                                words_opt = set(w for w in opt["norm_content"].split() if len(w) > 2)
+                                                if words_target and words_opt:
+                                                    overlap = len(words_target & words_opt)
+                                                    jaccard = overlap / max(len(words_target), len(words_opt))
+                                                    if jaccard >= 0.4:
+                                                        score = 50 + int(jaccard * 35)
 
-                                    candidate_options.append({
-                                        "locator": r_inp,
-                                        "raw_text": clean_opt,
-                                        "letter": opt_letter,
-                                        "content": opt_content,
-                                        "norm_content": norm_opt_content
-                                    })
+                                        if target_letter and opt["letter"] and target_letter == opt["letter"]:
+                                            if len(norm_target_content) < 3:
+                                                score = 80
+                                            else:
+                                                score += 15
 
-                                # Algoritmo de correspondência imune a embaralhamento
-                                best_match = None
-                                best_score = -1
+                                        if score > best_score:
+                                            best_score = score
+                                            best_match = opt
 
-                                for opt in candidate_options:
-                                    score = 0
-                                    # 1. Correspondência textual do conteúdo (imune a trocas de posição/letra)
-                                    if len(norm_target_content) >= 3 and len(opt["norm_content"]) >= 3:
-                                        if norm_target_content == opt["norm_content"]:
-                                            score = 100
-                                        elif norm_target_content in opt["norm_content"] and len(norm_target_content) >= 8:
-                                            score = 90
-                                        elif opt["norm_content"] in norm_target_content and len(opt["norm_content"]) >= 8:
-                                            score = 90
-                                        else:
-                                            words_target = set(w for w in norm_target_content.split() if len(w) > 2)
-                                            words_opt = set(w for w in opt["norm_content"].split() if len(w) > 2)
-                                            if words_target and words_opt:
-                                                overlap = len(words_target & words_opt)
-                                                jaccard = overlap / max(len(words_target), len(words_opt))
-                                                if jaccard >= 0.4:
-                                                    score = 50 + int(jaccard * 35)
+                                    if best_match and best_score >= 40:
+                                        await asyncio.sleep(random.uniform(0.6, 1.5))
+                                        try:
+                                            await best_match["locator"].check(timeout=4000)
+                                        except Exception:
+                                            await best_match["locator"].evaluate("el => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('input', { bubbles: true })); }")
+                                        total_filled += 1
+                                        tag_str = f"Q{q_num}.{g_idx+1}" if len(radio_names) > 1 else f"Q{q_num}"
+                                        console.print(
+                                            f"  ✔ [{tag_str}] Alternativa marcada (confiança {best_score}%): "
+                                            f"[{best_match['letter'] or '?'}] {best_match['content'][:40]}"
+                                        )
+                                        await _emit_log(on_log, f"✔ [{tag_str}] Marcada: [{best_match['letter'] or '?'}] {best_match['content'][:30]}")
 
-                                    # 2. Fallback de correspondência por letra exata (apenas se fornecida)
-                                    if target_letter and opt["letter"] and target_letter == opt["letter"]:
-                                        if len(norm_target_content) < 3:
-                                            score = 80
-                                        else:
-                                            score += 15
+                        # 3. Alternativas de Múltipla Escolha (Checkboxes - "Selecione uma ou mais alternativas")
+                        checkboxes = q_el.locator("input[type='checkbox']")
+                        cb_count = await checkboxes.count()
+                        if cb_count > 0:
+                            raw_cb_target = (
+                                answers_dict.get(f"Q{q_num}") or
+                                answers_dict.get(f"QUESTAO_{q_num}") or
+                                answers_dict.get(f"QUESTAO {q_num}") or
+                                answers_dict.get(f"Questão {q_num}") or
+                                answers_dict.get(str(q_num)) or ""
+                            )
+                            if not raw_cb_target:
+                                sub_vals = [answers_dict[k] for k in answers_dict if k.startswith(f"Q{q_num}_")]
+                                if sub_vals:
+                                    raw_cb_target = " ".join(sub_vals)
+                            if raw_cb_target:
+                                target_cb_str = str(raw_cb_target)
+                                mentioned_letters = extract_checkbox_letters(target_cb_str)
+                                norm_target_cb = normalize_str(target_cb_str)
 
-                                    if score > best_score:
-                                        best_score = score
-                                        best_match = opt
+                                for cb_idx in range(cb_count):
+                                    cb_inp = checkboxes.nth(cb_idx)
+                                    cb_id = await cb_inp.get_attribute("id")
+                                    cb_raw_text = ""
+                                    if cb_id:
+                                        lbl_loc = q_el.locator(f"label[for='{cb_id}']")
+                                        if await lbl_loc.count() > 0:
+                                            cb_raw_text = await lbl_loc.first.inner_text()
+                                    if not cb_raw_text.strip():
+                                        cb_raw_text = await cb_inp.evaluate("""el => {
+                                            const lbl = el.closest('label');
+                                            if (lbl && lbl.innerText && lbl.innerText.trim()) return lbl.innerText;
+                                            const container = el.closest('.r0, .r1, .answer, [class*="answer"], div.d-flex');
+                                            if (container && container.innerText && container.innerText.trim()) return container.innerText;
+                                            return '';
+                                        }""") or ""
 
-                                if best_match and best_score >= 50:
-                                    await asyncio.sleep(random.uniform(1.0, 2.2))
-                                    await best_match["locator"].check()
-                                    total_filled += 1
-                                    console.print(
-                                        f"  ✔ [Q{q_num}] Alternativa marcada com segurança (confiança {best_score}%): "
-                                        f"[{best_match['letter'] or '?'}] {best_match['content'][:40]}"
-                                    )
-                                    await _emit_log(on_log, f"✔ [Q{q_num}] Marcada: [{best_match['letter'] or '?'}] {best_match['content'][:30]}")
-                                else:
-                                    console.print(
-                                        f"  [yellow]⚠ [Q{q_num}] Nenhuma alternativa correspondeu com segurança a: '{clean_target}' (score: {best_score}). Mantendo desmarcado para segurança.[/yellow]"
-                                    )
+                                    clean_cb = cb_raw_text.replace("\n", " ").strip()
+                                    clean_cb = re.sub(r"(?i)não respondido|marcado|selecionado", "", clean_cb).strip()
+                                    cb_letter_m = re.search(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", clean_cb)
+                                    cb_letter = cb_letter_m.group(1).lower() if cb_letter_m else None
+                                    cb_content = re.sub(r"(?:^|\s)([a-eA-E])(?:\.|\)|\:)\s*", "", clean_cb).strip()
+                                    norm_cb_content = normalize_str(cb_content)
+
+                                    should_check = False
+                                    if cb_letter and cb_letter in mentioned_letters:
+                                        should_check = True
+                                    elif len(norm_cb_content) >= 5 and norm_cb_content in norm_target_cb:
+                                        should_check = True
+                                    elif len(norm_cb_content) >= 8:
+                                        w_cb = set(w for w in norm_cb_content.split() if len(w) > 3)
+                                        w_targ = set(w for w in norm_target_cb.split() if len(w) > 3)
+                                        if w_cb and (len(w_cb & w_targ) / len(w_cb)) >= 0.6:
+                                            should_check = True
+
+                                    if should_check:
+                                        await asyncio.sleep(random.uniform(0.5, 1.2))
+                                        try:
+                                            await cb_inp.check(timeout=4000)
+                                        except Exception:
+                                            await cb_inp.evaluate("el => { el.checked = true; el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('input', { bubbles: true })); }")
+                                        total_filled += 1
+                                        console.print(f"  ✔ [Q{q_num}] Checkbox marcado: [{cb_letter or '?'}] {cb_content[:35]}")
+                                        await _emit_log(on_log, f"✔ [Q{q_num}] Checkbox marcado: [{cb_letter or '?'}] {cb_content[:25]}")
 
                         # 3. Menus Suspensos / Comboboxes (select) - Imune ao embaralhamento de linhas do Moodle
                         selects = q_el.locator("select")
@@ -621,11 +1072,32 @@ class MoodleQuizAutomator:
 
                             # Rótulo textual da linha/pergunta associada ao select
                             clean_row_label = await sel_el.evaluate('''el => {
-                                const row = el.closest('tr, .form-inline, .row, div');
-                                if (!row) return '';
-                                const clone = row.cloneNode(true);
-                                clone.querySelectorAll('select, .accesshide, .sr-only').forEach(e => e.remove());
-                                return clone.innerText.trim();
+                                // 1. Em tabelas de associação (qtype_match), a linha é um <tr>
+                                const tr = el.closest('tr');
+                                if (tr) {
+                                    const clone = tr.cloneNode(true);
+                                    clone.querySelectorAll('select, .accesshide, .sr-only').forEach(e => e.remove());
+                                    const txt = clone.innerText.trim();
+                                    if (txt) return txt;
+                                }
+                                // 2. Em layouts de div/grid, busca o container que contém o texto da linha
+                                const row = el.closest('.form-inline, [class*="match_row"], div.row');
+                                if (row) {
+                                    const clone = row.cloneNode(true);
+                                    clone.querySelectorAll('select, .accesshide, .sr-only').forEach(e => e.remove());
+                                    const txt = clone.innerText.trim();
+                                    if (txt) return txt;
+                                }
+                                // 3. Fallback: sobe na árvore até achar o bloco com texto descritivo
+                                let p = el.parentElement;
+                                while (p && p !== document.body && !p.classList.contains('que')) {
+                                    const clone = p.cloneNode(true);
+                                    clone.querySelectorAll('select, .accesshide, .sr-only').forEach(e => e.remove());
+                                    const txt = clone.innerText.trim();
+                                    if (txt && txt.length > 3) return txt;
+                                    p = p.parentElement;
+                                }
+                                return '';
                             }''')
                             clean_row_label = re.sub(r"(?i)resposta\s*\d+\s*quest[ãa]o\s*\d+", "", clean_row_label).strip()
 
@@ -645,34 +1117,62 @@ class MoodleQuizAutomator:
                             # Identifica o valor alvo no answers_dict
                             target_val = None
                             
-                            # 1. Se houver rótulo na linha (ex: "Gustave Eiffel"), busca no answers_dict quem associa com este rótulo
+                            # 1. Se houver rótulo na linha (ex: "1978 - The birth of Baby Louise..."), busca no answers_dict quem associa com este rótulo
                             if clean_row_label:
                                 norm_lbl = normalize_str(clean_row_label)
+                                words_lbl = set(w for w in norm_lbl.split() if len(w) > 2)
+
+                                best_assoc_score = -1
+                                best_assoc_val = None
+
                                 for k, v in answers_dict.items():
-                                    val_str = str(v)
-                                    parts = re.split(r"[→\->:]", val_str, maxsplit=1)
-                                    if len(parts) == 2:
-                                        left = parts[0].strip()
-                                        right = parts[1].strip()
-                                        if norm_lbl == normalize_str(left) or norm_lbl in normalize_str(left) or normalize_str(left) in norm_lbl:
-                                            target_val = right
-                                            break
+                                    left, right = split_association_item(str(v))
+                                    if left and right:
+                                        norm_left = normalize_str(left)
+                                        words_left = set(w for w in norm_left.split() if len(w) > 2)
+                                        
+                                        score = 0
+                                        if norm_lbl == norm_left:
+                                            score = 100
+                                        elif (norm_lbl in norm_left or norm_left in norm_lbl) and min(len(norm_lbl), len(norm_left)) >= 8:
+                                            score = 90
+                                        elif words_lbl and words_left:
+                                            overlap = len(words_lbl & words_left)
+                                            jaccard = overlap / max(len(words_lbl), len(words_left))
+                                            if jaccard >= 0.35:
+                                                score = int(jaccard * 85)
+                                        
+                                        if score > best_assoc_score:
+                                            best_assoc_score = score
+                                            best_assoc_val = right
+
                                     elif norm_lbl == normalize_str(str(k)) or norm_lbl in normalize_str(str(k)):
-                                        target_val = val_str
-                                        break
+                                        if 80 > best_assoc_score:
+                                            best_assoc_score = 80
+                                            best_assoc_val = str(v)
 
-                            # 2. Se não encontrou por rótulo, tenta por Q{q_num}_{s_idx+1} ou token
+                                if best_assoc_score >= 40:
+                                    target_val = best_assoc_val
+
+                            # 2. Se não encontrou por rótulo, tenta por Q{q_num}_{s_idx+1} ou token ou Q{q_num} se s_count == 1
                             if not target_val:
-                                target_val = (
-                                    answers_dict.get(f"Q{q_num}_{s_idx+1}") or 
-                                    answers_dict.get(token_key) or 
-                                    answers_dict.get(f"Q{q_num}")
-                                )
+                                if s_count == 1:
+                                    target_val = (
+                                        answers_dict.get(f"Q{q_num}") or
+                                        answers_dict.get(f"Q{q_num}_1") or
+                                        answers_dict.get(token_key)
+                                    )
+                                else:
+                                    target_val = (
+                                        answers_dict.get(f"Q{q_num}_{s_idx+1}") or 
+                                        answers_dict.get(token_key)
+                                    )
 
-                            # Se o target_val vier no formato "Nome → Resposta", extrai a resposta
-                            if target_val and any(sep in str(target_val) for sep in ["→", "->"]):
-                                parts = re.split(r"[→\->]", str(target_val), maxsplit=1)
-                                target_val = parts[1].strip()
+                            # Se o target_val contiver separador ("Nome → Resposta" ou "Item: Resposta"), extrai a resposta
+                            if target_val:
+                                _, clean_right = split_association_item(str(target_val))
+                                if clean_right:
+                                    target_val = clean_right
 
                             if target_val:
                                 clean_target_val = str(target_val).strip().strip("*").strip()
@@ -698,8 +1198,14 @@ class MoodleQuizAutomator:
 
                                 if best_opt and best_score >= 40:
                                     await asyncio.sleep(random.uniform(0.3, 0.7))
-                                    await sel_el.select_option(value=best_opt["value"])
-                                    await sel_el.dispatch_event("change")
+                                    try:
+                                        await sel_el.select_option(value=best_opt["value"], timeout=4000)
+                                        await sel_el.dispatch_event("change")
+                                    except Exception:
+                                        await sel_el.evaluate(
+                                            "(el, val) => { el.value = val; el.dispatchEvent(new Event('change', { bubbles: true })); }",
+                                            best_opt["value"]
+                                        )
                                     total_filled += 1
                                     console.print(
                                         f"  ✔ [Q{q_num} | {clean_row_label or token_key}] Combobox selecionada: '{best_opt['text']}'"
@@ -712,6 +1218,62 @@ class MoodleQuizAutomator:
                                     )
 
                             global_input_idx += 1
+
+                        # 5. Arrastar e Soltar no Texto (Drag and Drop into text - ddwtos)
+                        place_inputs = q_el.locator("input.placeinput, .drop.place input, input[name*='_p']")
+                        p_count = await place_inputs.count()
+                        if p_count > 0:
+                            drag_homes = q_el.locator(".draghome, .drag")
+                            dh_count = await drag_homes.count()
+                            drag_options = []
+                            for dh_idx in range(dh_count):
+                                dh_el = drag_homes.nth(dh_idx)
+                                dh_text = (await dh_el.inner_text()).strip()
+                                dh_class = (await dh_el.get_attribute("class")) or ""
+                                ch_match = re.search(r"choice(\d+)", dh_class)
+                                ch_val = ch_match.group(1) if ch_match else str(dh_idx + 1)
+                                drag_options.append({
+                                    "choice": ch_val,
+                                    "text": dh_text,
+                                    "norm_text": normalize_str(dh_text),
+                                    "locator": dh_el
+                                })
+                            
+                            for p_idx in range(p_count):
+                                p_inp = place_inputs.nth(p_idx)
+                                token_key = f"CAMPO_{global_input_idx}"
+                                target_val = (
+                                    answers_dict.get(token_key) or
+                                    answers_dict.get(f"Q{q_num}_{p_idx+1}") or
+                                    answers_dict.get(f"Q{q_num}")
+                                )
+                                if target_val:
+                                    norm_target = normalize_str(str(target_val))
+                                    best_dh = None
+                                    best_dh_score = -1
+                                    for dh in drag_options:
+                                        if norm_target == dh["norm_text"]:
+                                            score = 100
+                                        elif norm_target in dh["norm_text"] or dh["norm_text"] in norm_target:
+                                            score = 85
+                                        else:
+                                            score = 0
+                                        if score > best_dh_score:
+                                            best_dh_score = score
+                                            best_dh = dh
+                                    
+                                    if best_dh and best_dh_score >= 50:
+                                        await asyncio.sleep(random.uniform(0.3, 0.7))
+                                        await p_inp.evaluate(r"""(el, val) => {
+                                            el.value = val;
+                                            el.dispatchEvent(new Event('change', { bubbles: true }));
+                                            el.dispatchEvent(new Event('input', { bubbles: true }));
+                                        }""", best_dh["choice"])
+                                        total_filled += 1
+                                        console.print(f"  ✔ [{token_key}] Item arrastado: '{best_dh['text']}'")
+                                        await _emit_log(on_log, f"✔ [{token_key}] Arrastado: '{best_dh['text'][:25]}'")
+
+                                global_input_idx += 1
 
                     # Se for submissão definitiva (auto_submit=True), aciona 'Verificar' em cada questão antes de avançar
                     if auto_submit:
