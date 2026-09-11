@@ -73,52 +73,71 @@ c:\moodle-bot\
 
 ---
 
-## 🚀 Instalação e Configuração
+## 🚀 Pacote Desktop Multi-Usuário (Zero Friction)
 
-### 1. Interface Gráfica de Configuração (Recomendado) 🖥️
-Você pode configurar todo o `.env` de forma visual e testar suas conexões (Moodle, Gemini, Discord) com apenas 2 cliques:
-- **No Windows:** Dê um duplo clique no arquivo [`configurar.bat`](file:///c:/moodle-bot/configurar.bat) na raiz do projeto.
-- **Ou via Terminal:**
-  ```bash
-  .venv\Scripts\python config_gui.py
-  ```
-Uma janela dedicada será aberta permitindo:
-- Configurar URL do Moodle e disparar o login SSO MinhaUFMG com 1 clique.
-- Inserir e testar a chave do Google Gemini (com verificação imediata de cota e modelo).
-- Inserir e testar o token e canais do bot do Discord.
-- Ajustar frequência de varredura e gerenciar pastas de materiais e rascunhos.
+O Moodle Bot foi empacotado para ser distribuído entre colegas e turmas sem fricção técnica, garantindo **privacidade individual absoluta** e **instalação com 1 clique**:
+
+```text
+├── instalar.bat     # ⚡ Instalador One-Click (detecta/instala Python 3.11, venv, dependências, Chromium e abre o GUI)
+├── iniciar.bat      # 🚀 Inicializador Diário com Auto-Updater (busca novidades no git sem tocar no .env e roda o daemon)
+├── atualizar.bat    # 🔄 Atualizador Manual Dedicado (git pull + sync de bibliotecas)
+└── configurar.bat   # 🖥️ Painel Gráfico de Configurações e Auto-Detecção
+```
 
 ---
 
-### 2. Configuração Manual via `.env` (Alternativa)
-Se preferir editar manualmente, copie o `.env.example` para `.env` e preencha:
-```ini
-MOODLE_BASE_URL=https://virtual.ufmg.br
-DISCORD_BOT_TOKEN=seu_bot_token
-DISCORD_CHANNEL_ID=seu_canal_de_alertas
-DISCORD_CONTENT_CHANNEL_ID=0  # Ou ID do canal exclusivo para /adicionarconteudo
-GEMINI_API_KEY=sua_chave_do_google_ai_studio
-GEMINI_MODEL=gemini-3.8-flash
-GEMINI_FALLBACK_MODEL_1=gemini-3.7-flash
-GEMINI_FALLBACK_MODEL_2=gemini-3.5-flash-lite
-```
+### 1. Instalação One-Click (`instalar.bat`) ⚡
+Para novos usuários e colegas:
+1. Baixe ou clone o repositório no Windows.
+2. Dê um duplo clique no arquivo [`instalar.bat`](file:///c:/moodle-bot/instalar.bat).
+3. O script realiza autonomamente:
+   - Verificação do Python 3.10+ (com download/instalação silenciosa via `winget` ou setup oficial se necessário).
+   - Criação do ambiente virtual isolado `.venv`.
+   - Instalação de todas as dependências do `requirements.txt`.
+   - Download do navegador Playwright (`playwright install chromium`).
+   - Geração do arquivo `.env` inicial.
+   - Abertura imediata da Interface Gráfica de Configuração ([`configurar.bat`](file:///c:/moodle-bot/configurar.bat)).
 
-### 3. Autenticação Inicial no Moodle / MinhaUFMG
-Pode ser disparada direto pelo botão na Interface Gráfica ou via terminal:
-```bash
-.venv\Scripts\python -m src.auth.moodle_auth
-```
-- Uma janela gráfica do Chromium será aberta em `https://sistemas.ufmg.br/idp/login.jsp`.
-- Digite seu usuário, senha e conclua o 2FA.
-- A sessão autenticada é salva em `storage/cookies/session.json` e as próximas execuções ocorrem 100% em segundo plano (*headless*).
+---
 
-### 4. Execução do Assistente Completo (Daemon + Discord Bot)
-Para manter o monitoramento contínuo e os Slash Commands ativos:
-```bash
-.venv\Scripts\python -m src.scheduler.daemon
-```
+### 2. Painel Gráfico & Auto-Detecção de Salas Privadas 🖥️
+Na interface gráfica:
+- **Bring Your Own Key (BYOK) do Gemini:** Instruções em 3 passos com botão direto para obter a chave gratuita no Google AI Studio.
+- **Auto-Detecção do Discord com 1 Clique:**
+  - Em vez de copiar e colar 5 IDs de canais manualmente, basta digitar seu nome ou ID do Discord no campo **"Seu Usuário / ID do Discord"** e clicar em **"🔍 Auto-Detectar"**.
+  - O sistema localiza (ou provisiona instantaneamente) sua categoria e canais privados no servidor compartilhado e preenche automaticamente todos os 5 campos:
+    - 🔔 Alertas & Revisões
+    - 📚 Conteúdos & Materiais
+    - 📢 Avisos da Turma
+    - 📥 Fila Central de Tarefas
+    - 🎯 Estudos & Simulados
+- **Login Moodle:** 1 clique no botão "Testar Conexão / Fazer Login" para autenticar via SSO MinhaUFMG.
 
-Para rodar apenas uma verificação pontual e sair:
-```bash
-.venv\Scripts\python -m src.scheduler.daemon --once
-```
+---
+
+### 3. Servidor Discord Compartilhado & Salas Privadas (`🔒 Moodle • Nome`)
+Os estudantes podem usar o **mesmo bot e o mesmo servidor do Discord** com sigilo total:
+- **Ao entrar no servidor (ou digitar `/meuscanais` / `!meuscanais`):** O bot cria uma categoria privada e os 5 canais exclusivos para aquele estudante.
+- **Permissões Estritas:** O cargo `@everyone` tem a visualização bloqueada (`view_channel=False`). Apenas o estudante e o bot têm acesso à categoria e aos canais.
+- **Mensagem Inaugural:** Ao criar as salas, o bot posta uma mensagem informativa com instruções de uso e atalhos rápidos.
+
+---
+
+### 4. Execução Diária & Auto-Updater Seguro (`iniciar.bat`) 🔄
+Basta dar duplo clique em [`iniciar.bat`](file:///c:/moodle-bot/iniciar.bat):
+- O script checa atualizações remotas via `git fetch/pull` de forma transparente.
+- **Garantia de Segurança:** Arquivos locais de segredos e credenciais (`.env`, `storage/cookies/session.json`, `storage/state.json`) **nunca são sobrescritos**.
+- Inicia o daemon do assistente e conecta os canais do usuário.
+
+---
+
+### 5. Slash Commands Disponíveis no Discord
+- `/tarefas`: Exibe painel com todas as atividades abertas e prazos.
+- `/resolver <tarefa> [modo] [instruções] [arquivo]`: Resolve tarefas individualmente com IA e gera PDF.
+- `/resolver_lote`: Menu interativo multi-select para resolver tarefas em lote sequencial.
+- `/meuscanais`: Cria ou localiza suas 5 salas privadas no servidor do Discord.
+- `/perguntar <disciplina> <dúvida>`: Tutor acadêmico com citação direta dos slides do professor.
+- `/flashcards <disciplina> [tópico]`: Baralhos de repetição espaçada e exportação Anki.
+- `/quiz <disciplina>`: Simulado de múltipla escolha pré-prova interativo.
+- `/materiais <disciplina>`: Lista e envia materiais didáticos catalogados.
+- `/status`: Mostra status do daemon, cookies de sessão e latência da IA.

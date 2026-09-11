@@ -981,6 +981,10 @@ class MoodleBotClient(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
         intents.message_content = True
+        try:
+            intents.members = True
+        except Exception:
+            pass
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
@@ -1010,9 +1014,181 @@ class MoodleBotClient(commands.Bot):
         except Exception as q_err:
             console.print(f"[yellow]Aviso ao inicializar fila de tarefas no Discord: {q_err}[/yellow]")
 
+    async def on_member_join(self, member: discord.Member):
+        """Ao entrar um novo estudante no servidor, provisiona automaticamente suas 5 salas privadas."""
+        if member.bot:
+            return
+        try:
+            res = await provision_user_channels(member.guild, member)
+            console.print(f"[bold green]✔ Salas privadas provisionadas automaticamente para {member.display_name} ({res.get('category_name')})![/bold green]")
+        except Exception as err:
+            console.print(f"[yellow]Aviso ao provisionar salas no on_member_join para {member.display_name}: {err}[/yellow]")
+
 
 # Instância global do Bot
 bot = MoodleBotClient()
+
+
+async def provision_user_channels(guild: discord.Guild, member: discord.Member) -> Dict[str, Any]:
+    """Cria ou recupera categoria privada e os 5 canais do Moodle Bot para um membro específico."""
+    category_name = f"🔒 Moodle • {member.display_name}"[:100]
+
+    # 1. Procura categoria existente para o membro
+    category = None
+    clean_member_name = normalize_text(member.name)
+    clean_display = normalize_text(member.display_name)
+
+    for cat in guild.categories:
+        cat_norm = normalize_text(cat.name)
+        if "moodle" in cat_norm:
+            if clean_member_name in cat_norm or clean_display in cat_norm or str(member.id) in cat_norm:
+                category = cat
+                break
+
+    # 2. Se não existir, cria a categoria com permissões restritas (apenas aluno e bot)
+    if not category:
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            member: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                read_message_history=True,
+                attach_files=True,
+                embed_links=True
+            ),
+            guild.me: discord.PermissionOverwrite(
+                view_channel=True,
+                send_messages=True,
+                manage_channels=True,
+                embed_links=True,
+                attach_files=True
+            )
+        }
+        category = await guild.create_category(name=category_name, overwrites=overwrites)
+
+    # 3. Especificações dos 5 canais essenciais do assistente
+    channel_specs = [
+        ("alertas-revisoes", "Alertas de prazos, aprovação/adiamento de tarefas e rascunhos"),
+        ("conteudos", "Materiais didáticos e uploads do /adicionarconteudo"),
+        ("avisos-turma", "Comunicados dos professores capturados do Moodle"),
+        ("fila-tarefas", "Acompanhamento em tempo real da fila de execução"),
+        ("estudos-simulados", "Tutor tira-dúvidas /perguntar, simulados /quiz e flashcards")
+    ]
+
+    channels_map = {}
+    new_channels_created = False
+    for ch_name, ch_topic in channel_specs:
+        ch = discord.utils.get(category.text_channels, name=ch_name)
+        if not ch:
+            ch = await guild.create_text_channel(
+                name=ch_name,
+                category=category,
+                topic=ch_topic
+            )
+            new_channels_created = True
+        channels_map[ch_name] = ch
+
+    env_mapping = {
+        "DISCORD_CHANNEL_ID": channels_map["alertas-revisoes"].id,
+        "DISCORD_CONTENT_CHANNEL_ID": channels_map["conteudos"].id,
+        "DISCORD_ANNOUNCEMENTS_CHANNEL_ID": channels_map["avisos-turma"].id,
+        "DISCORD_QUEUE_CHANNEL_ID": channels_map["fila-tarefas"].id,
+        "DISCORD_STUDY_CHANNEL_ID": channels_map["estudos-simulados"].id,
+    }
+
+    # 4. Envia mensagem inaugural no canal de alertas se foi recém-criado
+    if new_channels_created:
+        try:
+            embed = discord.Embed(
+                title=f"📦 Salas Pessoais Prontas, {member.display_name}!",
+                description=(
+                    f"Suas 5 salas privadas exclusivas do **Moodle AI Assistant** foram provisionadas com sucesso!\n"
+                    f"Apenas você e o bot têm acesso a esta categoria (`{category.name}`).\n\n"
+                    "### 🚀 Como Conectar seu Bot Desktop à Sua Máquina:\n"
+                    "1. Na sua máquina, dê duplo clique em `configurar.bat` (ou execute `instalar.bat` na primeira vez);\n"
+                    "2. Na seção do Discord, clique no botão **🔍 Auto-Detectar Meus Canais**;\n"
+                    "3. Ou, se preferir copiar manualmente, cole estas 5 linhas no seu arquivo `.env`:\n\n"
+                    f"```env\n"
+                    f"DISCORD_CHANNEL_ID={env_mapping['DISCORD_CHANNEL_ID']}\n"
+                    f"DISCORD_CONTENT_CHANNEL_ID={env_mapping['DISCORD_CONTENT_CHANNEL_ID']}\n"
+                    f"DISCORD_ANNOUNCEMENTS_CHANNEL_ID={env_mapping['DISCORD_ANNOUNCEMENTS_CHANNEL_ID']}\n"
+                    f"DISCORD_QUEUE_CHANNEL_ID={env_mapping['DISCORD_QUEUE_CHANNEL_ID']}\n"
+                    f"DISCORD_STUDY_CHANNEL_ID={env_mapping['DISCORD_STUDY_CHANNEL_ID']}\n"
+                    f"```\n\n"
+                    "Dica: Pegue sua chave gratuita do Gemini no Google AI Studio e inicie o login MinhaUFMG com 1 clique!"
+                ),
+                color=discord.Color.green()
+            )
+            embed.set_footer(text="Moodle AI Assistant (UFMG) • Multi-User Desktop Edition")
+            await channels_map["alertas-revisoes"].send(content=member.mention, embed=embed)
+        except Exception:
+            pass
+
+    return {
+        "guild_id": guild.id,
+        "guild_name": guild.name,
+        "category_id": category.id,
+        "category_name": category.name,
+        "user_id": member.id,
+        "user_name": member.name,
+        "display_name": member.display_name,
+        "channels": env_mapping,
+        "channel_objects": channels_map
+    }
+
+
+def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
+    """Localiza as 5 salas privadas de um membro por ID numérico, username ou display_name em memória."""
+    if not bot.is_ready():
+        return None
+
+    clean_id = normalize_text(identifier)
+    for guild in bot.guilds:
+        target_member = None
+        if identifier.isdigit():
+            target_member = guild.get_member(int(identifier))
+
+        if not target_member:
+            for m in guild.members:
+                if normalize_text(m.name) == clean_id or normalize_text(m.display_name) == clean_id:
+                    target_member = m
+                    break
+
+        target_cat = None
+        for cat in guild.categories:
+            cat_norm = normalize_text(cat.name)
+            if "moodle" in cat_norm:
+                if target_member:
+                    if normalize_text(target_member.name) in cat_norm or normalize_text(target_member.display_name) in cat_norm:
+                        target_cat = cat
+                        break
+                elif clean_id and clean_id in cat_norm:
+                    target_cat = cat
+                    break
+
+        if target_cat:
+            mapping = {}
+            for ch in target_cat.text_channels:
+                ch_name = ch.name.lower()
+                if "alerta" in ch_name or "revis" in ch_name:
+                    mapping["DISCORD_CHANNEL_ID"] = str(ch.id)
+                elif "conteudo" in ch_name:
+                    mapping["DISCORD_CONTENT_CHANNEL_ID"] = str(ch.id)
+                elif "aviso" in ch_name:
+                    mapping["DISCORD_ANNOUNCEMENTS_CHANNEL_ID"] = str(ch.id)
+                elif "fila" in ch_name:
+                    mapping["DISCORD_QUEUE_CHANNEL_ID"] = str(ch.id)
+                elif "estudo" in ch_name or "simulado" in ch_name:
+                    mapping["DISCORD_STUDY_CHANNEL_ID"] = str(ch.id)
+
+            if len(mapping) >= 3:
+                return {
+                    "guild_id": str(guild.id),
+                    "guild_name": guild.name,
+                    "category_name": target_cat.name,
+                    "channels": mapping
+                }
+    return None
 
 
 def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
@@ -2738,6 +2914,41 @@ async def cmd_quiz(
         await interaction.followup.send(embed=embed, view=view)
 
 
+@bot.tree.command(name="meuscanais", description="Cria ou localiza sua categoria e as 5 salas privadas do Moodle neste servidor")
+async def cmd_meuscanais(interaction: discord.Interaction):
+    """Cria ou recupera as salas privadas do usuário neste servidor."""
+    if not interaction.guild:
+        await interaction.response.send_message("❌ Este comando deve ser executado dentro de um servidor do Discord.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    res = await provision_user_channels(interaction.guild, interaction.user)
+    ch_ids = res["channels"]
+
+    embed = discord.Embed(
+        title="🔒 Suas Salas Pessoais do Moodle Bot",
+        description=(
+            f"Categoria: **{res['category_name']}**\n\n"
+            f"• 📋 **Alertas & Revisões:** <#{ch_ids['DISCORD_CHANNEL_ID']}>\n"
+            f"• 📚 **Conteúdos:** <#{ch_ids['DISCORD_CONTENT_CHANNEL_ID']}>\n"
+            f"• 📢 **Avisos da Turma:** <#{ch_ids['DISCORD_ANNOUNCEMENTS_CHANNEL_ID']}>\n"
+            f"• ⚡ **Fila de Tarefas:** <#{ch_ids['DISCORD_QUEUE_CHANNEL_ID']}>\n"
+            f"• 🎯 **Estudos & Simulados:** <#{ch_ids['DISCORD_STUDY_CHANNEL_ID']}>\n\n"
+            "**Configuração rápida para o `.env` ou `configurar.bat`:**\n"
+            f"```env\n"
+            f"DISCORD_CHANNEL_ID={ch_ids['DISCORD_CHANNEL_ID']}\n"
+            f"DISCORD_CONTENT_CHANNEL_ID={ch_ids['DISCORD_CONTENT_CHANNEL_ID']}\n"
+            f"DISCORD_ANNOUNCEMENTS_CHANNEL_ID={ch_ids['DISCORD_ANNOUNCEMENTS_CHANNEL_ID']}\n"
+            f"DISCORD_QUEUE_CHANNEL_ID={ch_ids['DISCORD_QUEUE_CHANNEL_ID']}\n"
+            f"DISCORD_STUDY_CHANNEL_ID={ch_ids['DISCORD_STUDY_CHANNEL_ID']}\n"
+            f"```"
+        ),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Dica: Na interface gráfica (configurar.bat), basta clicar em 'Auto-Detectar Meus Canais'!")
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
 # ----------------------------------------------------
 # 2. Comandos de Mensagem / Prefixo (!tarefas, !status, etc.)
 # ----------------------------------------------------
@@ -3054,6 +3265,29 @@ async def prefix_quiz(ctx: commands.Context, disciplina: str, qtd: Optional[int]
     await target_ch.send(embed=embed, view=view)
 
 
+@bot.command(name="meuscanais")
+async def prefix_meuscanais(ctx: commands.Context):
+    """Cria ou localiza suas salas privadas no servidor: !meuscanais."""
+    if not ctx.guild:
+        await ctx.send("❌ Este comando deve ser executado dentro de um servidor do Discord.")
+        return
+    res = await provision_user_channels(ctx.guild, ctx.author)
+    ch_ids = res["channels"]
+    embed = discord.Embed(
+        title="🔒 Suas Salas Pessoais do Moodle Bot",
+        description=(
+            f"Categoria: **{res['category_name']}**\n\n"
+            f"• 📋 Alertas: <#{ch_ids['DISCORD_CHANNEL_ID']}>\n"
+            f"• 📚 Conteúdos: <#{ch_ids['DISCORD_CONTENT_CHANNEL_ID']}>\n"
+            f"• 📢 Avisos: <#{ch_ids['DISCORD_ANNOUNCEMENTS_CHANNEL_ID']}>\n"
+            f"• ⚡ Fila: <#{ch_ids['DISCORD_QUEUE_CHANNEL_ID']}>\n"
+            f"• 🎯 Estudos: <#{ch_ids['DISCORD_STUDY_CHANNEL_ID']}>\n"
+        ),
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="ajuda")
 async def prefix_ajuda(ctx: commands.Context):
     """Exibe o guia de comandos do robô."""
@@ -3062,6 +3296,7 @@ async def prefix_ajuda(ctx: commands.Context):
         description="Você pode interagir usando comandos de barra (`/`) ou prefixo (`!`):",
         color=discord.Color.blue()
     )
+    embed.add_field(name="🔒 `!meuscanais` ou `/meuscanais`", value="Cria ou localiza suas 5 salas privadas exclusivas neste servidor.", inline=False)
     embed.add_field(name="📋 `!tarefas` ou `/tarefas [disciplina]`", value="Lista tarefas e questionários pendentes e concluídos.", inline=False)
     embed.add_field(name="📖 `!materiais <disciplina>` ou `/materiais`", value="Envia slides e materiais de estudo no chat.", inline=False)
     embed.add_field(name="🧠 `!resolver <id_ou_nome>` ou `/resolver`", value="Resolve atividade ou questionário sob demanda com IA.", inline=False)

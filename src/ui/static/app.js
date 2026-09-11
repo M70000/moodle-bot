@@ -248,6 +248,61 @@ async function testDiscord() {
   }
 }
 
+async function detectDiscordChannels() {
+  const btn = document.getElementById('btn-detect-channels');
+  const feedback = document.getElementById('detect-channels-feedback');
+  const token = getInputValue('DISCORD_BOT_TOKEN');
+  const username = document.getElementById('DISCORD_USER_SEARCH').value.trim();
+
+  if (!token) {
+    showToast('Informe o Token do Bot do Discord primeiro!', 'warning');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '🔍 Buscando...';
+  feedback.style.display = 'none';
+
+  try {
+    const res = await fetch('/api/discord/detect-channels', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, username })
+    });
+    const data = await res.json();
+
+    if (data.ok && data.channels) {
+      if (data.channels.DISCORD_CHANNEL_ID) setInputValue('DISCORD_CHANNEL_ID', data.channels.DISCORD_CHANNEL_ID);
+      if (data.channels.DISCORD_CONTENT_CHANNEL_ID) setInputValue('DISCORD_CONTENT_CHANNEL_ID', data.channels.DISCORD_CONTENT_CHANNEL_ID);
+      if (data.channels.DISCORD_ANNOUNCEMENTS_CHANNEL_ID) setInputValue('DISCORD_ANNOUNCEMENTS_CHANNEL_ID', data.channels.DISCORD_ANNOUNCEMENTS_CHANNEL_ID);
+      if (data.channels.DISCORD_QUEUE_CHANNEL_ID) setInputValue('DISCORD_QUEUE_CHANNEL_ID', data.channels.DISCORD_QUEUE_CHANNEL_ID);
+      if (data.channels.DISCORD_STUDY_CHANNEL_ID) setInputValue('DISCORD_STUDY_CHANNEL_ID', data.channels.DISCORD_STUDY_CHANNEL_ID);
+
+      feedback.style.display = 'block';
+      feedback.style.background = 'rgba(34, 197, 94, 0.15)';
+      feedback.style.color = '#22c55e';
+      feedback.style.border = '1px solid rgba(34, 197, 94, 0.3)';
+      feedback.innerHTML = `✔ ${data.message || '5 canais detectados e preenchidos com sucesso!'}`;
+      showToast('Canais do Discord preenchidos automaticamente!', 'success');
+    } else {
+      feedback.style.display = 'block';
+      feedback.style.background = 'rgba(239, 68, 68, 0.15)';
+      feedback.style.color = '#ef4444';
+      feedback.style.border = '1px solid rgba(239, 68, 68, 0.3)';
+      feedback.innerHTML = `❌ ${data.error || 'Não foi possível localizar os canais.'}`;
+      showToast(data.error || 'Erro na detecção', 'error');
+    }
+  } catch (err) {
+    feedback.style.display = 'block';
+    feedback.style.background = 'rgba(239, 68, 68, 0.15)';
+    feedback.style.color = '#ef4444';
+    feedback.innerHTML = `❌ Falha ao conectar: ${err.message}`;
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '🔍 Auto-Detectar';
+  }
+}
+
 async function testGemini() {
   const api_key = getInputValue('GEMINI_API_KEY');
   const model = getInputValue('GEMINI_MODEL');

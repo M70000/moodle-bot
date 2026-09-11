@@ -226,6 +226,23 @@
             </div>
           </div>
           <div class="card-body">
+            <!-- Banner Auto-Detectar Canais com Zero Atrito -->
+            <div class="provision-box" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 16px; margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div>
+                  <h4 style="margin: 0 0 4px 0; font-size: 15px; color: #6366f1;">⚡ Auto-Detectar Meus 5 Canais do Discord</h4>
+                  <p style="margin: 0; font-size: 13px; color: #aaa;">Digite seu nome ou @usuário do Discord para preencher todos os 5 canais automaticamente.</p>
+                </div>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="DISCORD_USER_SEARCH" placeholder="Seu @usuário ou nome..." style="width: 190px; padding: 6px 10px; font-size: 13px; margin: 0;">
+                  <button type="button" class="btn btn-primary btn-sm" id="btn-detect-channels" onclick="detectDiscordChannels()">
+                    🔍 Auto-Detectar
+                  </button>
+                </div>
+              </div>
+              <div id="detect-channels-feedback" style="display: none; margin-top: 10px; font-size: 13px; padding: 8px 12px; border-radius: 6px;"></div>
+            </div>
+
             <div class="form-group">
               <label for="DISCORD_CHANNEL_ID">Canal Principal de Alertas & Revisões <span class="badge badge-required">Obrigatório</span></label>
               <input type="text" id="DISCORD_CHANNEL_ID" placeholder="Ex: 112233445566778899">
@@ -282,6 +299,19 @@
             </a>
           </div>
           <div class="card-body">
+            <!-- Banner BYOK Instrucional -->
+            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;">
+              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+                <div>
+                  <h4 style="margin: 0 0 4px 0; font-size: 14px; color: #10b981;">🔑 Como obter sua chave gratuita (BYOK) em 30 segundos:</h4>
+                  <p style="margin: 0; font-size: 13px; color: #aaa;">1. Clique no botão ao lado para abrir o Google AI Studio ➔ 2. Clique em <b>"Create API key"</b> ➔ 3. Cole abaixo e clique em <b>Testar Chave IA</b>.</p>
+                </div>
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="btn btn-primary btn-sm" style="white-space: nowrap;">
+                  👉 Abrir Google AI Studio ↗
+                </a>
+              </div>
+            </div>
+
             <div class="form-group">
               <label for="GEMINI_API_KEY">API Key do Google AI Studio</label>
               <div class="input-password-wrapper">
