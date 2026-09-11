@@ -8,12 +8,17 @@ from typing import Optional
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Raíz absoluta do projeto (pai do diretório 'config/')
+# Garante que os caminhos de armazenamento são sempre absolutos,
+# independente do diretório de trabalho (CWD) de onde o bot é iniciado.
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
 
 class Settings(BaseSettings):
     """Configurações da aplicação carregadas a partir de variáveis de ambiente ou .env."""
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(PROJECT_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
@@ -128,15 +133,15 @@ class Settings(BaseSettings):
 
     # Armazenamento Local
     STORAGE_COOKIES_PATH: Path = Field(
-        default=Path("storage/cookies/session.json"),
+        default=PROJECT_ROOT / "storage" / "cookies" / "session.json",
         description="Caminho do arquivo com os cookies e sessão do Playwright"
     )
     STORAGE_MATERIALS_DIR: Path = Field(
-        default=Path("storage/materials"),
+        default=PROJECT_ROOT / "storage" / "materials",
         description="Diretório onde os materiais das disciplinas são salvos"
     )
     STORAGE_SUBMISSIONS_DIR: Path = Field(
-        default=Path("storage/submissions"),
+        default=PROJECT_ROOT / "storage" / "submissions",
         description="Diretório onde os rascunhos de resolução gerados são salvos"
     )
 
@@ -156,11 +161,25 @@ class Settings(BaseSettings):
         """Remove barra final se presente para padronização de URLs."""
         return v.rstrip("/")
 
+    @field_validator("STORAGE_COOKIES_PATH", "STORAGE_MATERIALS_DIR", "STORAGE_SUBMISSIONS_DIR", mode="before")
+    @classmethod
+    def make_absolute_path(cls, v) -> Path:
+        """Converte caminhos relativos do .env para absolutos baseados na raiz do projeto.
+
+        Garante que storage/materials no .env resolva para C:\\moodle-bot\\storage\\materials
+        independente do diretório de trabalho (CWD) de onde o bot é iniciado.
+        """
+        p = Path(v)
+        if not p.is_absolute():
+            p = PROJECT_ROOT / p
+        return p
+
     def ensure_storage_dirs(self) -> None:
         """Garante que todos os diretórios de armazenamento necessários existam."""
         self.STORAGE_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)
         self.STORAGE_MATERIALS_DIR.mkdir(parents=True, exist_ok=True)
         self.STORAGE_SUBMISSIONS_DIR.mkdir(parents=True, exist_ok=True)
+
 
 
 # Instância global de configurações
