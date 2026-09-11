@@ -3,10 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Moodle AI Assistant - Painel de Configuração</title>
+  <title>Moodle AI Assistant [UFMG-SYS] // Config Telemetry</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@400;500;700;800&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -15,68 +15,68 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-icon">
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
             <path d="M6 12v5c3 3 9 3 12 0v-5"></path>
           </svg>
         </div>
         <div class="brand-text">
-          <h2>Moodle AI</h2>
-          <span class="badge badge-ufmg">UFMG Edition</span>
+          <h2>MOODLE // AI</h2>
+          <span class="badge badge-ufmg">[ UFMG // BRUTALIST ]</span>
         </div>
       </div>
 
       <nav class="nav-menu">
         <button class="nav-item active" data-tab="tab-moodle">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
           </svg>
-          <span>Moodle & Login</span>
+          <span>[01] // MOODLE & AUTH</span>
         </button>
 
         <button class="nav-item" data-tab="tab-discord">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
           </svg>
-          <span>Discord Bot</span>
+          <span>[02] // DISCORD GATEWAY</span>
         </button>
 
         <button class="nav-item" data-tab="tab-gemini">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z"></path>
           </svg>
-          <span>Google Gemini IA</span>
+          <span>[03] // GEMINI COGNITION</span>
         </button>
 
         <button class="nav-item" data-tab="tab-scheduler">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"></circle>
             <polyline points="12 6 12 12 16 14"></polyline>
           </svg>
-          <span>Prazos & Alertas</span>
+          <span>[04] // TELEMETRY & ALERTS</span>
         </button>
 
         <button class="nav-item" data-tab="tab-storage">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
           </svg>
-          <span>Armazenamento</span>
+          <span>[05] // STORAGE & BUFFERS</span>
         </button>
       </nav>
 
       <div class="sidebar-status">
         <div class="status-header">
-          <span class="status-title">Status do Sistema</span>
-          <span id="session-badge" class="badge badge-warning">Verificando...</span>
+          <span class="status-title">[ TELEMETRY // CORE ]</span>
+          <span id="session-badge" class="badge badge-warning">CHECKING</span>
         </div>
-        <p id="session-info" class="status-subtext">Carregando informações...</p>
+        <p id="session-info" class="status-subtext">INICIALIZANDO BUFFER...</p>
         <button id="btn-login-quick" class="btn btn-sm btn-outline btn-full">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
             <polyline points="10 17 15 12 10 7"></polyline>
             <line x1="15" y1="12" x2="3" y2="12"></line>
           </svg>
-          Login no MinhaUFMG
+          [ LOGIN // MINHAUFMG ]
         </button>
       </div>
     </aside>
@@ -227,20 +227,21 @@
           </div>
           <div class="card-body">
             <!-- Banner Auto-Detectar Canais com Zero Atrito -->
-            <div class="provision-box" style="background: rgba(99, 102, 241, 0.08); border: 1px solid rgba(99, 102, 241, 0.25); border-radius: 8px; padding: 16px; margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+            <div class="card card-industrial-box provision-box">
+              <div class="box-header-row">
                 <div>
-                  <h4 style="margin: 0 0 4px 0; font-size: 15px; color: #6366f1;">⚡ Auto-Detectar Meus 5 Canais do Discord</h4>
-                  <p style="margin: 0; font-size: 13px; color: #aaa;">Digite seu nome ou @usuário do Discord para preencher todos os 5 canais automaticamente.</p>
+                  <div class="tag-label">[ NET // DISCORD AUTO-PROVISIONING ]</div>
+                  <h4 class="box-title">⚡ AUTO-DETECÇÃO DE SALAS PRIVADAS</h4>
+                  <p class="box-desc">DIGITE SEU @USUÁRIO OU ID PARA MAPEAMENTO DOS 5 CANAIS EXCLUSIVOS.</p>
                 </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
-                  <input type="text" id="DISCORD_USER_SEARCH" placeholder="Seu @usuário ou nome..." style="width: 190px; padding: 6px 10px; font-size: 13px; margin: 0;">
+                <div class="box-controls">
+                  <input type="text" id="DISCORD_USER_SEARCH" placeholder="USER OU ID..." style="width: 170px;">
                   <button type="button" class="btn btn-primary btn-sm" id="btn-detect-channels" onclick="detectDiscordChannels()">
-                    🔍 Auto-Detectar
+                    [ 🔍 AUTO-DETECTAR ]
                   </button>
                 </div>
               </div>
-              <div id="detect-channels-feedback" style="display: none; margin-top: 10px; font-size: 13px; padding: 8px 12px; border-radius: 6px;"></div>
+              <div id="detect-channels-feedback" class="test-feedback"></div>
             </div>
 
             <div class="form-group">
@@ -300,14 +301,15 @@
           </div>
           <div class="card-body">
             <!-- Banner BYOK Instrucional -->
-            <div style="background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 8px; padding: 14px 16px; margin-bottom: 20px;">
-              <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px;">
+            <div class="card card-industrial-box byok-box">
+              <div class="box-header-row">
                 <div>
-                  <h4 style="margin: 0 0 4px 0; font-size: 14px; color: #10b981;">🔑 Como obter sua chave gratuita (BYOK) em 30 segundos:</h4>
-                  <p style="margin: 0; font-size: 13px; color: #aaa;">1. Clique no botão ao lado para abrir o Google AI Studio ➔ 2. Clique em <b>"Create API key"</b> ➔ 3. Cole abaixo e clique em <b>Testar Chave IA</b>.</p>
+                  <div class="tag-label">[ PROTOCOL // BYOK FREE ACCESS ]</div>
+                  <h4 class="box-title">🔑 OBTENÇÃO DE CHAVE GOOGLE GEMINI (30 SEGUNDOS)</h4>
+                  <p class="box-desc">1. ACESSE GOOGLE AI STUDIO >>> 2. CLIQUE EM "CREATE API KEY" >>> 3. INJETE O TOKEN ABAIXO.</p>
                 </div>
                 <a href="https://aistudio.google.com/app/apikey" target="_blank" class="btn btn-primary btn-sm" style="white-space: nowrap;">
-                  👉 Abrir Google AI Studio ↗
+                  [ GOOGLE AI STUDIO ↗ ]
                 </a>
               </div>
             </div>
