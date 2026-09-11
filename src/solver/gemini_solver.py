@@ -110,9 +110,12 @@ class SolutionDraft(BaseModel):
     full_markdown: str
     output_path: Path
     pdf_path: Optional[Path] = None
+    docx_path: Optional[Path] = None          # DOCX editável (resoluções manuais)
     used_materials: List[str] = []
     used_model: str = "gemini-3.8-flash"
     structured_answers: Optional[List[Dict[str, Any]]] = None
+    auto_triggered: bool = False              # True = automático (daemon/emergência) → PDF
+                                              # False = manual (/resolver)             → DOCX
 
 
 class GeminiSolver:
@@ -260,9 +263,15 @@ class GeminiSolver:
         assignment: Assignment,
         user_notes: Optional[str] = None,
         extra_context_files: Optional[List[Path]] = None,
-        on_log: Optional[Any] = None
+        on_log: Optional[Any] = None,
+        auto_triggered: bool = False,
     ) -> SolutionDraft:
-        """Gera a resolução completa com fallback hierárquico (3.8-flash -> 3.7-flash -> 3.5-flash-lite)."""
+        """Gera a resolução completa com fallback hierárquico.
+
+        Args:
+            auto_triggered: True → daemon/emergência → gera PDF.
+                            False → /resolver manual → gera DOCX editável.
+        """
         if not self.client:
             raise RuntimeError(
                 "Chave GEMINI_API_KEY não informada. Configure a variável no arquivo .env."
@@ -404,21 +413,44 @@ class GeminiSolver:
             draft_path = dest_dir / f"{safe_title}_rascunho.md"
             draft_path.write_text(clean_markdown, encoding="utf-8")
 
-            # Renderiza o documento em PDF limpo
-            pdf_path = dest_dir / f"{safe_title}.pdf"
-            try:
-                await _emit_log(on_log, "Compilando PDF acadêmico da resolução...")
-                pdf_gen = AcademicPDFGenerator()
-                await pdf_gen.render_pdf(
-                    markdown_text=clean_markdown,
-                    output_pdf_path=pdf_path,
-                    course_name=assignment.course_name,
-                    assignment_title=assignment.title
-                )
-                await _emit_log(on_log, f"✔ PDF acadêmico gerado: {pdf_path.name}")
-            except Exception as pdf_err:
-                console.print(f"[yellow]Aviso ao gerar PDF: {pdf_err}[/yellow]")
+            if auto_triggered:
+                # Resolução automática (daemon/emergência) → PDF
+                pdf_path = dest_dir / f"{safe_title}.pdf"
+                try:
+                    await _emit_log(on_log, "Compilando PDF acadêmico da resolução...")
+                    pdf_gen = AcademicPDFGenerator()
+                    await pdf_gen.render_pdf(
+                        markdown_text=clean_markdown,
+                        output_pdf_path=pdf_path,
+                        course_name=assignment.course_name,
+                        assignment_title=assignment.title
+                    )
+                    await _emit_log(on_log, f"✔ PDF acadêmico gerado: {pdf_path.name}")
+                except Exception as pdf_err:
+                    console.print(f"[yellow]Aviso ao gerar PDF: {pdf_err}[/yellow]")
+                    pdf_path = None
+                docx_path = None
+            else:
+                # Resolução manual → DOCX editável
                 pdf_path = None
+                docx_path = dest_dir / f"{safe_title}.docx"
+                try:
+                    await _emit_log(on_log, "Gerando documento Word editável (.docx)...")
+                    from src.solver.docx_generator import AcademicDocxGenerator
+                    docx_gen = AcademicDocxGenerator()
+                    ok = docx_gen.generate_docx(
+                        markdown_text=clean_markdown,
+                        output_path=docx_path,
+                        course_name=assignment.course_name,
+                        assignment_title=assignment.title,
+                    )
+                    if ok:
+                        await _emit_log(on_log, f"✔ DOCX editável gerado: {docx_path.name}")
+                    else:
+                        docx_path = None
+                except Exception as docx_err:
+                    console.print(f"[yellow]Aviso ao gerar DOCX: {docx_err}[/yellow]")
+                    docx_path = None
 
             console.print(
                 Panel.fit(
@@ -439,10 +471,13 @@ class GeminiSolver:
                 full_markdown=full_text,
                 output_path=draft_path,
                 pdf_path=pdf_path,
+                docx_path=docx_path,
                 used_materials=used_material_names,
                 used_model=successful_model,
-                structured_answers=structured_answers
+                structured_answers=structured_answers,
+                auto_triggered=auto_triggered,
             )
+
 
         finally:
             # Limpeza dos arquivos temporários carregados na nuvem do Gemini
@@ -461,9 +496,11 @@ class GeminiSolver:
         questions_data: List[Dict[str, Any]],
         user_notes: Optional[str] = None,
         extra_context_files: Optional[List[Path]] = None,
-        on_log: Optional[Any] = None
+        on_log: Optional[Any] = None,
+        auto_triggered: bool = False,
     ) -> SolutionDraft:
         """Resolve o questionário utilizando o texto real e marcadores [[CAMPO_X]] extraídos ao vivo do Moodle."""
+
         if not self.client:
             raise RuntimeError("Chave GEMINI_API_KEY não informada. Configure a variável no arquivo .env.")
 
@@ -660,20 +697,44 @@ class GeminiSolver:
             draft_path = dest_dir / f"{safe_title}_rascunho.md"
             draft_path.write_text(clean_markdown, encoding="utf-8")
 
-            pdf_path = dest_dir / f"{safe_title}.pdf"
-            try:
-                await _emit_log(on_log, "Compilando folha de respostas em PDF...")
-                pdf_gen = AcademicPDFGenerator()
-                await pdf_gen.render_pdf(
-                    markdown_text=clean_markdown,
-                    output_pdf_path=pdf_path,
-                    course_name=assignment.course_name,
-                    assignment_title=assignment.title
-                )
-                await _emit_log(on_log, f"✔ Folha de respostas em PDF gerada: {pdf_path.name}")
-            except Exception as pdf_err:
-                console.print(f"[yellow]Aviso ao gerar PDF do quiz: {pdf_err}[/yellow]")
+            if auto_triggered:
+                # Quiz automático → PDF
+                pdf_path = dest_dir / f"{safe_title}.pdf"
+                try:
+                    await _emit_log(on_log, "Compilando folha de respostas em PDF...")
+                    pdf_gen = AcademicPDFGenerator()
+                    await pdf_gen.render_pdf(
+                        markdown_text=clean_markdown,
+                        output_pdf_path=pdf_path,
+                        course_name=assignment.course_name,
+                        assignment_title=assignment.title
+                    )
+                    await _emit_log(on_log, f"✔ Folha de respostas em PDF gerada: {pdf_path.name}")
+                except Exception as pdf_err:
+                    console.print(f"[yellow]Aviso ao gerar PDF do quiz: {pdf_err}[/yellow]")
+                    pdf_path = None
+                docx_path = None
+            else:
+                # Quiz manual → DOCX editável
                 pdf_path = None
+                docx_path = dest_dir / f"{safe_title}.docx"
+                try:
+                    await _emit_log(on_log, "Gerando folha de respostas em DOCX editável...")
+                    from src.solver.docx_generator import AcademicDocxGenerator
+                    docx_gen = AcademicDocxGenerator()
+                    ok = docx_gen.generate_docx(
+                        markdown_text=clean_markdown,
+                        output_path=docx_path,
+                        course_name=assignment.course_name,
+                        assignment_title=assignment.title,
+                    )
+                    if ok:
+                        await _emit_log(on_log, f"✔ DOCX editável gerado: {docx_path.name}")
+                    else:
+                        docx_path = None
+                except Exception as docx_err:
+                    console.print(f"[yellow]Aviso ao gerar DOCX do quiz: {docx_err}[/yellow]")
+                    docx_path = None
 
             return SolutionDraft(
                 assignment_id=assignment.id,
@@ -683,10 +744,13 @@ class GeminiSolver:
                 full_markdown=clean_markdown,
                 output_path=draft_path,
                 pdf_path=pdf_path,
+                docx_path=docx_path,
                 used_materials=used_material_names,
                 used_model=successful_model,
-                structured_answers=[{"key": k, "value": v} for k, v in structured_dict.items()] if structured_dict else None
+                structured_answers=[{"key": k, "value": v} for k, v in structured_dict.items()] if structured_dict else None,
+                auto_triggered=auto_triggered,
             )
+
 
         finally:
             for up in uploaded_gemini_files:
@@ -697,6 +761,85 @@ class GeminiSolver:
                         await asyncio.to_thread(self.client.files.delete, name=up.name)
                 except Exception:
                     pass
+
+
+    async def apply_revision(
+        self,
+        draft: "SolutionDraft",
+        revision_instructions: str,
+        on_log: Optional[Any] = None,
+    ) -> "SolutionDraft":
+        """Re-gera o DOCX aplicando instruções de modificação do usuário.
+
+        Fluxo:
+          1. Lê o markdown atual do draft
+          2. Envia para a IA com as instruções de modificação
+          3. Gera novo DOCX e retorna SolutionDraft atualizado
+        """
+        if not self.client:
+            raise RuntimeError("Chave GEMINI_API_KEY não informada.")
+
+        await _emit_log(on_log, f"Aplicando modificações solicitadas pelo aluno...")
+
+        system_instruction = (
+            "Você é um assistente acadêmico. O aluno revisou a resolução abaixo e quer que você aplique "
+            "as modificações indicadas. Mantenha o formato Markdown com ### Questão X. "
+            "Aplique APENAS as mudanças pedidas sem alterar o restante."
+        )
+        user_message = (
+            f"RESOLUÇÃO ATUAL:\n{draft.full_markdown}\n\n"
+            f"INSTRUÇÕES DE MODIFICAÇÃO DO ALUNO:\n{revision_instructions}\n\n"
+            "Gere a resolução modificada completa."
+        )
+
+        contents = [system_instruction, user_message]
+        response, used_model = await self._generate_with_fallback(
+            contents=contents,
+            system_instruction=system_instruction,
+            temperature=0.1,
+            on_log=on_log,
+        )
+
+        new_markdown = re.sub(
+            r"```(?:json:answers|json)\s*\n.*?\n```", "", response.text, flags=re.DOTALL
+        ).strip()
+
+        safe_course = sanitize_filename(draft.course_name)
+        safe_title = sanitize_filename(draft.assignment_title)
+        dest_dir = self.submissions_dir / safe_course
+
+        draft_path = dest_dir / f"{safe_title}_rascunho_v2.md"
+        draft_path.write_text(new_markdown, encoding="utf-8")
+
+        # Nova revisão sempre é manual → DOCX
+        docx_path = dest_dir / f"{safe_title}_revisado.docx"
+        try:
+            from src.solver.docx_generator import AcademicDocxGenerator
+            ok = AcademicDocxGenerator().generate_docx(
+                markdown_text=new_markdown,
+                output_path=docx_path,
+                course_name=draft.course_name,
+                assignment_title=draft.assignment_title,
+            )
+            if not ok:
+                docx_path = None
+        except Exception as e:
+            console.print(f"[yellow]Aviso ao gerar DOCX revisado: {e}[/yellow]")
+            docx_path = None
+
+        return SolutionDraft(
+            assignment_id=draft.assignment_id,
+            assignment_title=draft.assignment_title,
+            course_name=draft.course_name,
+            summary=new_markdown[:300],
+            full_markdown=new_markdown,
+            output_path=draft_path,
+            pdf_path=None,
+            docx_path=docx_path,
+            used_materials=draft.used_materials,
+            used_model=used_model,
+            auto_triggered=False,
+        )
 
 
 async def main():

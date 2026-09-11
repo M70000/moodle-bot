@@ -21,7 +21,7 @@ from src.auth.moodle_auth import MoodleAuth
 from src.notifier.discord_bot import MoodleDiscordNotifier
 from src.scraper.moodle_scraper import Assignment, CourseAnnouncement, MoodleScraper, sanitize_filename
 from src.scheduler.state import DaemonState
-from src.solver.gemini_solver import GeminiSolver
+from src.solver.ai_solver import AISolver
 
 if sys.platform == "win32":
     try:
@@ -41,7 +41,7 @@ class MoodleDaemon:
     def __init__(self):
         self.auth = MoodleAuth()
         self.scraper = MoodleScraper(auth=self.auth)
-        self.solver = GeminiSolver()
+        self.solver = AISolver()  # Multi-provider BYOK: Gemini/Claude/DeepSeek
         self.notifier = MoodleDiscordNotifier()
         self.state = DaemonState()
         self.scheduler = AsyncIOScheduler()
@@ -176,30 +176,32 @@ class MoodleDaemon:
                         f"{assign.title} ({assign.course_name})"
                     )
 
-                    # Gera o rascunho e PDF acadêmico com o Gemini através da fila centralizada
-                    if self.solver.client:
-                        try:
-                            from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
+                    # Gera o rascunho com a IA via fila centralizada
+                    # auto_triggered=True → gera PDF (comportamento do daemon)
+                    try:
+                        from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
 
-                            async def _do_auto_solve(target_assign=assign):
-                                d = await self.solver.solve_assignment(target_assign)
-                                self.state.register_assignment(target_assign, draft_path=str(d.output_path))
-                                if self.notifier.token and self.notifier.channel_id:
-                                    await self.notifier.send_assignment_review(target_assign, d)
-                                return True, f"Rascunho gerado para '{target_assign.title}'"
-
-                            item = QueueItem(
-                                task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
-                                title=assign.title,
-                                course=assign.course_name,
-                                requester="Daemon (Automático)",
-                                coro_func=_do_auto_solve
+                        async def _do_auto_solve(target_assign=assign):
+                            d = await self.solver.solve_assignment(
+                                target_assign,
+                                auto_triggered=True,  # daemon/automático → PDF
                             )
-                            await queue_manager.enqueue(item)
-                        except Exception as sol_err:
-                            console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
-                    else:
-                        console.print("[yellow]Gemini não configurado: rascunho não gerado.[/yellow]")
+                            self.state.register_assignment(target_assign, draft_path=str(d.output_path))
+                            if self.notifier.token and self.notifier.channel_id:
+                                await self.notifier.send_assignment_review(target_assign, d)
+                            return True, f"Rascunho gerado para '{target_assign.title}'"
+
+                        item = QueueItem(
+                            task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
+                            title=assign.title,
+                            course=assign.course_name,
+                            requester="Daemon (Automático)",
+                            coro_func=_do_auto_solve
+                        )
+                        await queue_manager.enqueue(item)
+                    except Exception as sol_err:
+                        console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
+
                 else:
                     self.state.register_assignment(assign)
 

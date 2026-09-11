@@ -26,3 +26,13 @@ reportlab>=4.2.0
 # Leitura e Extração de Documentos e PDFs de Apoio
 pypdf>=5.0.0
 
+# Geração de Documentos Word Editáveis (.docx) para resoluções manuais
+python-docx>=1.1.2
+
+# Provedores de IA Alternativos BYOK (opcionais — instale apenas o que for usar)
+# Anthropic Claude: pip install anthropic
+# anthropic>=0.40.0
+# DeepSeek via OpenAI SDK: pip install openai
+# openai>=1.54.0
+
+

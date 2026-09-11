@@ -121,6 +121,27 @@ class Settings(BaseSettings):
         description="Intervalo em segundos entre tentativas de modelos de fallback"
     )
 
+    # Anthropic Claude (BYOK alternativo)
+    ANTHROPIC_API_KEY: str = Field(
+        default="",
+        description="Chave de API do Anthropic Claude (opcional — substitui Gemini como agente IA)"
+    )
+    ANTHROPIC_MODEL: str = Field(
+        default="claude-haiku-4-5",
+        description="Modelo Claude a usar (claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5)"
+    )
+
+    # DeepSeek (BYOK alternativo)
+    DEEPSEEK_API_KEY: str = Field(
+        default="",
+        description="Chave de API do DeepSeek (opcional — substitui Gemini como agente IA)"
+    )
+    DEEPSEEK_MODEL: str = Field(
+        default="deepseek-chat",
+        description="Modelo DeepSeek a usar (deepseek-chat, deepseek-reasoner)"
+    )
+
+
     # Agendamento & Regras de Prazos
     CHECK_INTERVAL_MINUTES: int = Field(
         default=30,

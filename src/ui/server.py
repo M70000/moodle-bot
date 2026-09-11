@@ -296,126 +296,6 @@ def test_discord_connection(bot_token: str, channel_id: Optional[str] = None) ->
         return {"ok": False, "error": f"Falha na conexão com Discord: {str(e)}"}
 
 
-def detect_discord_user_channels(bot_token: str, username_or_id: str) -> Dict[str, Any]:
-    """Consulta a API do Discord e localiza (ou provisiona) as 5 salas privadas do estudante."""
-    if not bot_token or bot_token.strip() in ["", "0"]:
-        return {"ok": False, "error": "Informe o Token do Bot do Discord primeiro para detectar os canais."}
-
-    headers = {
-        "Authorization": f"Bot {bot_token.strip()}",
-        "User-Agent": "MoodleAssistantBot (https://moodle.bot, 1.0)",
-        "Content-Type": "application/json"
-    }
-
-    clean_user = username_or_id.strip().lower()
-    if not clean_user:
-        clean_user = os.environ.get("USERNAME", "estudante").lower()
-
-    try:
-        # 1. Busca servidores em que o bot está conectado
-        req = urllib.request.Request("https://discord.com/api/v10/users/@me/guilds", headers=headers)
-        with urllib.request.urlopen(req, timeout=7.0) as resp:
-            guilds = json.loads(resp.read().decode("utf-8"))
-
-        if not guilds:
-            return {"ok": False, "error": "O bot não está em nenhum servidor do Discord ainda. Adicione o bot ao servidor primeiro!"}
-
-        # 2. Percorre servidores procurando a categoria correspondente
-        for g in guilds:
-            gid = g.get("id")
-            gname = g.get("name")
-            ch_req = urllib.request.Request(f"https://discord.com/api/v10/guilds/{gid}/channels", headers=headers)
-            with urllib.request.urlopen(ch_req, timeout=7.0) as ch_resp:
-                channels = json.loads(ch_resp.read().decode("utf-8"))
-
-            categories = [c for c in channels if c.get("type") == 4]  # Type 4 = Guild Category
-            matched_cat = None
-
-            # Busca categoria por nome do usuário
-            for cat in categories:
-                cname = cat.get("name", "").lower()
-                if "moodle" in cname and (clean_user in cname or clean_user.replace(" ", "") in cname.replace(" ", "")):
-                    matched_cat = cat
-                    break
-
-            # Se encontrou categoria, mapeia os 5 canais filhos
-            if matched_cat:
-                cat_id = matched_cat.get("id")
-                children = [c for c in channels if c.get("parent_id") == cat_id]
-                ch_map = {}
-                for ch in children:
-                    cname = ch.get("name", "").lower()
-                    cid = str(ch.get("id"))
-                    if "alerta" in cname or "revis" in cname:
-                        ch_map["DISCORD_CHANNEL_ID"] = cid
-                    elif "conteudo" in cname:
-                        ch_map["DISCORD_CONTENT_CHANNEL_ID"] = cid
-                    elif "aviso" in cname:
-                        ch_map["DISCORD_ANNOUNCEMENTS_CHANNEL_ID"] = cid
-                    elif "fila" in cname:
-                        ch_map["DISCORD_QUEUE_CHANNEL_ID"] = cid
-                    elif "estudo" in cname or "simulado" in cname:
-                        ch_map["DISCORD_STUDY_CHANNEL_ID"] = cid
-
-                if len(ch_map) >= 3:
-                    return {
-                        "ok": True,
-                        "guild_id": gid,
-                        "guild_name": gname,
-                        "category_name": matched_cat.get("name"),
-                        "channels": ch_map,
-                        "message": f"Canais encontrados na categoria '{matched_cat.get('name')}'!"
-                    }
-
-        # 3. Se não encontrou nenhuma categoria para o usuário, provisiona no primeiro servidor!
-        first_guild = guilds[0]
-        fgid = first_guild.get("id")
-        fgname = first_guild.get("name")
-        cat_name = f"🔒 Moodle • {username_or_id or 'Estudante'}"
-
-        cat_payload = json.dumps({"name": cat_name, "type": 4}).encode("utf-8")
-        cat_req = urllib.request.Request(f"https://discord.com/api/v10/guilds/{fgid}/channels", data=cat_payload, headers=headers)
-        with urllib.request.urlopen(cat_req, timeout=7.0) as cat_resp:
-            new_cat = json.loads(cat_resp.read().decode("utf-8"))
-            new_cat_id = new_cat.get("id")
-
-        specs = [
-            ("alertas-revisoes", "Alertas de prazos, aprovação/adiamento de tarefas e rascunhos"),
-            ("conteudos", "Materiais didáticos e uploads do /adicionarconteudo"),
-            ("avisos-turma", "Comunicados dos professores capturados do Moodle"),
-            ("fila-tarefas", "Acompanhamento em tempo real da fila de execução"),
-            ("estudos-simulados", "Tutor tira-dúvidas /perguntar, simulados /quiz e flashcards")
-        ]
-        created_map = {}
-        for cname, ctopic in specs:
-            cp = json.dumps({"name": cname, "type": 0, "parent_id": new_cat_id, "topic": ctopic}).encode("utf-8")
-            cr = urllib.request.Request(f"https://discord.com/api/v10/guilds/{fgid}/channels", data=cp, headers=headers)
-            with urllib.request.urlopen(cr, timeout=7.0) as cr_resp:
-                created_ch = json.loads(cr_resp.read().decode("utf-8"))
-                cid = str(created_ch.get("id"))
-                if cname == "alertas-revisoes":
-                    created_map["DISCORD_CHANNEL_ID"] = cid
-                elif cname == "conteudos":
-                    created_map["DISCORD_CONTENT_CHANNEL_ID"] = cid
-                elif cname == "avisos-turma":
-                    created_map["DISCORD_ANNOUNCEMENTS_CHANNEL_ID"] = cid
-                elif cname == "fila-tarefas":
-                    created_map["DISCORD_QUEUE_CHANNEL_ID"] = cid
-                elif cname == "estudos-simulados":
-                    created_map["DISCORD_STUDY_CHANNEL_ID"] = cid
-
-        return {
-            "ok": True,
-            "created": True,
-            "guild_id": fgid,
-            "guild_name": fgname,
-            "category_name": cat_name,
-            "channels": created_map,
-            "message": f"Categoria '{cat_name}' e 5 canais criados com sucesso no servidor '{fgname}'!"
-        }
-
-    except Exception as err:
-        return {"ok": False, "error": f"Erro ao detectar/criar canais: {err}"}
 
 
 class ConfigAPIHandler(SimpleHTTPRequestHandler):
@@ -497,14 +377,9 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             self._send_json(res)
             return
 
-        if url_path == "/api/discord/detect-channels":
-            token = payload.get("token", "")
-            username = payload.get("username", "")
-            res = detect_discord_user_channels(token, username)
-            self._send_json(res)
-            return
 
         if url_path == "/api/login-moodle":
+
             try:
                 # Inicia o moodle_auth em nova janela de console para o usuário interagir
                 venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"

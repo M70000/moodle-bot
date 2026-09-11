@@ -225,25 +225,15 @@
               <p>Defina para onde o bot enviará alertas, aprovações de tarefas e materiais.</p>
             </div>
           </div>
-          <div class="card-body">
-            <!-- Banner Auto-Detectar Canais com Zero Atrito -->
-            <div class="card card-industrial-box provision-box">
-              <div class="box-header-row">
-                <div>
-                  <div class="tag-label">[ NET // DISCORD AUTO-PROVISIONING ]</div>
-                  <h4 class="box-title">⚡ AUTO-DETECÇÃO DE SALAS PRIVADAS</h4>
-                  <p class="box-desc">DIGITE SEU @USUÁRIO OU ID PARA MAPEAMENTO DOS 5 CANAIS EXCLUSIVOS.</p>
-                </div>
-                <div class="box-controls">
-                  <input type="text" id="DISCORD_USER_SEARCH" placeholder="USER OU ID..." style="width: 170px;">
-                  <button type="button" class="btn btn-primary btn-sm" id="btn-detect-channels" onclick="detectDiscordChannels()">
-                    [ 🔍 AUTO-DETECTAR ]
-                  </button>
-                </div>
-              </div>
-              <div id="detect-channels-feedback" class="test-feedback"></div>
-            </div>
 
+          <div class="card-body">
+            <div class="info-callout" style="margin-bottom: 1.5rem;">
+              <div class="info-icon">💡</div>
+              <div class="info-text">
+                <strong>Como criar seus canais privados?</strong>
+                Com o bot rodando no Discord, use o comando <code>!meuscanais</code> em qualquer canal do servidor. O bot criará automaticamente a categoria e os 5 canais exclusivos para você.
+              </div>
+            </div>
             <div class="form-group">
               <label for="DISCORD_CHANNEL_ID">Canal Principal de Alertas & Revisões <span class="badge badge-required">Obrigatório</span></label>
               <input type="text" id="DISCORD_CHANNEL_ID" placeholder="Ex: 112233445566778899">
