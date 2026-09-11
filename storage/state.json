@@ -12,7 +12,7 @@
       "status": "pending_review",
       "alert_5m_sent": false,
       "emergency_submitted": false,
-      "updated_at": "2026-09-10T20:21:39.422365",
+      "updated_at": "2026-09-10T22:16:39.048660",
       "alert_15m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
@@ -39,7 +39,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.423657"
+      "updated_at": "2026-09-10T22:16:39.049949"
     },
     "45695": {
       "id": "45695",
@@ -59,7 +59,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.424676"
+      "updated_at": "2026-09-10T22:16:39.050957"
     },
     "45717": {
       "id": "45717",
@@ -79,7 +79,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.425643"
+      "updated_at": "2026-09-10T22:16:39.051896"
     },
     "45694": {
       "id": "45694",
@@ -99,7 +99,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.426615"
+      "updated_at": "2026-09-10T22:16:39.052877"
     },
     "45699": {
       "id": "45699",
@@ -119,7 +119,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.427742"
+      "updated_at": "2026-09-10T22:16:39.053826"
     },
     "45700": {
       "id": "45700",
@@ -139,7 +139,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.428841"
+      "updated_at": "2026-09-10T22:16:39.054871"
     },
     "45701": {
       "id": "45701",
@@ -159,7 +159,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.429936"
+      "updated_at": "2026-09-10T22:16:39.055787"
     },
     "45705": {
       "id": "45705",
@@ -179,7 +179,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.431077"
+      "updated_at": "2026-09-10T22:16:39.056764"
     },
     "45706": {
       "id": "45706",
@@ -199,7 +199,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.432084"
+      "updated_at": "2026-09-10T22:16:39.057920"
     },
     "45707": {
       "id": "45707",
@@ -219,7 +219,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.433047"
+      "updated_at": "2026-09-10T22:16:39.058856"
     },
     "45708": {
       "id": "45708",
@@ -239,7 +239,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.434178"
+      "updated_at": "2026-09-10T22:16:39.059911"
     },
     "45709": {
       "id": "45709",
@@ -259,7 +259,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.435072"
+      "updated_at": "2026-09-10T22:16:39.061107"
     },
     "45710": {
       "id": "45710",
@@ -279,7 +279,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.436305"
+      "updated_at": "2026-09-10T22:16:39.062088"
     },
     "45715": {
       "id": "45715",
@@ -299,7 +299,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.438061"
+      "updated_at": "2026-09-10T22:16:39.063020"
     },
     "45716": {
       "id": "45716",
@@ -319,7 +319,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.439949"
+      "updated_at": "2026-09-10T22:16:39.063941"
     },
     "45718": {
       "id": "45718",
@@ -339,7 +339,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.442151"
+      "updated_at": "2026-09-10T22:16:39.064830"
     },
     "45719": {
       "id": "45719",
@@ -359,7 +359,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.443915"
+      "updated_at": "2026-09-10T22:16:39.065796"
     },
     "45723": {
       "id": "45723",
@@ -379,7 +379,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.445791",
+      "updated_at": "2026-09-10T22:16:39.066797",
       "notion_synced": true
     },
     "45724": {
@@ -400,7 +400,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.447057",
+      "updated_at": "2026-09-10T22:16:39.067721",
       "notion_synced": true
     },
     "45725": {
@@ -421,7 +421,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.448015",
+      "updated_at": "2026-09-10T22:16:39.068659",
       "notion_synced": true
     },
     "45729": {
@@ -442,7 +442,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.448912",
+      "updated_at": "2026-09-10T22:16:39.069778",
       "notion_synced": true
     },
     "45730": {
@@ -463,7 +463,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.449846",
+      "updated_at": "2026-09-10T22:16:39.070972",
       "notion_synced": true
     },
     "45731": {
@@ -484,7 +484,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.450773",
+      "updated_at": "2026-09-10T22:16:39.071884",
       "notion_synced": true
     },
     "45732": {
@@ -505,7 +505,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:32:15.437872",
+      "updated_at": "2026-09-10T22:16:39.072753",
       "notion_synced": true
     },
     "45733": {
@@ -516,7 +516,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -526,7 +526,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:26:54.417004",
+      "updated_at": "2026-09-10T22:16:39.073854",
       "notion_synced": true
     },
     "45734": {
@@ -537,7 +537,7 @@
       "due_date": null,
       "time_remaining": null,
       "activity_type": "quiz",
-      "submission_status": "A fazer (Pendente)",
+      "submission_status": "Concluído",
       "grade_value": null,
       "has_grade": true,
       "is_submitted": true,
@@ -547,7 +547,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:30:25.558481",
+      "updated_at": "2026-09-10T22:16:39.074893",
       "notion_synced": true
     },
     "45735": {
@@ -568,7 +568,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.454582",
+      "updated_at": "2026-09-10T22:16:39.075952",
       "notion_synced": true
     },
     "45736": {
@@ -589,7 +589,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.455563",
+      "updated_at": "2026-09-10T22:16:39.077208",
       "notion_synced": true
     },
     "45737": {
@@ -610,7 +610,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.456510",
+      "updated_at": "2026-09-10T22:16:39.078215",
       "notion_synced": true
     },
     "45738": {
@@ -631,7 +631,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.457439",
+      "updated_at": "2026-09-10T22:16:39.079368",
       "notion_synced": true
     },
     "45739": {
@@ -652,7 +652,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.458393",
+      "updated_at": "2026-09-10T22:16:39.080491",
       "notion_synced": true
     },
     "45740": {
@@ -673,7 +673,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.459553",
+      "updated_at": "2026-09-10T22:16:39.081726",
       "notion_synced": true
     },
     "45741": {
@@ -694,7 +694,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.460516",
+      "updated_at": "2026-09-10T22:16:39.082706",
       "notion_synced": true
     },
     "45742": {
@@ -715,7 +715,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.461546",
+      "updated_at": "2026-09-10T22:16:39.083599",
       "notion_synced": true
     },
     "45743": {
@@ -736,7 +736,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.462490",
+      "updated_at": "2026-09-10T22:16:39.084496",
       "notion_synced": true
     },
     "45744": {
@@ -757,7 +757,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.463410",
+      "updated_at": "2026-09-10T22:16:39.085418",
       "notion_synced": true
     },
     "45745": {
@@ -778,7 +778,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.464365",
+      "updated_at": "2026-09-10T22:16:39.086381",
       "notion_synced": true
     },
     "45746": {
@@ -799,7 +799,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.465301",
+      "updated_at": "2026-09-10T22:16:39.087409",
       "notion_synced": true
     },
     "45747": {
@@ -820,7 +820,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.466208",
+      "updated_at": "2026-09-10T22:16:39.088260",
       "notion_synced": true
     },
     "45748": {
@@ -841,7 +841,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.467145",
+      "updated_at": "2026-09-10T22:16:39.089178",
       "notion_synced": true
     },
     "45752": {
@@ -862,7 +862,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.468175",
+      "updated_at": "2026-09-10T22:16:39.090162",
       "notion_synced": true
     },
     "45753": {
@@ -883,7 +883,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.469151",
+      "updated_at": "2026-09-10T22:16:39.091311",
       "notion_synced": true
     },
     "45754": {
@@ -904,7 +904,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.470025",
+      "updated_at": "2026-09-10T22:16:39.092233",
       "notion_synced": true
     },
     "45757": {
@@ -925,7 +925,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.470983",
+      "updated_at": "2026-09-10T22:16:39.093361",
       "notion_synced": true
     },
     "45758": {
@@ -946,7 +946,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.471854",
+      "updated_at": "2026-09-10T22:16:39.094546",
       "notion_synced": true
     },
     "45759": {
@@ -967,7 +967,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.472753",
+      "updated_at": "2026-09-10T22:16:39.095727",
       "notion_synced": true
     },
     "45763": {
@@ -988,7 +988,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.473670",
+      "updated_at": "2026-09-10T22:16:39.096837",
       "notion_synced": true
     },
     "45764": {
@@ -1009,7 +1009,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.474742",
+      "updated_at": "2026-09-10T22:16:39.098006",
       "notion_synced": true
     },
     "45766": {
@@ -1030,7 +1030,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.475669",
+      "updated_at": "2026-09-10T22:16:39.099026",
       "notion_synced": true
     },
     "45767": {
@@ -1051,7 +1051,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.476559"
+      "updated_at": "2026-09-10T22:16:39.100168"
     },
     "45768": {
       "id": "45768",
@@ -1071,7 +1071,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.477479"
+      "updated_at": "2026-09-10T22:16:39.101272"
     },
     "45769": {
       "id": "45769",
@@ -1091,7 +1091,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.478407"
+      "updated_at": "2026-09-10T22:16:39.102368"
     },
     "45770": {
       "id": "45770",
@@ -1111,7 +1111,7 @@
       "alert_5m_sent": false,
       "alert_2m_sent": false,
       "alert_1m_sent": false,
-      "updated_at": "2026-09-10T20:21:39.479253",
+      "updated_at": "2026-09-10T22:16:39.103475",
       "notion_synced": true
     }
   },
