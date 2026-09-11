@@ -1065,12 +1065,10 @@ class MoodleBotClient(commands.Bot):
     """Bot do Discord com sincronização instantânea de Slash Commands por servidor e prefixos."""
 
     def __init__(self):
+        # Slash Commands e notificações operam 100% com Intents.default().
+        # Evita a exceção PrivilegedIntentsRequired caso os toggles de Privileged Gateway Intents
+        # (Message Content / Server Members) não estejam ativados no Discord Developer Portal.
         intents = discord.Intents.default()
-        intents.message_content = True
-        try:
-            intents.members = True
-        except Exception:
-            pass
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):

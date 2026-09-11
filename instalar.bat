@@ -1,18 +1,17 @@
 @echo off
-chcp 65001 >nul
-title Moodle AI Assistant - Instalador Desktop One-Click
+title Moodle AI Assistant - Instalador One-Click
 cd /d "%~dp0"
 
 echo ============================================================
-echo   🤖 Moodle AI Assistant (UFMG) - Instalador One-Click
+echo   Moodle AI Assistant UFMG - Instalador One-Click
 echo ============================================================
 echo.
-echo Este instalador configurará todo o ambiente necessário para
-echo rodar o assistente acadêmico na sua máquina automaticamente.
+echo Este instalador configurara todo o ambiente necessario para
+echo rodar o assistente academico na sua maquina automaticamente.
 echo.
 
-:: 1. Verificação de Python 3.10+
-echo [1/4] Verificando instalação do Python...
+rem 1. Verificacao do Python
+echo [1/4] Verificando instalacao do Python...
 set PYTHON_CMD=
 
 where python >nul 2>&1
@@ -27,8 +26,8 @@ if %ERRORLEVEL% EQU 0 (
 
 if "%PYTHON_CMD%"=="" (
     echo.
-    echo [AVISO] Python não encontrado no sistema!
-    echo Tentando instalar Python 3.11 automaticamente via winget...
+    echo [AVISO] Python nao encontrado no sistema!
+    echo Tentando instalar Python 3.11 via winget...
     winget install Python.Python.3.11 --silent --accept-package-agreements --accept-source-agreements >nul 2>&1
     if %ERRORLEVEL% NEQ 0 (
         echo [INFO] Baixando instalador oficial do Python 3.11...
@@ -42,38 +41,43 @@ if "%PYTHON_CMD%"=="" (
     set PYTHON_CMD=python
 )
 
-:: 2. Criação do Ambiente Virtual (.venv)
+rem 2. Criacao do Ambiente Virtual .venv
 echo.
-echo [2/4] Configurando ambiente virtual isolado (.venv)...
+echo [2/4] Configurando ambiente virtual isolado .venv...
 if not exist ".venv\Scripts\python.exe" (
     %PYTHON_CMD% -m venv .venv
     if %ERRORLEVEL% NEQ 0 (
-        echo [ERRO] Falha ao criar ambiente virtual. Certifique-se de que o Python 3.10+ está instalado.
+        echo [ERRO] Falha ao criar ambiente virtual .venv.
         pause
         exit /b 1
     )
 )
 
-:: 3. Instalação de Dependências
+rem 3. Instalacao de Dependencias
 echo.
-echo [3/4] Instalando dependências e bibliotecas necessárias...
+echo [3/4] Instalando dependencias e bibliotecas necessarias...
 ".venv\Scripts\python.exe" -m pip install --upgrade pip --quiet
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt --quiet
 if %ERRORLEVEL% NEQ 0 (
-    echo [AVISO] Tentando instalar pacotes novamente sem modo silencioso...
+    echo [AVISO] Tentando instalar pacotes sem modo silencioso...
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
+    if %ERRORLEVEL% NEQ 0 (
+        echo [ERRO] Falha ao instalar requirements.txt.
+        pause
+        exit /b 1
+    )
 )
 
-:: 4. Instalação do Navegador Playwright (Chromium)
+rem 4. Instalacao do Navegador Playwright Chromium
 echo.
-echo [4/4] Instalando navegador automatizado do Moodle (Chromium)...
+echo [4/4] Instalando navegador automatizado do Moodle Chromium...
 ".venv\Scripts\python.exe" -m playwright install chromium
 if %ERRORLEVEL% NEQ 0 (
-    echo [AVISO] Tentativa secundária do Playwright...
+    echo [AVISO] Tentativa secundaria do Playwright...
     ".venv\Scripts\python.exe" -m playwright install
 )
 
-:: 5. Preparação do .env inicial
+rem 5. Preparacao do .env inicial
 if not exist ".env" (
     if exist ".env.example" (
         copy ".env.example" ".env" >nul
@@ -83,13 +87,13 @@ if not exist ".env" (
 
 echo.
 echo ============================================================
-echo   ✔ Instalação concluída com sucesso!
+echo   Instalacao concluida com sucesso!
 echo ============================================================
 echo.
-echo Abrindo agora o Painel de Configuração para você conectar
+echo Abrindo agora o Painel de Configuracao para conectar
 echo seu Moodle, Discord e chave do Gemini...
 echo.
-timeout /t 2 >nul
+ping 127.0.0.1 -n 4 >nul
 
 start "" "configurar.bat"
 exit /b 0
