@@ -23,3 +23,5 @@ services:
         value: "0"
       - key: GEMINI_MODEL
         value: "gemini-3.8-flash"
+      - key: BOT_MODE
+        value: "relay"

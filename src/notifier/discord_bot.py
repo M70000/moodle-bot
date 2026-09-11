@@ -145,13 +145,38 @@ def get_available_courses() -> List[str]:
     return [p.name for p in mat_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
 
 
+import os as _os
+
+
+def _is_relay_mode() -> bool:
+    """Retorna True quando o bot está no modo relay (rodando no Render, sem execução local)."""
+    return _os.environ.get("BOT_MODE", "desktop").lower() == "relay"
+
+
 async def course_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete interativo para seleção de disciplinas no Discord (tolerante a acentos)."""
+    """Autocomplete interativo para seleção de disciplinas no Discord (tolerante a acentos).
+
+    No modo relay (Render), busca a lista publicada pelo desktop via Bridge API.
+    No modo desktop (local), lê diretamente de storage/materials/.
+    """
     try:
-        courses = get_available_courses()
+        if _is_relay_mode():
+            # Modo relay: busca cursos publicados pelo desktop no Render Hub
+            from src.notifier.bridge_manager import cloud_bridge
+            courses = await cloud_bridge.get_published_courses()
+            if not courses:
+                # Desktop offline: mostra dica para o usuário
+                return [app_commands.Choice(
+                    name="⚡ Inicie iniciar.bat no seu PC para ver suas disciplinas",
+                    value="__offline__"
+                )]
+        else:
+            # Modo desktop: leitura local
+            courses = get_available_courses()
+
         norm_curr = normalize_text(current)
         filtered = [c for c in courses if not norm_curr or norm_curr in normalize_text(c)]
         return [

@@ -3,6 +3,10 @@
 Permite que ações de submissão (Aprovar PDF, Preencher Quiz, Finalizar Quiz)
 acionadas por botões no Discord rodando na Nuvem (Render) sejam despachadas e
 executadas com segurança no PC local do estudante (onde reside o login da UFMG).
+
+Também gerencia:
+- Lista de disciplinas publicadas pelo desktop (para autocomplete no relay mode)
+- Status de presença do desktop runner (online/offline)
 """
 
 import asyncio
@@ -18,6 +22,54 @@ class CloudBridgeManager:
         self._pending_tasks: Dict[str, Dict[str, Any]] = {}
         self._completed_tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
+
+        # Presença e cursos publicados pelo desktop runner
+        self._published_courses: List[str] = []
+        self._desktop_last_seen: float = 0.0  # Unix timestamp
+        self._DESKTOP_TIMEOUT_SECONDS = 300   # 5 min sem heartbeat → offline
+
+    # ------------------------------------------------------------------
+    # Desktop presence & published courses
+    # ------------------------------------------------------------------
+
+    async def publish_courses(self, courses: List[str]) -> None:
+        """Recebe e armazena a lista de disciplinas publicada pelo desktop.
+
+        O desktop chama periodicamente (via POST /api/bridge/courses) para que
+        o autocomplete do bot no Render exiba as disciplinas corretas.
+        """
+        async with self._lock:
+            self._published_courses = list(courses)
+            self._desktop_last_seen = time.time()
+
+    async def get_published_courses(self) -> List[str]:
+        """Retorna as disciplinas publicadas pelo desktop (ou lista vazia se offline)."""
+        async with self._lock:
+            return list(self._published_courses)
+
+    async def is_desktop_online(self) -> bool:
+        """Retorna True se o desktop publicou presença nos últimos 5 minutos."""
+        async with self._lock:
+            if not self._desktop_last_seen:
+                return False
+            return (time.time() - self._desktop_last_seen) < self._DESKTOP_TIMEOUT_SECONDS
+
+    async def desktop_status(self) -> Dict[str, Any]:
+        """Retorna dicionário com status do desktop runner para o healthcheck."""
+        async with self._lock:
+            online = bool(
+                self._desktop_last_seen
+                and (time.time() - self._desktop_last_seen) < self._DESKTOP_TIMEOUT_SECONDS
+            )
+            return {
+                "online": online,
+                "last_seen": self._desktop_last_seen or None,
+                "courses_count": len(self._published_courses),
+            }
+
+    # ------------------------------------------------------------------
+    # Task queue
+    # ------------------------------------------------------------------
 
     async def dispatch_action(
         self,
@@ -82,5 +134,5 @@ class CloudBridgeManager:
                 return task
             return None
 
-
 cloud_bridge = CloudBridgeManager()
+

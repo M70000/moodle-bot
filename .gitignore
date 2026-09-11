@@ -63,3 +63,20 @@ test-results/
 # Logs
 *.log
 logs/
+
+# AI Agent & Local Config (não commitar configurações locais de agentes)
+.agents/
+.claude/
+.gemini/
+skills-lock.json
+
+# Node.js (dependências opcionais de scripts JS)
+node_modules/
+package-lock.json
+package.json
+
+# Scratch / arquivos temporários de análise
+scratch/*.py
+scratch/*.json
+scratch/*.csv
+

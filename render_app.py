@@ -130,6 +130,32 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
             tasks = await cloud_bridge.get_pending_tasks(channel_id=channel_id)
             response_dict = {"tasks": tasks, "count": len(tasks)}
 
+        elif path == "/api/bridge/courses":
+            if method == "POST":
+                # Desktop publica a lista de disciplinão disponíveis
+                try:
+                    data = json.loads(body_bytes.decode("utf-8"))
+                    courses = data.get("courses", [])
+                    await cloud_bridge.publish_courses(courses)
+                    response_dict = {"ok": True, "courses_count": len(courses)}
+                    print(f"[Bridge] Desktop publicou {len(courses)} disciplinas.")
+                except Exception as e:
+                    status_code = "400 Bad Request"
+                    response_dict = {"error": str(e)}
+            else:
+                # Autocomplete (relay mode) lê a lista publicada pelo desktop
+                courses = await cloud_bridge.get_published_courses()
+                online = await cloud_bridge.is_desktop_online()
+                response_dict = {
+                    "courses": courses,
+                    "desktop_online": online,
+                    "count": len(courses)
+                }
+
+        elif path == "/api/bridge/desktop-status":
+            status = await cloud_bridge.desktop_status()
+            response_dict = status
+
         elif path == "/api/bridge/claim" and method == "POST":
             try:
                 data = json.loads(body_bytes.decode("utf-8"))

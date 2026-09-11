@@ -23,6 +23,8 @@ class BridgeRunner:
     def __init__(self, render_url: str = ""):
         self.render_url = (render_url or settings.RENDER_URL or "").rstrip("/")
         self._is_running = False
+        self._last_courses_publish: float = 0.0
+        self._COURSES_PUBLISH_INTERVAL = 120.0  # Publica cursos a cada 2 minutos
 
     async def poll_once(self) -> int:
         """Consulta o Render e executa qualquer submissão pendente para este canal."""
@@ -60,6 +62,13 @@ class BridgeRunner:
             await self._report_complete(task_id, success, message, url_base)
             executed += 1
 
+        # Publica lista de cursos periodicamente (heartbeat de presença)
+        import time
+        now = time.time()
+        if now - self._last_courses_publish > self._COURSES_PUBLISH_INTERVAL:
+            await self.publish_courses_to_hub(url_base)
+            self._last_courses_publish = now
+
         return executed
 
     async def _claim_task(self, task_id: str, url_base: str):
@@ -85,6 +94,28 @@ class BridgeRunner:
             await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=8))
         except Exception as e:
             console.print(f"[red]Erro ao reportar conclusão da tarefa {task_id} ao Render: {e}[/red]")
+
+    async def publish_courses_to_hub(self, url_base: str = "") -> bool:
+        """Publica a lista de disciplinas locais no Render Hub (heartbeat de presença do desktop)."""
+        base = url_base or self.render_url or (settings.RENDER_URL or "").rstrip("/")
+        if not base:
+            return False
+        loop = asyncio.get_running_loop()
+        try:
+            from src.notifier.discord_bot import get_available_courses
+            courses = get_available_courses()
+            url = f"{base}/api/bridge/courses"
+            payload = json.dumps({"courses": courses}).encode("utf-8")
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json", "User-Agent": "MoodleDesktopRunner/1.0"}
+            )
+            await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=8))
+            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas publicadas no Hub.[/cyan]")
+            return True
+        except Exception as e:
+            console.print(f"[yellow]Aviso ao publicar disciplinas no Hub: {e}[/yellow]")
+            return False
 
     async def _execute_task(self, task: dict):
         action = task.get("action")
@@ -122,7 +153,15 @@ class BridgeRunner:
     async def run_loop(self, poll_interval: float = 4.0):
         """Loop contínuo de polling da ponte."""
         self._is_running = True
-        console.print(f"[cyan]🔗 Ponte Nuvem (Render Hub) ativa para submissões remotas: {self.render_url or settings.RENDER_URL}[/cyan]")
+        url_base = self.render_url or (settings.RENDER_URL or "").rstrip("/")
+        console.print(f"[cyan]🔗 Ponte Nuvem (Render Hub) ativa para submissões remotas: {url_base}[/cyan]")
+
+        # Publica disciplinas imediatamente ao iniciar (heartbeat inicial)
+        if url_base:
+            await self.publish_courses_to_hub(url_base)
+            import time
+            self._last_courses_publish = time.time()
+
         while self._is_running:
             try:
                 await self.poll_once()
