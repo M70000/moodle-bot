@@ -50,6 +50,12 @@ class Settings(BaseSettings):
         description="ID do canal exclusivo para estudos, dúvidas (/perguntar), simulados (/quiz) e flashcards (/flashcards) (se 0, responde no canal chamado)"
     )
 
+    # Ponte Nuvem (Render Hub <-> Desktop Runner)
+    RENDER_URL: str = Field(
+        default="",
+        description="URL pública do serviço Render (ex: https://seu-bot.onrender.com) para sincronização de submissões remotas"
+    )
+
     # Integração Notion (Central de Estudos & Tarefas)
     NOTION_API_KEY: str = Field(
         default="",

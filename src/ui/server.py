@@ -58,6 +58,7 @@ def get_current_config() -> Dict[str, Any]:
         "DISCORD_ANNOUNCEMENTS_CHANNEL_ID": "0",
         "DISCORD_QUEUE_CHANNEL_ID": "0",
         "DISCORD_STUDY_CHANNEL_ID": "0",
+        "RENDER_URL": "",
         "GEMINI_API_KEY": "",
         "GEMINI_MODEL": "gemini-3.8-flash",
         "GEMINI_FALLBACK_MODEL_1": "gemini-3.7-flash",

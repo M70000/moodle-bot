@@ -34,6 +34,7 @@ from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_file
 from src.scraper.moodle_submitter import MoodleSubmitter
 from src.solver.gemini_solver import GeminiSolver, SolutionDraft
 from src.solver.study_tutor import StudyTutor
+from src.notifier.bridge_manager import cloud_bridge
 
 if sys.platform == "win32":
     try:
@@ -670,6 +671,34 @@ class ReviewActionView(ui.View):
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
 
+        # Verificação de Ponte Nuvem (Render sem cookies locais)
+        if not Path(settings.STORAGE_COOKIES_PATH).exists():
+            ans_payload = self._extract_answers_payload()
+            task_id = await cloud_bridge.dispatch_action(
+                action="fill_quiz",
+                assignment_id=self.assignment_id,
+                assignment_url=self.assignment_url,
+                channel_id=str(interaction.channel_id),
+                message_id=str(interaction.message.id),
+                requester=interaction.user.name,
+                title=clean_title,
+                course=course_name,
+                structured_answers=ans_payload or self.structured_answers
+            )
+            if embed:
+                embed.color = discord.Color.gold()
+                embed.set_footer(
+                    text=f"Status: ⏳ Despachado para o Executor Desktop ({task_id})..."
+                )
+                await interaction.message.edit(embed=embed, view=self)
+            await interaction.followup.send(
+                f"📝 **Preenchimento de Quiz Despachado para o Desktop!** (ID: `{task_id}`)\n"
+                f"• Questionário: **{clean_title}**\n"
+                f"• O seu executor desktop local irá preencher as respostas no Moodle com sua sessão local da UFMG.",
+                ephemeral=False
+            )
+            return
+
         async def _do_fill():
             console.print(
                 f"[bold cyan]Preenchimento de rascunho executado da fila para {self.assignment_id}![/bold cyan] "
@@ -763,6 +792,34 @@ class ReviewActionView(ui.View):
         title_raw = item_data.get("title") or (embed.title if embed else f"Quiz {self.assignment_id}")
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
+
+        # Verificação de Ponte Nuvem (Render sem cookies locais)
+        if not Path(settings.STORAGE_COOKIES_PATH).exists():
+            ans_payload = self._extract_answers_payload()
+            task_id = await cloud_bridge.dispatch_action(
+                action="finalize_quiz",
+                assignment_id=self.assignment_id,
+                assignment_url=self.assignment_url,
+                channel_id=str(interaction.channel_id),
+                message_id=str(interaction.message.id),
+                requester=interaction.user.name,
+                title=clean_title,
+                course=course_name,
+                structured_answers=ans_payload or self.structured_answers
+            )
+            if embed:
+                embed.color = discord.Color.gold()
+                embed.set_footer(
+                    text=f"Status: ⏳ Despachado para o Executor Desktop ({task_id})..."
+                )
+                await interaction.message.edit(embed=embed, view=self)
+            await interaction.followup.send(
+                f"🚀 **Envio Definitivo Despachado para o Desktop!** (ID: `{task_id}`)\n"
+                f"• Questionário: **{clean_title}**\n"
+                f"• O seu executor desktop local irá confirmar 'Enviar tudo e terminar' no Moodle.",
+                ephemeral=False
+            )
+            return
 
         async def _do_finalize():
             console.print(
@@ -865,6 +922,35 @@ class ReviewActionView(ui.View):
         title_raw = item_data.get("title") or (embed.title if embed else f"Tarefa {self.assignment_id}")
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
+
+        # Verificação de Ponte Nuvem (Render sem cookies locais)
+        if not Path(settings.STORAGE_COOKIES_PATH).exists():
+            file_path_str = str(self.file_to_submit) if self.file_to_submit else ""
+            task_id = await cloud_bridge.dispatch_action(
+                action="approve_assign",
+                assignment_id=self.assignment_id,
+                assignment_url=self.assignment_url,
+                channel_id=str(interaction.channel_id),
+                message_id=str(interaction.message.id),
+                requester=interaction.user.name,
+                title=clean_title,
+                course=course_name,
+                file_to_submit=file_path_str,
+            )
+            if embed:
+                embed.color = discord.Color.gold()
+                embed.set_footer(
+                    text=f"Status: ⏳ Despachado para o Executor Desktop ({task_id})..."
+                )
+                await interaction.message.edit(embed=embed, view=self)
+            await interaction.followup.send(
+                f"🚀 **Aprovação de Envio Registrada na Nuvem!** (ID: `{task_id}`)\n"
+                f"• Atividade: **{clean_title}**\n"
+                f"• Ação repassada para o seu **Executor Desktop** local com seu login da UFMG.\n"
+                f"*(Se o seu PC já estiver ligado, o envio no Moodle ocorrerá em instantes com seus cookies locais)*",
+                ephemeral=False
+            )
+            return
 
         async def _do_approve():
             console.print(

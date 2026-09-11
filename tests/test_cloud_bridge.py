@@ -1,0 +1,72 @@
+"""Testes unitários para a Ponte Nuvem (CloudBridgeManager e BridgeRunner)."""
+
+import asyncio
+import unittest
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from src.notifier.bridge_manager import CloudBridgeManager
+from src.scheduler.bridge_runner import BridgeRunner
+
+
+class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
+    """Testa o ciclo de vida de tarefas despachadas pela ponte."""
+
+    async def test_dispatch_and_complete_task(self):
+        manager = CloudBridgeManager()
+
+        task_id = await manager.dispatch_action(
+            action="approve_assign",
+            assignment_id="12345",
+            assignment_url="https://virtual.ufmg.br/mod/assign/view.php?id=12345",
+            channel_id="998877",
+            message_id="112233",
+            requester="AlunoTeste",
+            title="Lista de Teste 1",
+            course="Eletrônica",
+            file_to_submit="storage/submissions/test.pdf"
+        )
+
+        self.assertTrue(task_id.startswith("bridge_"))
+
+        # Recupera pendentes para o canal
+        tasks = await manager.get_pending_tasks(channel_id="998877")
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["task_id"], task_id)
+        self.assertEqual(tasks[0]["action"], "approve_assign")
+
+        # Marca como in_progress
+        await manager.mark_in_progress(task_id)
+
+        # Completa a tarefa
+        completed = await manager.complete_task(task_id, success=True, message="Enviado com sucesso no Moodle!")
+        self.assertIsNotNone(completed)
+        self.assertEqual(completed["status"], "completed")
+        self.assertTrue(completed["success"])
+
+        # Verifica se não há mais pendentes
+        pending_after = await manager.get_pending_tasks(channel_id="998877")
+        self.assertEqual(len(pending_after), 0)
+
+    @patch("src.scheduler.bridge_runner.urllib.request.urlopen")
+    async def test_bridge_runner_poll_and_execute(self, mock_urlopen):
+        """Testa o polling e execução pelo BridgeRunner."""
+        # Simula resposta do Render com uma tarefa pendente
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = (
+            b'{"tasks": [{"task_id": "bridge_abc123", "action": "approve_assign", "assignment_id": "555", "assignment_url": "https://moodle/555", "channel_id": "111", "title": "Lista 5"}]}'
+        )
+        mock_urlopen.return_value = mock_resp
+
+        runner = BridgeRunner(render_url="https://mock-app.onrender.com")
+
+        with patch.object(runner, "_execute_task", new_callable=AsyncMock) as mock_exec:
+            mock_exec.return_value = (True, "Submissão confirmada")
+            with patch.object(runner, "_claim_task", new_callable=AsyncMock):
+                with patch.object(runner, "_report_complete", new_callable=AsyncMock):
+                    count = await runner.poll_once()
+                    self.assertEqual(count, 1)
+                    mock_exec.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

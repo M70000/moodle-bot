@@ -349,6 +349,11 @@ class MoodleDaemon:
 
         self.scheduler.start()
 
+        # 5. Inicia o Runner da Ponte Nuvem (Render Hub <-> Desktop) se RENDER_URL estiver configurado
+        if settings.RENDER_URL:
+            from src.scheduler.bridge_runner import bridge_runner
+            asyncio.create_task(bridge_runner.run_loop())
+
         while self._running:
             await asyncio.sleep(1)
 
