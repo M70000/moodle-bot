@@ -139,11 +139,29 @@ def clean_display_course(course: str) -> str:
 
 
 def get_available_courses() -> List[str]:
-    """Retorna os nomes das disciplinas que possuem pasta em storage/materials/."""
+    """Retorna os nomes das disciplinas que possuem pasta em storage/materials/
+    OU que aparecem nas atividades catalogadas no state.json."""
+    courses_set: set = set()
+
+    # 1. Disciplinas com pasta de material
     mat_dir = settings.STORAGE_MATERIALS_DIR
-    if not mat_dir.exists():
-        return []
-    return [p.name for p in mat_dir.iterdir() if p.is_dir() and not p.name.startswith(".")]
+    if mat_dir.exists():
+        for p in mat_dir.iterdir():
+            if p.is_dir() and not p.name.startswith("."):
+                courses_set.add(p.name)
+
+    # 2. Fallback: disciplinas das atividades no state.json
+    if not courses_set:
+        try:
+            state = DaemonState()
+            for item in state.data.get("assignments", {}).values():
+                course = item.get("course", "").strip()
+                if course:
+                    courses_set.add(course)
+        except Exception:
+            pass
+
+    return sorted(courses_set)
 
 
 import os as _os
@@ -158,25 +176,34 @@ async def course_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete interativo para seleção de disciplinas no Discord (tolerante a acentos).
+    """Autocomplete interativo para seleção de disciplinas no Discord.
 
-    No modo relay (Render), busca a lista publicada pelo desktop via Bridge API.
-    No modo desktop (local), lê diretamente de storage/materials/.
+    Funciona em dois modos:
+    - Desktop (local): lê de storage/materials/ + assignments do state.json
+    - Relay (Render): lê cursos publicados pelo desktop via Bridge API,
+      com fallback para o state.json sincronizado
     """
     try:
         if _is_relay_mode():
             # Modo relay: busca cursos publicados pelo desktop no Render Hub
             from src.notifier.bridge_manager import cloud_bridge
             courses = await cloud_bridge.get_published_courses()
+
             if not courses:
-                # Desktop offline: mostra dica para o usuário
+                # Desktop offline ou ainda não publicou — mostra dica e retorna vazio
                 return [app_commands.Choice(
                     name="⚡ Inicie iniciar.bat no seu PC para ver suas disciplinas",
                     value="__offline__"
                 )]
         else:
-            # Modo desktop: leitura local
+            # Modo desktop: leitura local (materials + state.json fallback)
             courses = get_available_courses()
+
+        if not courses:
+            return [app_commands.Choice(
+                name="⚡ Inicie iniciar.bat no seu PC para ver suas disciplinas",
+                value="__offline__"
+            )]
 
         norm_curr = normalize_text(current)
         filtered = [c for c in courses if not norm_curr or norm_curr in normalize_text(c)]
