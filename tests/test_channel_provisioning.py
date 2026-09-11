@@ -47,6 +47,9 @@ class TestChannelProvisioning(unittest.TestCase):
             created_channels.append(ch)
 
         mock_guild.create_text_channel = AsyncMock(side_effect=created_channels)
+        # Mock fetch_member (chamado agora via REST para garantir objeto Member completo)
+        mock_guild.fetch_member = AsyncMock(return_value=mock_member)
+        mock_guild.me = MagicMock()
 
         result = asyncio.run(provision_user_channels(mock_guild, mock_member))
 

@@ -1115,6 +1115,12 @@ bot = MoodleBotClient()
 
 async def provision_user_channels(guild: discord.Guild, member: discord.Member) -> Dict[str, Any]:
     """Cria ou recupera categoria privada e os 5 canais do Moodle Bot para um membro específico."""
+    # Garante que temos o objeto Member completo via REST HTTP (não depende do cache/members intent)
+    try:
+        member = await guild.fetch_member(member.id)
+    except (discord.NotFound, discord.HTTPException):
+        pass  # usa o objeto recebido como fallback
+
     category_name = f"🔒 Moodle • {member.display_name}"[:100]
 
     # 1. Procura categoria existente para o membro
@@ -3006,7 +3012,25 @@ async def cmd_meuscanais(interaction: discord.Interaction):
         return
 
     await interaction.response.defer(ephemeral=True)
-    res = await provision_user_channels(interaction.guild, interaction.user)
+    try:
+        res = await asyncio.wait_for(
+            provision_user_channels(interaction.guild, interaction.user),
+            timeout=20.0
+        )
+    except asyncio.TimeoutError:
+        await interaction.followup.send(
+            "⏱️ **Tempo esgotado.** O Discord demorou para criar os canais — tente novamente.\n"
+            "Se o erro persistir, verifique se o bot tem permissão **Gerenciar Canais** no servidor.",
+            ephemeral=True
+        )
+        return
+    except discord.Forbidden:
+        await interaction.followup.send(
+            "🚫 **Sem permissão.** O bot precisa da permissão **Gerenciar Canais** no servidor para criar suas salas.\n"
+            "Peça ao administrador do servidor para conceder essa permissão ao bot.",
+            ephemeral=True
+        )
+        return
     ch_ids = res["channels"]
 
     embed = discord.Embed(
@@ -3355,7 +3379,26 @@ async def prefix_meuscanais(ctx: commands.Context):
     if not ctx.guild:
         await ctx.send("❌ Este comando deve ser executado dentro de um servidor do Discord.")
         return
-    res = await provision_user_channels(ctx.guild, ctx.author)
+
+    processing_msg = await ctx.send("⏳ Localizando/criando suas salas privadas...")
+    try:
+        res = await asyncio.wait_for(
+            provision_user_channels(ctx.guild, ctx.author),
+            timeout=20.0
+        )
+    except asyncio.TimeoutError:
+        await processing_msg.edit(content=
+            "⏱️ **Tempo esgotado.** O Discord demorou para responder — tente novamente.\n"
+            "Se persistir, verifique se o bot tem permissão **Gerenciar Canais** no servidor."
+        )
+        return
+    except discord.Forbidden:
+        await processing_msg.edit(content=
+            "🚫 **Sem permissão.** O bot precisa da permissão **Gerenciar Canais** no servidor.\n"
+            "Peça ao administrador para conceder essa permissão ao bot."
+        )
+        return
+
     ch_ids = res["channels"]
     embed = discord.Embed(
         title="🔒 Suas Salas Pessoais do Moodle Bot",
@@ -3369,6 +3412,7 @@ async def prefix_meuscanais(ctx: commands.Context):
         ),
         color=discord.Color.green()
     )
+    await processing_msg.delete()
     await ctx.send(embed=embed)
 
 
