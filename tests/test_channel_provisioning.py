@@ -1,4 +1,4 @@
-"""Testes unitários para provisionamento automático de salas privadas no Discord e auto-detecção na GUI."""
+"""Testes unitários para provisionamento de salas privadas no Discord via !meuscanais."""
 
 import asyncio
 import json
@@ -11,7 +11,9 @@ from src.notifier.discord_bot import (
     get_user_provisioned_channels,
     provision_user_channels,
 )
-from src.ui.server import detect_discord_user_channels
+# Nota: detect_discord_user_channels foi removida da UI (auto-detect desabilitado).
+# Canais são criados exclusivamente pelo comando !meuscanais no Discord.
+
 
 
 class TestChannelProvisioning(unittest.TestCase):
@@ -112,31 +114,6 @@ class TestChannelProvisioning(unittest.TestCase):
             self.assertEqual(res["category_name"], "🔒 Moodle • Ana Clara")
             self.assertEqual(res["channels"]["DISCORD_CHANNEL_ID"], "101")
             self.assertEqual(res["channels"]["DISCORD_STUDY_CHANNEL_ID"], "105")
-
-    def test_detect_discord_user_channels_rest_api_existing(self):
-        # Simula respostas da API REST do Discord para o server.py
-        guilds_resp = json.dumps([{"id": "777", "name": "Servidor do Grupo"}]).encode("utf-8")
-        channels_resp = json.dumps([
-            {"id": "10", "name": "🔒 Moodle • Carlos", "type": 4},
-            {"id": "11", "name": "alertas-revisoes", "type": 0, "parent_id": "10"},
-            {"id": "12", "name": "conteudos", "type": 0, "parent_id": "10"},
-            {"id": "13", "name": "avisos-turma", "type": 0, "parent_id": "10"},
-            {"id": "14", "name": "fila-tarefas", "type": 0, "parent_id": "10"},
-            {"id": "15", "name": "estudos-simulados", "type": 0, "parent_id": "10"},
-        ]).encode("utf-8")
-
-        mock_urlopen = MagicMock()
-        mock_urlopen.return_value.__enter__.side_effect = [
-            MagicMock(read=lambda: guilds_resp),
-            MagicMock(read=lambda: channels_resp),
-        ]
-
-        with patch("urllib.request.urlopen", mock_urlopen):
-            res = detect_discord_user_channels(bot_token="token_valido", username_or_id="carlos")
-            self.assertTrue(res["ok"])
-            self.assertEqual(res["channels"]["DISCORD_CHANNEL_ID"], "11")
-            self.assertEqual(res["channels"]["DISCORD_STUDY_CHANNEL_ID"], "15")
-            self.assertIn("Carlos", res["category_name"])
 
 
 if __name__ == "__main__":

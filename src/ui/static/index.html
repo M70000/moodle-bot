@@ -393,6 +393,71 @@
             </div>
           </div>
         </div>
+
+        <!-- Claude BYOK Card -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>Anthropic Claude <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">Alternativo</span></h3>
+              <p>Use Claude como agente IA. Se preenchido, <strong>substitui o Gemini</strong> como provedor principal.</p>
+            </div>
+            <a href="https://console.anthropic.com/" target="_blank" class="btn btn-outline btn-sm">Obter Chave ↗</a>
+          </div>
+          <div class="card-body">
+            <div class="info-callout" style="margin-bottom:1rem;">
+              <div class="info-icon">⚡</div>
+              <div class="info-text">Prioridade: <strong>Gemini → Claude → DeepSeek</strong>. Preencha <em>apenas uma</em> chave alternativa para substituir o Gemini como provedor.</div>
+            </div>
+            <div class="grid-2">
+              <div class="form-group">
+                <label for="ANTHROPIC_API_KEY">API Key do Anthropic</label>
+                <div class="input-password-wrapper">
+                  <input type="password" id="ANTHROPIC_API_KEY" placeholder="sk-ant-...">
+                  <button type="button" class="btn-toggle-password" onclick="togglePassword('ANTHROPIC_API_KEY')">👁️</button>
+                </div>
+                <small class="form-help">Deixe em branco para usar Gemini.</small>
+              </div>
+              <div class="form-group">
+                <label for="ANTHROPIC_MODEL">Modelo Claude</label>
+                <select id="ANTHROPIC_MODEL">
+                  <option value="claude-haiku-4-5">claude-haiku-4-5 (Rápido · Econômico)</option>
+                  <option value="claude-sonnet-4-5">claude-sonnet-4-5 (Balanceado)</option>
+                  <option value="claude-opus-4-5">claude-opus-4-5 (Máximo · Lento)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- DeepSeek BYOK Card -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>DeepSeek <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">Alternativo</span></h3>
+              <p>Use DeepSeek como agente IA. Ativo apenas se Claude não estiver configurado.</p>
+            </div>
+            <a href="https://platform.deepseek.com/" target="_blank" class="btn btn-outline btn-sm">Obter Chave ↗</a>
+          </div>
+          <div class="card-body">
+            <div class="grid-2">
+              <div class="form-group">
+                <label for="DEEPSEEK_API_KEY">API Key do DeepSeek</label>
+                <div class="input-password-wrapper">
+                  <input type="password" id="DEEPSEEK_API_KEY" placeholder="sk-...">
+                  <button type="button" class="btn-toggle-password" onclick="togglePassword('DEEPSEEK_API_KEY')">👁️</button>
+                </div>
+                <small class="form-help">Deixe em branco para usar Gemini ou Claude.</small>
+              </div>
+              <div class="form-group">
+                <label for="DEEPSEEK_MODEL">Modelo DeepSeek</label>
+                <select id="DEEPSEEK_MODEL">
+                  <option value="deepseek-chat">deepseek-chat (Geral · Recomendado)</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner (Raciocínio avançado)</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <!-- Tab 4: Prazos & Alertas -->

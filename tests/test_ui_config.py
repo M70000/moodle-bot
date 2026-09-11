@@ -14,10 +14,11 @@ from src.ui.server import (
     get_system_status,
     parse_env_file,
     save_config_to_env,
-    test_discord_connection,
-    test_gemini_connection,
-    test_moodle_connection,
+    test_discord_connection as check_discord_connection,
+    test_gemini_connection as check_gemini_connection,
+    test_moodle_connection as check_moodle_connection,
 )
+
 
 
 class TestUIConfig(unittest.TestCase):
@@ -52,17 +53,17 @@ class TestUIConfig(unittest.TestCase):
         self.assertIn("GEMINI_MODEL", cfg)
 
     def test_test_moodle_connection_empty(self):
-        res = test_moodle_connection("")
+        res = check_moodle_connection("")
         self.assertFalse(res["ok"])
         self.assertIn("não informada", res["error"])
 
     def test_test_gemini_connection_empty(self):
-        res = test_gemini_connection("", "gemini-3.8-flash")
+        res = check_gemini_connection("", "gemini-3.8-flash")
         self.assertFalse(res["ok"])
         self.assertIn("não informada", res["error"])
 
     def test_test_discord_connection_empty(self):
-        res = test_discord_connection("")
+        res = check_discord_connection("")
         self.assertFalse(res["ok"])
         self.assertIn("não informado", res["error"])
 
