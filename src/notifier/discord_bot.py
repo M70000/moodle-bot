@@ -1128,10 +1128,11 @@ class MoodleBotClient(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
-        console.print("[cyan]Sincronizando Slash Commands globalmente...[/cyan]")
+        console.print("[cyan]Sincronizando Slash Commands...[/cyan]")
         try:
+            # Sync global (propagação pode demorar até 1h no Discord)
             synced = await self.tree.sync()
-            console.print(f"[green]✔ {len(synced)} Slash Commands sincronizados globalmente![/green]")
+            console.print(f"[green]✔ {len(synced)} Slash Commands registrados globalmente![/green]")
         except Exception as sync_err:
             console.print(f"[yellow]Nota na sincronização global: {sync_err}[/yellow]")
 
@@ -1139,13 +1140,14 @@ class MoodleBotClient(commands.Bot):
         console.print(f"[bold green]✔ Bot conectado ao Discord como {self.user} (ID: {self.user.id})![/bold green]")
         for guild in self.guilds:
             try:
-                # Remove comandos residuais no escopo do servidor para eliminar duplicatas no Discord,
-                # mantendo apenas os comandos globais sincronizados no setup_hook.
-                self.tree.clear_commands(guild=guild)
-                await self.tree.sync(guild=guild)
-                console.print(f"[green]✔ Comandos do servidor '{guild.name}' consolidados (duplicatas removidas)![/green]")
+                # Copia os comandos globais para o escopo do servidor (propagação INSTANTÂNEA)
+                # Isso garante que autocomplete funcione imediatamente sem esperar até 1h
+                self.tree.copy_global_to(guild=guild)
+                synced_guild = await self.tree.sync(guild=guild)
+                console.print(f"[green]✔ {len(synced_guild)} comandos sincronizados instantaneamente em '{guild.name}'![/green]")
             except Exception as e:
-                console.print(f"[yellow]Aviso ao consolidar comandos no servidor {guild.name}: {e}[/yellow]")
+                console.print(f"[yellow]Aviso ao sincronizar comandos no servidor {guild.name}: {e}[/yellow]")
+
 
         # Inicializa o worker da Fila Centralizada e o Painel Dinâmico
         try:

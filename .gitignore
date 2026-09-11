@@ -44,11 +44,16 @@ storage/cookies/*.json
 storage/cookies/*
 !storage/cookies/.gitkeep
 
-# Materials & Submissions (Generated / Downloaded data)
+# State Runtime (contém suas tarefas, notas, histórico — NÃO COMMITAR)
+storage/state.json
+storage/state_backup*.json
+
+# Materials & Submissions (dados gerados/baixados localmente)
 storage/materials/*
 !storage/materials/.gitkeep
 storage/submissions/*
 !storage/submissions/.gitkeep
+
 
 # Playwright
 .playwright/
