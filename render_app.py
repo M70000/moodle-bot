@@ -132,20 +132,27 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
 
         elif path in ("/api/bridge/courses", "/api/bridge/sync"):
             if method == "POST":
-                # Desktop publica a lista de disciplinas e catálogo de tarefas
+                # Desktop publica a lista de disciplinas, catálogo de tarefas e materiais
                 try:
                     data = json.loads(body_bytes.decode("utf-8"))
                     courses = data.get("courses")
                     assignments = data.get("assignments")
-                    await cloud_bridge.publish_state(courses=courses, assignments=assignments)
+                    custom_materials = data.get("custom_materials")
+                    await cloud_bridge.publish_state(
+                        courses=courses,
+                        assignments=assignments,
+                        custom_materials=custom_materials
+                    )
                     c_count = len(courses) if courses is not None else 0
                     a_count = len(assignments) if assignments is not None else 0
+                    m_count = len(custom_materials) if custom_materials is not None else 0
                     response_dict = {
                         "ok": True,
                         "courses_count": c_count,
                         "assignments_count": a_count,
+                        "materials_count": m_count,
                     }
-                    print(f"[Bridge] Desktop sincronizou {c_count} disciplinas e {a_count} tarefas.")
+                    print(f"[Bridge] Desktop sincronizou {c_count} disciplinas, {a_count} tarefas e {m_count} materiais.")
                 except Exception as e:
                     status_code = "400 Bad Request"
                     response_dict = {"error": str(e)}
@@ -167,6 +174,24 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                 "desktop_online": online,
                 "count": len(assignments)
             }
+
+        elif path == "/api/bridge/materials":
+            if method == "POST":
+                try:
+                    data = json.loads(body_bytes.decode("utf-8"))
+                    if isinstance(data, list):
+                        for item in data:
+                            await cloud_bridge.register_material(item)
+                    elif isinstance(data, dict):
+                        await cloud_bridge.register_material(data)
+                    mats = await cloud_bridge.get_custom_materials()
+                    response_dict = {"ok": True, "count": len(mats)}
+                except Exception as e:
+                    status_code = "400 Bad Request"
+                    response_dict = {"error": str(e)}
+            else:
+                mats = await cloud_bridge.get_custom_materials()
+                response_dict = {"materials": mats, "count": len(mats)}
 
         elif path == "/api/bridge/desktop-status":
             status = await cloud_bridge.desktop_status()

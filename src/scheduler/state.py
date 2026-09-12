@@ -7,7 +7,7 @@ adiamentos, cancelamentos e confirmações de envio.
 import json
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 STATE_FILE = Path("storage/state.json")
 
@@ -133,3 +133,69 @@ class DaemonState:
     def get_known_announcement_ids(self) -> set:
         """Retorna o conjunto de IDs de avisos já conhecidos."""
         return set(self.data.get("announcements", {}).keys())
+
+    def register_custom_material(
+        self,
+        course: str,
+        filename: str,
+        attachment_url: str = "",
+        channel_id: Optional[int] = None,
+        message_id: Optional[int] = None,
+        uploader: str = "",
+        size: int = 0
+    ) -> Dict[str, Any]:
+        """Registra metadados de material adicionado via Discord para persistência e restauração."""
+        if "custom_materials" not in self.data:
+            self.data["custom_materials"] = {}
+
+        course_list = self.data["custom_materials"].setdefault(course, [])
+        for item in course_list:
+            if item.get("filename") == filename:
+                item.update({
+                    "attachment_url": attachment_url or item.get("attachment_url", ""),
+                    "channel_id": channel_id or item.get("channel_id"),
+                    "message_id": message_id or item.get("message_id"),
+                    "uploader": uploader or item.get("uploader", ""),
+                    "size": size or item.get("size", 0),
+                    "updated_at": datetime.now().isoformat()
+                })
+                self.save()
+                return item
+
+        entry = {
+            "filename": filename,
+            "attachment_url": attachment_url,
+            "channel_id": channel_id,
+            "message_id": message_id,
+            "uploader": uploader,
+            "size": size,
+            "created_at": datetime.now().isoformat()
+        }
+        course_list.append(entry)
+        self.save()
+        return entry
+
+    def get_custom_materials(self, course: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Retorna a lista de materiais customizados catalogados (todos ou por disciplina)."""
+        customs = self.data.get("custom_materials", {})
+        if course:
+            return list(customs.get(course, []))
+        res = []
+        for c_name, items in customs.items():
+            for it in items:
+                entry = dict(it)
+                entry["course"] = c_name
+                res.append(entry)
+        return res
+
+    def remove_custom_material(self, course: str, filename: str) -> bool:
+        """Remove o registro de um material customizado."""
+        customs = self.data.get("custom_materials", {})
+        if course in customs:
+            before_len = len(customs[course])
+            customs[course] = [it for it in customs[course] if it.get("filename") != filename]
+            if len(customs[course]) < before_len:
+                self.save()
+                return True
+        return False
+

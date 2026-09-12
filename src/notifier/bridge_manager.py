@@ -23,27 +23,53 @@ class CloudBridgeManager:
         self._completed_tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
-        # Presença, cursos e tarefas publicados pelo desktop runner
+        # Presença, cursos, tarefas e materiais publicados pelo desktop runner ou Discord
         self._published_courses: List[str] = []
         self._published_assignments: Dict[str, Dict[str, Any]] = {}
+        self._custom_materials: List[Dict[str, Any]] = []
         self._desktop_last_seen: float = 0.0  # Unix timestamp
         self._DESKTOP_TIMEOUT_SECONDS = 300   # 5 min sem heartbeat → offline
 
     # ------------------------------------------------------------------
-    # Desktop presence & published state (courses + assignments)
+    # Desktop presence & published state (courses + assignments + materials)
     # ------------------------------------------------------------------
+
+    def _upsert_material_unlocked(self, material: Dict[str, Any]) -> None:
+        c = material.get("course")
+        fn = material.get("filename")
+        if not c or not fn:
+            return
+        for existing in self._custom_materials:
+            if existing.get("course") == c and existing.get("filename") == fn:
+                existing.update(material)
+                return
+        self._custom_materials.append(dict(material))
+
+    async def register_material(self, material: Dict[str, Any]) -> None:
+        """Registra ou atualiza um material customizado na ponte nuvem."""
+        async with self._lock:
+            self._upsert_material_unlocked(material)
+
+    async def get_custom_materials(self) -> List[Dict[str, Any]]:
+        """Retorna todos os materiais customizados conhecidos na ponte."""
+        async with self._lock:
+            return [dict(m) for m in self._custom_materials]
 
     async def publish_state(
         self,
         courses: Optional[List[str]] = None,
-        assignments: Optional[Dict[str, Any]] = None
+        assignments: Optional[Dict[str, Any]] = None,
+        custom_materials: Optional[List[Dict[str, Any]]] = None
     ) -> None:
-        """Recebe e armazena disciplinas e catálogo de tarefas do desktop runner."""
+        """Recebe e armazena disciplinas, catálogo de tarefas e materiais do desktop runner."""
         async with self._lock:
             if courses is not None:
                 self._published_courses = list(courses)
             if assignments is not None:
                 self._published_assignments = dict(assignments)
+            if custom_materials is not None:
+                for mat in custom_materials:
+                    self._upsert_material_unlocked(mat)
             self._desktop_last_seen = time.time()
 
     async def publish_courses(self, courses: List[str]) -> None:
@@ -79,6 +105,7 @@ class CloudBridgeManager:
                 "last_seen": self._desktop_last_seen or None,
                 "courses_count": len(self._published_courses),
                 "assignments_count": len(self._published_assignments),
+                "custom_materials_count": len(self._custom_materials),
             }
 
     # ------------------------------------------------------------------

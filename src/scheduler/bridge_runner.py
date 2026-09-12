@@ -62,11 +62,12 @@ class BridgeRunner:
             await self._report_complete(task_id, success, message, url_base)
             executed += 1
 
-        # Publica lista de cursos periodicamente (heartbeat de presença)
+        # Publica lista de cursos e sincroniza materiais periodicamente (heartbeat de presença)
         import time
         now = time.time()
         if now - self._last_courses_publish > self._COURSES_PUBLISH_INTERVAL:
             await self.publish_courses_to_hub(url_base)
+            await self.sync_custom_materials_from_hub(url_base)
             self._last_courses_publish = now
 
         return executed
@@ -96,7 +97,7 @@ class BridgeRunner:
             console.print(f"[red]Erro ao reportar conclusão da tarefa {task_id} ao Render: {e}[/red]")
 
     async def publish_courses_to_hub(self, url_base: str = "") -> bool:
-        """Publica a lista de disciplinas e catálogo de tarefas no Render Hub (heartbeat de presença)."""
+        """Publica a lista de disciplinas, catálogo de tarefas e materiais no Render Hub (heartbeat de presença)."""
         base = url_base or self.render_url or (settings.RENDER_URL or "").rstrip("/")
         if not base:
             return False
@@ -108,28 +109,102 @@ class BridgeRunner:
             try:
                 state = DaemonState()
                 assignments = state.data.get("assignments", {})
+                custom_materials = state.get_custom_materials()
             except Exception:
                 assignments = {}
+                custom_materials = []
 
             url = f"{base}/api/bridge/sync"
             payload = json.dumps({
                 "courses": courses,
-                "assignments": assignments
+                "assignments": assignments,
+                "custom_materials": custom_materials
             }).encode("utf-8")
             req = urllib.request.Request(
                 url, data=payload,
                 headers={"Content-Type": "application/json", "User-Agent": "MoodleDesktopRunner/1.0"}
             )
             await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=8))
-            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas e {len(assignments)} tarefas sincronizadas com o Hub.[/cyan]")
+            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas, {len(assignments)} tarefas e {len(custom_materials)} materiais sincronizados com o Hub.[/cyan]")
             return True
         except Exception as e:
             console.print(f"[yellow]Aviso ao publicar estado no Hub: {e}[/yellow]")
             return False
 
+    async def sync_custom_materials_from_hub(self, url_base: str = "") -> int:
+        """Sincroniza e baixa materiais enviados via Discord na Nuvem (Render Hub) para a máquina local."""
+        base = url_base or self.render_url or (settings.RENDER_URL or "").rstrip("/")
+        if not base:
+            return 0
+
+        loop = asyncio.get_running_loop()
+        try:
+            url = f"{base}/api/bridge/materials"
+            req = urllib.request.Request(url, headers={"User-Agent": "MoodleDesktopRunner/1.0"})
+            resp_bytes = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=10).read())
+            data = json.loads(resp_bytes.decode("utf-8"))
+            mats = data.get("materials", [])
+        except Exception:
+            return 0
+
+        if not mats:
+            return 0
+
+        downloaded = 0
+        from src.notifier.discord_bot import resolve_course_materials_dir, sanitize_filename
+        from src.scheduler.state import DaemonState
+        state = DaemonState()
+
+        for item in mats:
+            course = item.get("course")
+            filename = item.get("filename")
+            att_url = item.get("attachment_url")
+            if not course or not filename or not att_url:
+                continue
+
+            target_dir = resolve_course_materials_dir(course)
+            target_file = target_dir / sanitize_filename(filename)
+
+            if target_file.exists() and target_file.stat().st_size > 0:
+                state.register_custom_material(
+                    course=target_dir.name,
+                    filename=target_file.name,
+                    attachment_url=att_url,
+                    channel_id=item.get("channel_id"),
+                    message_id=item.get("message_id"),
+                    uploader=item.get("uploader", ""),
+                    size=item.get("size", 0)
+                )
+                continue
+
+            try:
+                console.print(f"[cyan]Baixando material adicionado via Discord: [bold]{filename}[/bold] ({course})...[/cyan]")
+                req_file = urllib.request.Request(att_url, headers={"User-Agent": "MoodleDesktopRunner/1.0"})
+                content = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req_file, timeout=30).read())
+                if content:
+                    target_dir.mkdir(parents=True, exist_ok=True)
+                    target_file.write_bytes(content)
+                    state.register_custom_material(
+                        course=target_dir.name,
+                        filename=target_file.name,
+                        attachment_url=att_url,
+                        channel_id=item.get("channel_id"),
+                        message_id=item.get("message_id"),
+                        uploader=item.get("uploader", ""),
+                        size=len(content)
+                    )
+                    downloaded += 1
+                    console.print(f"[green]✔ Material sincronizado no PC local:[/green] {target_file.name} em {target_dir.name}")
+            except Exception as dl_err:
+                console.print(f"[yellow]Aviso ao baixar material {filename} da ponte: {dl_err}[/yellow]")
+
+        return downloaded
+
     async def sync_state_to_hub(self, url_base: str = "") -> bool:
         """Alias conveniente para sincronização forçada de estado."""
-        return await self.publish_courses_to_hub(url_base)
+        res = await self.publish_courses_to_hub(url_base)
+        await self.sync_custom_materials_from_hub(url_base)
+        return res
 
     async def _execute_task(self, task: dict):
         action = task.get("action")

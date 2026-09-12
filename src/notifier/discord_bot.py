@@ -402,6 +402,38 @@ async def completed_task_autocomplete(
         return []
 
 
+def resolve_course_materials_dir(disciplina: str) -> Path:
+    """Encontra o diretório canônico da disciplina em storage/materials/ ou cria um novo padronizado."""
+    mat_root = settings.STORAGE_MATERIALS_DIR
+    mat_root.mkdir(parents=True, exist_ok=True)
+
+    norm_target = normalize_text(disciplina)
+    exact = mat_root / sanitize_filename(disciplina)
+    if exact.exists() and exact.is_dir():
+        return exact
+
+    # 1. Procura entre as pastas já existentes no disco
+    if norm_target:
+        for p in mat_root.iterdir():
+            if p.is_dir():
+                norm_p = normalize_text(p.name)
+                if norm_target in norm_p or norm_p in norm_target:
+                    return p
+
+    # 2. Procura nas disciplinas conhecidas ativas (Moodle / Bridge)
+    if norm_target:
+        for c in get_available_courses():
+            norm_c = normalize_text(c)
+            if norm_target in norm_c or norm_c in norm_target:
+                canonical_path = mat_root / sanitize_filename(c)
+                canonical_path.mkdir(parents=True, exist_ok=True)
+                return canonical_path
+
+    # 3. Fallback: cria pasta para a disciplina
+    exact.mkdir(parents=True, exist_ok=True)
+    return exact
+
+
 def get_course_materials_for_task(tarefa_or_course: str) -> List[Path]:
     """Retorna lista de caminhos de materiais disponíveis em storage/materials/ para a tarefa ou disciplina."""
     if not settings.STORAGE_MATERIALS_DIR.exists():
@@ -424,14 +456,7 @@ def get_course_materials_for_task(tarefa_or_course: str) -> List[Path]:
     if not target_course:
         target_course = tarefa_or_course
 
-    dest_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(target_course)
-    if not dest_dir.exists() or not dest_dir.is_dir():
-        norm_c = normalize_text(target_course)
-        for p in settings.STORAGE_MATERIALS_DIR.iterdir():
-            if p.is_dir() and norm_c and (norm_c in normalize_text(p.name) or normalize_text(p.name) in norm_c):
-                dest_dir = p
-                break
-
+    dest_dir = resolve_course_materials_dir(target_course)
     if not dest_dir.exists() or not dest_dir.is_dir():
         return []
 
@@ -1346,6 +1371,9 @@ class MoodleBotClient(commands.Bot):
         except Exception as q_err:
             console.print(f"[yellow]Aviso ao inicializar fila de tarefas no Discord: {q_err}[/yellow]")
 
+        # Restaura automaticamente arquivos de conteúdo do Discord após reinício (especialmente em nuvem efêmera)
+        asyncio.create_task(restore_materials_from_discord(self))
+
     async def on_member_join(self, member: discord.Member):
         """Ao entrar um novo estudante no servidor, provisiona automaticamente suas 5 salas privadas."""
         if member.bot:
@@ -1473,6 +1501,98 @@ async def provision_user_channels(guild: discord.Guild, member: discord.Member) 
         "channels": env_mapping,
         "channel_objects": channels_map
     }
+
+
+async def restore_materials_from_discord(client: discord.Client) -> int:
+    """Restaura materiais enviados no Discord caso tenham sido apagados (ex: reinício no Render ou PC novo)."""
+    restored_count = 0
+    try:
+        from src.scheduler.state import DaemonState
+        state = DaemonState()
+        from src.notifier.bridge_manager import cloud_bridge
+
+        content_channels = []
+        cfg_id = settings.DISCORD_CONTENT_CHANNEL_ID
+        if cfg_id and cfg_id != 0:
+            ch = client.get_channel(cfg_id)
+            if not ch:
+                try:
+                    ch = await client.fetch_channel(cfg_id)
+                except Exception:
+                    ch = None
+            if ch:
+                content_channels.append(ch)
+
+        for guild in client.guilds:
+            for ch in guild.text_channels:
+                if ch.name == "conteudos" and ch not in content_channels:
+                    content_channels.append(ch)
+
+        for channel in content_channels:
+            try:
+                async for msg in channel.history(limit=100):
+                    if not msg.attachments:
+                        continue
+
+                    target_course = ""
+                    if msg.author == client.user and msg.embeds:
+                        embed = msg.embeds[0]
+                        if "Conteúdo Adicionado" in (embed.title or ""):
+                            for f in embed.fields:
+                                if "disciplina" in f.name.lower() or "matéria" in f.name.lower():
+                                    target_course = f.value.strip()
+                                    break
+                    elif msg.content.startswith("!adicionarconteudo"):
+                        parts = msg.content.split(maxsplit=1)
+                        if len(parts) > 1:
+                            target_course = parts[1].strip()
+
+                    if not target_course:
+                        continue
+
+                    dest_dir = resolve_course_materials_dir(target_course)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+
+                    for att in msg.attachments:
+                        dest_file = dest_dir / sanitize_filename(att.filename)
+                        if not dest_file.exists() or dest_file.stat().st_size == 0:
+                            try:
+                                await att.save(dest_file)
+                                restored_count += 1
+                                console.print(
+                                    f"[bold green]✔ Material restaurado do histórico do Discord:[/bold green] "
+                                    f"{dest_file.name} -> {dest_dir.name}"
+                                )
+                            except Exception as dl_err:
+                                console.print(f"[yellow]Aviso ao baixar anexo {att.filename}: {dl_err}[/yellow]")
+
+                        state.register_custom_material(
+                            course=dest_dir.name,
+                            filename=dest_file.name,
+                            attachment_url=att.url,
+                            channel_id=channel.id,
+                            message_id=msg.id,
+                            uploader=str(msg.author),
+                            size=att.size
+                        )
+                        await cloud_bridge.register_material({
+                            "course": dest_dir.name,
+                            "filename": dest_file.name,
+                            "attachment_url": att.url,
+                            "channel_id": channel.id,
+                            "message_id": msg.id,
+                            "uploader": str(msg.author),
+                            "size": att.size
+                        })
+            except Exception as ch_err:
+                console.print(f"[yellow]Aviso ao varrer canal de conteúdos {channel.name}: {ch_err}[/yellow]")
+
+        if restored_count > 0:
+            console.print(f"[bold green]✔ Restauração concluída: {restored_count} arquivo(s) restaurados com sucesso![/bold green]")
+    except Exception as e:
+        console.print(f"[yellow]Aviso geral ao restaurar materiais do Discord: {e}[/yellow]")
+
+    return restored_count
 
 
 def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
@@ -1684,22 +1804,16 @@ async def build_status_embed() -> discord.Embed:
 
 def get_materiais_payload(disciplina: str):
     """Localiza materiais em storage/materials/ e empacota para envio no Discord."""
-    mat_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(disciplina)
+    mat_dir = resolve_course_materials_dir(disciplina)
     if not mat_dir.exists():
-        # Busca aproximada tolerante a acentos por nome da disciplina
-        norm_disc = normalize_text(disciplina)
-        candidates = [p for p in settings.STORAGE_MATERIALS_DIR.iterdir() if p.is_dir() and norm_disc in normalize_text(p.name)]
-        if candidates:
-            mat_dir = candidates[0]
-            disciplina = mat_dir.name
-        else:
-            if _is_relay_mode():
-                return None, (
-                    f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
-                    f"Inicie o `iniciar.bat` no seu PC para consultar e baixar os materiais diretamente pelo Discord!"
-                ), []
-            return None, f"❌ Disciplina `{disciplina}` não encontrada em `storage/materials/`.", []
+        if _is_relay_mode():
+            return None, (
+                f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
+                f"Inicie o `iniciar.bat` no seu PC para consultar e baixar os materiais diretamente pelo Discord!"
+            ), []
+        return None, f"❌ Disciplina `{disciplina}` não encontrada em `storage/materials/`.", []
 
+    disciplina = mat_dir.name
     files = [p for p in mat_dir.iterdir() if p.is_file() and p.suffix.lower() in [".pdf", ".csv", ".docx", ".zip"]]
     if not files:
         if _is_relay_mode():
@@ -2749,31 +2863,69 @@ async def cmd_adicionarconteudo(
     await interaction.response.defer(ephemeral=False)
 
     content_ch_id = settings.DISCORD_CONTENT_CHANNEL_ID
-    if content_ch_id and content_ch_id != 0 and interaction.channel_id != content_ch_id:
+    ch_name = getattr(interaction.channel, "name", "")
+    if content_ch_id and content_ch_id != 0 and interaction.channel_id != content_ch_id and ch_name != "conteudos":
         await interaction.followup.send(
             f"⚠️ Este comando deve ser executado no canal dedicado a conteúdos: <#{content_ch_id}>.",
             ephemeral=True
         )
         return
 
-    dest_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(disciplina)
+    dest_dir = resolve_course_materials_dir(disciplina)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
     dest_file = dest_dir / sanitize_filename(arquivo.filename)
     await arquivo.save(dest_file)
 
-    console.print(f"[green]✔ Novo conteúdo adicionado via Discord:[/green] {dest_file.name} em {disciplina}")
+    console.print(f"[green]✔ Novo conteúdo adicionado via Discord:[/green] {dest_file.name} em {dest_dir.name}")
 
     embed = discord.Embed(
         title="📥 Conteúdo Adicionado à Base de Conhecimento!",
         description=f"O arquivo **`{arquivo.filename}`** foi salvo com sucesso.",
         color=discord.Color.green()
     )
-    embed.add_field(name="🏫 Disciplina", value=disciplina, inline=True)
+    embed.add_field(name="🏫 Disciplina", value=dest_dir.name, inline=True)
     embed.add_field(name="📦 Tamanho", value=f"{arquivo.size // 1024} KB", inline=True)
     embed.set_footer(text="A IA passará a considerar este documento nas próximas resoluções.")
 
-    await interaction.followup.send(embed=embed)
+    # Anexa o arquivo na confirmação para persistência permanente no CDN do Discord
+    discord_file = discord.File(str(dest_file), filename=dest_file.name)
+    followup_msg = await interaction.followup.send(embed=embed, file=discord_file)
+
+    att_url = followup_msg.attachments[0].url if getattr(followup_msg, "attachments", None) else arquivo.url
+    msg_id = getattr(followup_msg, "id", None)
+    ch_id = getattr(interaction.channel, "id", None)
+
+    # 1. Registra no DaemonState local
+    try:
+        from src.scheduler.state import DaemonState
+        state = DaemonState()
+        state.register_custom_material(
+            course=dest_dir.name,
+            filename=dest_file.name,
+            attachment_url=att_url,
+            channel_id=ch_id,
+            message_id=msg_id,
+            uploader=str(interaction.user),
+            size=arquivo.size
+        )
+    except Exception as st_err:
+        console.print(f"[yellow]Aviso ao registrar material no state: {st_err}[/yellow]")
+
+    # 2. Registra na Cloud Bridge para sincronização imediata com desktop
+    try:
+        from src.notifier.bridge_manager import cloud_bridge
+        await cloud_bridge.register_material({
+            "course": dest_dir.name,
+            "filename": dest_file.name,
+            "attachment_url": att_url,
+            "channel_id": ch_id,
+            "message_id": msg_id,
+            "uploader": str(interaction.user),
+            "size": arquivo.size
+        })
+    except Exception as br_err:
+        console.print(f"[yellow]Aviso ao registrar material na Cloud Bridge: {br_err}[/yellow]")
 
 
 @bot.tree.command(name="notion_adicionar", description="Adiciona uma tarefa, estudo ou anotação ao Notion e anuncia no Discord")
@@ -3696,7 +3848,8 @@ async def prefix_refazer(ctx: commands.Context, tarefa: str, *, instrucoes: Opti
 async def prefix_adicionarconteudo(ctx: commands.Context, *, disciplina: str):
     """Comando alternativo com prefixo: !adicionarconteudo <disciplina> (anexe arquivo)."""
     content_ch_id = settings.DISCORD_CONTENT_CHANNEL_ID
-    if content_ch_id and content_ch_id != 0 and ctx.channel.id != content_ch_id:
+    ch_name = getattr(ctx.channel, "name", "")
+    if content_ch_id and content_ch_id != 0 and ctx.channel.id != content_ch_id and ch_name != "conteudos":
         await ctx.send(f"⚠️ Este comando deve ser executado no canal dedicado a conteúdos: <#{content_ch_id}>.")
         return
 
@@ -3704,8 +3857,12 @@ async def prefix_adicionarconteudo(ctx: commands.Context, *, disciplina: str):
         await ctx.send("⚠️ Por favor, anexe o arquivo (PDF, slide, resumo) junto com o comando `!adicionarconteudo <disciplina>`.")
         return
 
-    dest_dir = settings.STORAGE_MATERIALS_DIR / sanitize_filename(disciplina)
+    dest_dir = resolve_course_materials_dir(disciplina)
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    from src.scheduler.state import DaemonState
+    state = DaemonState()
+    from src.notifier.bridge_manager import cloud_bridge
 
     saved_names = []
     for att in ctx.message.attachments:
@@ -3713,12 +3870,34 @@ async def prefix_adicionarconteudo(ctx: commands.Context, *, disciplina: str):
         await att.save(dest_file)
         saved_names.append(dest_file.name)
 
+        state.register_custom_material(
+            course=dest_dir.name,
+            filename=dest_file.name,
+            attachment_url=att.url,
+            channel_id=ctx.channel.id,
+            message_id=ctx.message.id,
+            uploader=str(ctx.author),
+            size=att.size
+        )
+        try:
+            await cloud_bridge.register_material({
+                "course": dest_dir.name,
+                "filename": dest_file.name,
+                "attachment_url": att.url,
+                "channel_id": ctx.channel.id,
+                "message_id": ctx.message.id,
+                "uploader": str(ctx.author),
+                "size": att.size
+            })
+        except Exception:
+            pass
+
     embed = discord.Embed(
         title="📥 Conteúdo Adicionado à Base de Conhecimento!",
         description=f"Os arquivos **{', '.join(saved_names)}** foram salvos com sucesso.",
         color=discord.Color.green()
     )
-    embed.add_field(name="🏫 Disciplina", value=disciplina, inline=True)
+    embed.add_field(name="🏫 Disciplina", value=dest_dir.name, inline=True)
     embed.set_footer(text="A IA passará a considerar este documento nas próximas resoluções.")
     await ctx.send(embed=embed)
 
