@@ -232,13 +232,20 @@ class MoodleQuizAutomator:
 
     async def inspect_and_extract_quiz(self, quiz_url: str, on_log: Optional[Any] = None) -> Dict[str, Any]:
         """Acessa a tentativa do questionário e extrai os enunciados reais com marcadores pontuais."""
-        console.print(f"[cyan]Inspecionando estrutura real do quiz no Moodle: {quiz_url}[/cyan]")
-        await _emit_log(on_log, "Inspecionando tentativa do questionário no Moodle...")
+        if not self.auth.session_exists:
+            console.print(f"[yellow]Aviso: Sessão do Moodle não encontrada em {self.auth.cookies_path}. Pulando inspeção via navegador.[/yellow]")
+            await _emit_log(on_log, "Aviso: Sessão local do Moodle não encontrada. Prosseguindo com resolução direta via IA...")
+            return {
+                "success": False,
+                "error": "Sessão do Moodle não encontrada.",
+                "questions": []
+            }
 
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(storage_state=self.auth.cookies_path)
-            page = await context.new_page()
+        try:
+            async with async_playwright() as p:
+                browser = await p.chromium.launch(headless=True)
+                context = await browser.new_context(storage_state=str(self.auth.cookies_path))
+                page = await context.new_page()
 
             try:
                 try:
@@ -417,6 +424,14 @@ class MoodleQuizAutomator:
                 }
             finally:
                 await browser.close()
+        except Exception as e:
+            console.print(f"[yellow]Aviso: Falha ao inicializar Playwright para quiz ({e}). Prosseguindo com resolução direta via IA...[/yellow]")
+            await _emit_log(on_log, f"Aviso ao inicializar navegador ({e}). Prosseguindo com resolução direta via IA...")
+            return {
+                "success": False,
+                "error": str(e),
+                "questions": []
+            }
 
     async def _verify_all_questions_on_current_attempt(self, page, on_log: Optional[Any] = None) -> int:
         """Clica no botão 'Verificar' de cada questão que ainda não foi validada, no máximo 1 vez por questão."""

@@ -1810,10 +1810,21 @@ async def _execute_solve_flow(
         status_msg = await send_func(initial_header)
         reporter = DiscordLiveReporter(status_msg, initial_header)
 
+        has_local_session = Path(settings.STORAGE_COOKIES_PATH).exists() and not _is_relay_mode()
+
         if assign_obj.activity_type == "quiz":
-            from src.scraper.moodle_quiz import MoodleQuizAutomator
-            quiz_automator = MoodleQuizAutomator()
-            ext_res = await quiz_automator.inspect_and_extract_quiz(assign_obj.url, on_log=reporter.log)
+            ext_res = {"success": False}
+            if has_local_session:
+                try:
+                    from src.scraper.moodle_quiz import MoodleQuizAutomator
+                    quiz_automator = MoodleQuizAutomator()
+                    ext_res = await quiz_automator.inspect_and_extract_quiz(assign_obj.url, on_log=reporter.log)
+                except Exception as q_err:
+                    ext_res = {"success": False, "error": str(q_err)}
+            else:
+                if reporter:
+                    await reporter.log("⚡ [Nuvem / Sem Sessão Local] Gerando resolução diretamente com IA...")
+
             if ext_res.get("success") and ext_res.get("questions"):
                 draft = await solver.solve_quiz_with_live_context(
                     assignment=assign_obj,
