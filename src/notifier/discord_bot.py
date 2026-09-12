@@ -175,6 +175,26 @@ def _is_relay_mode() -> bool:
     )
 
 
+def _has_ai_key_configured() -> bool:
+    """Verifica se há qualquer chave de IA configurada no ambiente ativo."""
+    g_key = (settings.GEMINI_API_KEY or "").strip()
+    c_key = (settings.ANTHROPIC_API_KEY or "").strip()
+    d_key = (settings.DEEPSEEK_API_KEY or "").strip()
+    return bool(
+        (g_key and g_key != "sua_chave_gemini_api_aqui")
+        or (c_key and c_key != "sua_chave_anthropic_aqui")
+        or (d_key and d_key != "sua_chave_deepseek_aqui")
+    )
+
+
+BYOK_RELAY_MESSAGE = (
+    "🔒 **Modelo Bring Your Own Key (BYOK) Ativo**\n\n"
+    "O servidor em nuvem (Render) opera sem chave central compartilhada para proteger as cotas dos estudantes.\n\n"
+    "👉 **Para utilizar com sua própria chave gratuita:**\n"
+    "Inicie o assistente no seu computador pelo arquivo `iniciar.bat` (configurado com sua chave própria no `configurar.bat`)."
+)
+
+
 async def _get_current_assignments() -> Dict[str, Any]:
     """Retorna o dicionário de tarefas ativas, adaptado para execução local ou relay no Render."""
     if _is_relay_mode():
@@ -1758,6 +1778,10 @@ async def _execute_solve_flow(
     modo: str = "resolver",
     channel: Optional[Any] = None
 ):
+    if _is_relay_mode() and not _has_ai_key_configured():
+        await send_func(BYOK_RELAY_MESSAGE)
+        return
+
     assignments = await _get_current_assignments()
 
     target_item = None
@@ -3232,6 +3256,13 @@ async def cmd_perguntar(
     else:
         await interaction.response.defer(ephemeral=False)
 
+    if _is_relay_mode() and not _has_ai_key_configured():
+        if redirected:
+            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        else:
+            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+        return
+
     tutor = StudyTutor()
     res = await tutor.answer_question(discipline=disciplina, question=duvida, specific_material=material)
 
@@ -3287,6 +3318,13 @@ async def cmd_flashcards(
         )
     else:
         await interaction.response.defer(ephemeral=False)
+
+    if _is_relay_mode() and not _has_ai_key_configured():
+        if redirected:
+            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        else:
+            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+        return
 
     tutor = StudyTutor()
     count = max(3, min(qtd or 8, 15))
@@ -3352,6 +3390,13 @@ async def cmd_quiz(
         )
     else:
         await interaction.response.defer(ephemeral=False)
+
+    if _is_relay_mode() and not _has_ai_key_configured():
+        if redirected:
+            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        else:
+            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+        return
 
     tutor = StudyTutor()
     num_q = max(3, min(qtd_questoes or 5, 10))

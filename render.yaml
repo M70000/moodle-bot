@@ -9,19 +9,5 @@ services:
     envVars:
       - key: DISCORD_BOT_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: DISCORD_CHANNEL_ID
-        sync: false
-      - key: DISCORD_CONTENT_CHANNEL_ID
-        value: "0"
-      - key: DISCORD_ANNOUNCEMENTS_CHANNEL_ID
-        value: "0"
-      - key: DISCORD_QUEUE_CHANNEL_ID
-        value: "0"
-      - key: DISCORD_STUDY_CHANNEL_ID
-        value: "0"
-      - key: GEMINI_MODEL
-        value: "gemini-3.8-flash"
       - key: BOT_MODE
         value: "relay"
