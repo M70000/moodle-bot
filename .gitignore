@@ -74,6 +74,7 @@ logs/
 .claude/
 .gemini/
 skills-lock.json
+GEMINI.md
 
 # Node.js (dependências opcionais de scripts JS)
 node_modules/
