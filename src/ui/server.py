@@ -74,7 +74,10 @@ def get_current_config() -> Dict[str, Any]:
         "ANTHROPIC_API_KEY": "",
         "ANTHROPIC_MODEL": "claude-haiku-4-5",
         "DEEPSEEK_API_KEY": "",
-        "DEEPSEEK_MODEL": "deepseek-chat",
+        "DEEPSEEK_MODEL": "deepseek-flash",
+        "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+        "DEEPSEEK_THINKING_MODE": "true",
+        "DEEPSEEK_REASONING_EFFORT": "high",
         "CHECK_INTERVAL_MINUTES": "30",
         "EMERGENCY_SUBMIT_ENABLED": "false",
         "STORAGE_COOKIES_PATH": "storage/cookies/session.json",
@@ -149,9 +152,12 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         f"ANTHROPIC_API_KEY={new_values.get('ANTHROPIC_API_KEY', '').strip()}",
         f"ANTHROPIC_MODEL={new_values.get('ANTHROPIC_MODEL', 'claude-haiku-4-5').strip()}",
         "",
-        "# DeepSeek (Opcional - BYOK alternativo)",
+        "# DeepSeek (Opcional - BYOK Flash Mode)",
         f"DEEPSEEK_API_KEY={new_values.get('DEEPSEEK_API_KEY', '').strip()}",
-        f"DEEPSEEK_MODEL={new_values.get('DEEPSEEK_MODEL', 'deepseek-chat').strip()}",
+        f"DEEPSEEK_MODEL={new_values.get('DEEPSEEK_MODEL', 'deepseek-flash').strip()}",
+        f"DEEPSEEK_BASE_URL={new_values.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').strip()}",
+        f"DEEPSEEK_THINKING_MODE={str(new_values.get('DEEPSEEK_THINKING_MODE', 'true')).lower()}",
+        f"DEEPSEEK_REASONING_EFFORT={new_values.get('DEEPSEEK_REASONING_EFFORT', 'high').strip()}",
         "",
         "# -------------------------------------------------------------------",
         "# 4. Monitoramento e Agendamento",
@@ -310,7 +316,7 @@ def test_claude_connection(api_key: str, model_name: Optional[str] = None) -> Di
 
 
 def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> Dict[str, Any]:
-    """Testa a chave de API do DeepSeek."""
+    """Testa a chave de API do DeepSeek com suporte ao modelo deepseek-flash."""
     if not api_key:
         return {"ok": False, "error": "Chave de API do DeepSeek não informada."}
     try:
@@ -323,19 +329,39 @@ def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> 
 
     start_time = time.time()
     try:
-        model = model_name or "deepseek-chat"
-        client = OpenAI(api_key=api_key.strip(), base_url="https://api.deepseek.com/v1", timeout=15.0)
-        client.chat.completions.create(
-            model=model,
-            max_tokens=10,
-            messages=[{"role": "user", "content": "Responda apenas: OK"}]
-        )
+        model = model_name or "deepseek-flash"
+        base_url = getattr(settings, "DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com"
+        client = OpenAI(api_key=api_key.strip(), base_url=base_url, timeout=20.0)
+
+        kwargs: Dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": "You are a test assistant. Answer with json."},
+                {"role": "user", "content": "Return a JSON object with key 'status' and value 'ok'."},
+            ],
+            "max_tokens": 128,
+            "response_format": {"type": "json_object"},
+        }
+
+        # Se for deepseek-flash ou reasoner, testa com thinking mode
+        if "flash" in model.lower() or "reasoner" in model.lower():
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = getattr(settings, "DEEPSEEK_REASONING_EFFORT", "high") or "high"
+
+        completion = client.chat.completions.create(**kwargs)
         elapsed = round((time.time() - start_time) * 1000)
+        msg_obj = completion.choices[0].message
+        cot = getattr(msg_obj, "reasoning_content", None)
+
+        details = f"DeepSeek ({model}) validado com sucesso ({elapsed}ms)!"
+        if cot:
+            details += f" Raciocínio CoT ativo ({len(cot)} chars)."
+
         return {
             "ok": True,
             "model": model,
             "elapsed_ms": elapsed,
-            "message": f"DeepSeek ({model}) validado com sucesso ({elapsed}ms)!"
+            "message": details,
         }
     except Exception as e:
         err_msg = str(e)

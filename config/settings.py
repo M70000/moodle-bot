@@ -149,14 +149,26 @@ class Settings(BaseSettings):
         description="Modelo Claude a usar (claude-opus-5, claude-sonnet-5, claude-haiku-4-5)"
     )
 
-    # DeepSeek (BYOK alternativo)
+    # DeepSeek (BYOK com Modo Flash, Visão Multimodal e Thinking)
     DEEPSEEK_API_KEY: str = Field(
         default="",
         description="Chave de API do DeepSeek (opcional — substitui Gemini como agente IA)"
     )
     DEEPSEEK_MODEL: str = Field(
-        default="deepseek-chat",
-        description="Modelo DeepSeek a usar (deepseek-chat, deepseek-reasoner)"
+        default="deepseek-flash",
+        description="Modelo DeepSeek a usar (deepseek-flash, deepseek-v4-pro, deepseek-chat, deepseek-reasoner)"
+    )
+    DEEPSEEK_BASE_URL: str = Field(
+        default="https://api.deepseek.com",
+        description="Endpoint base da API do DeepSeek"
+    )
+    DEEPSEEK_THINKING_MODE: bool = Field(
+        default=True,
+        description="Ativa thinking mode (Chain-of-Thought reasoning) no DeepSeek Flash"
+    )
+    DEEPSEEK_REASONING_EFFORT: str = Field(
+        default="high",
+        description="Nível de esforço de raciocínio no modo thinking (low, medium, high, max)"
     )
 
 

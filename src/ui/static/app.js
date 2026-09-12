@@ -111,7 +111,10 @@ async function loadConfig() {
     setInputValue('ANTHROPIC_API_KEY', config.ANTHROPIC_API_KEY || '');
     setInputValue('ANTHROPIC_MODEL', config.ANTHROPIC_MODEL || 'claude-haiku-4-5');
     setInputValue('DEEPSEEK_API_KEY', config.DEEPSEEK_API_KEY || '');
-    setInputValue('DEEPSEEK_MODEL', config.DEEPSEEK_MODEL || 'deepseek-chat');
+    setInputValue('DEEPSEEK_MODEL', config.DEEPSEEK_MODEL || 'deepseek-flash');
+    setInputValue('DEEPSEEK_BASE_URL', config.DEEPSEEK_BASE_URL || 'https://api.deepseek.com');
+    setInputValue('DEEPSEEK_REASONING_EFFORT', config.DEEPSEEK_REASONING_EFFORT || 'high');
+    setCheckboxValue('DEEPSEEK_THINKING_MODE', config.DEEPSEEK_THINKING_MODE !== 'false' && config.DEEPSEEK_THINKING_MODE !== false);
 
     const checkInterval = config.CHECK_INTERVAL_MINUTES || '30';
     setInputValue('CHECK_INTERVAL_MINUTES', checkInterval);
@@ -193,6 +196,9 @@ async function saveConfig() {
     ANTHROPIC_MODEL: getInputValue('ANTHROPIC_MODEL'),
     DEEPSEEK_API_KEY: getInputValue('DEEPSEEK_API_KEY'),
     DEEPSEEK_MODEL: getInputValue('DEEPSEEK_MODEL'),
+    DEEPSEEK_BASE_URL: getInputValue('DEEPSEEK_BASE_URL'),
+    DEEPSEEK_REASONING_EFFORT: getInputValue('DEEPSEEK_REASONING_EFFORT'),
+    DEEPSEEK_THINKING_MODE: document.getElementById('DEEPSEEK_THINKING_MODE')?.checked ? 'true' : 'false',
 
     CHECK_INTERVAL_MINUTES: getInputValue('CHECK_INTERVAL_MINUTES'),
     EMERGENCY_SUBMIT_ENABLED: document.getElementById('EMERGENCY_SUBMIT_ENABLED').checked ? 'true' : 'false',

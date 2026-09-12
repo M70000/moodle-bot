@@ -76,6 +76,105 @@ class TestAIMultiProvider(unittest.TestCase):
             self.assertTrue(mock_claude.called)
             self.assertTrue(mock_deepseek.called)
 
+    def test_deepseek_flash_call_parameters(self):
+        """Verifica se _call_deepseek passa model='deepseek-flash', base_url, thinking mode e CoT."""
+        import asyncio
+        from src.solver.ai_solver import _call_deepseek
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = '{"status": "success"}'
+        mock_message.reasoning_content = "Passo 1: Analisar os requisitos. Passo 2: Gerar JSON."
+        mock_message.tool_calls = None
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_openai = MagicMock()
+        mock_openai.AsyncOpenAI = MagicMock(return_value=mock_client)
+
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch.object(settings, "DEEPSEEK_API_KEY", "sk-deepseek-test"), \
+             patch.object(settings, "DEEPSEEK_MODEL", "deepseek-flash"), \
+             patch.object(settings, "DEEPSEEK_BASE_URL", "https://api.deepseek.com"), \
+             patch.object(settings, "DEEPSEEK_THINKING_MODE", True), \
+             patch.object(settings, "DEEPSEEK_REASONING_EFFORT", "high"):
+
+            text, model = asyncio.run(_call_deepseek(
+                system_instruction="Instrução do sistema",
+                user_message="Pergunta do usuário",
+                json_output=True,
+            ))
+
+            self.assertEqual(text, '{"status": "success"}')
+            self.assertEqual(model, "deepseek-flash")
+
+            # Verifica se create foi chamado com os parâmetros exigidos pelo DeepSeek Flash
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            self.assertEqual(call_kwargs["model"], "deepseek-flash")
+            self.assertEqual(call_kwargs["response_format"], {"type": "json_object"})
+            self.assertEqual(call_kwargs["extra_body"], {"thinking": {"type": "enabled"}})
+            self.assertEqual(call_kwargs["reasoning_effort"], "high")
+
+    def test_deepseek_flash_vision_multimodal(self):
+        """Verifica se _call_deepseek formata imagens inline em base64 data URL para o modo Flash."""
+        import asyncio
+        from src.solver.ai_solver import _call_deepseek
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_message = MagicMock()
+        mock_message.content = "Diagrama analisado com sucesso."
+        mock_message.reasoning_content = None
+        mock_message.tool_calls = None
+        mock_choice = MagicMock()
+        mock_choice.message = mock_message
+        mock_response.choices = [mock_choice]
+
+        mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+        mock_openai = MagicMock()
+        mock_openai.AsyncOpenAI = MagicMock(return_value=mock_client)
+
+        fake_image_bytes = b"\x89PNG\r\n\x1a\nfake_png_data"
+
+        with patch.dict("sys.modules", {"openai": mock_openai}), \
+             patch.object(settings, "DEEPSEEK_API_KEY", "sk-deepseek-test"), \
+             patch.object(settings, "DEEPSEEK_MODEL", "deepseek-flash"):
+
+            text, model = asyncio.run(_call_deepseek(
+                system_instruction="Analise a imagem",
+                user_message="O que há nesta figura?",
+                images=[fake_image_bytes],
+            ))
+
+            self.assertEqual(text, "Diagrama analisado com sucesso.")
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            messages = call_kwargs["messages"]
+            user_msg = [m for m in messages if m["role"] == "user"][0]
+            self.assertIsInstance(user_msg["content"], list)
+            self.assertEqual(user_msg["content"][0]["type"], "text")
+            self.assertEqual(user_msg["content"][1]["type"], "image_url")
+            self.assertTrue(user_msg["content"][1]["image_url"]["url"].startswith("data:image/jpeg;base64,"))
+
+    def test_aisolver_generate_json(self):
+        """Testa o método generate_json com parsing automático de objeto JSON."""
+        import asyncio
+
+        with patch.object(settings, "AI_PROVIDER", "deepseek"), \
+             patch.object(settings, "DEEPSEEK_API_KEY", "sk-test"), \
+             patch("src.solver.ai_solver._call_deepseek", new_callable=AsyncMock) as mock_ds:
+
+            mock_ds.return_value = ('{"question": "Qual a capital?", "answer": "Brasília"}', "deepseek-flash")
+
+            solver = AISolver()
+            parsed, used_model = asyncio.run(solver.generate_json("System prompt", "User prompt"))
+
+            self.assertEqual(parsed["question"], "Qual a capital?")
+            self.assertEqual(parsed["answer"], "Brasília")
+            self.assertEqual(used_model, "deepseek-flash")
+
 
 if __name__ == "__main__":
     unittest.main()

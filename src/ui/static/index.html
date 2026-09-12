@@ -535,9 +535,40 @@
               <div class="form-group">
                 <label for="DEEPSEEK_MODEL">Modelo DeepSeek</label>
                 <select id="DEEPSEEK_MODEL">
-                  <option value="deepseek-chat">deepseek-chat (Geral · Recomendado)</option>
-                  <option value="deepseek-reasoner">deepseek-reasoner (Raciocínio avançado)</option>
+                  <option value="deepseek-flash">deepseek-flash (Flash · Rápido, Visão e Raciocínio CoT)</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro (Avançado)</option>
+                  <option value="deepseek-chat">deepseek-chat (Geral)</option>
+                  <option value="deepseek-reasoner">deepseek-reasoner (Raciocínio puro)</option>
                 </select>
+              </div>
+            </div>
+
+            <div class="grid-3 mt-4">
+              <div class="form-group">
+                <label for="DEEPSEEK_BASE_URL">Endpoint Base URL</label>
+                <input type="text" id="DEEPSEEK_BASE_URL" value="https://api.deepseek.com" placeholder="https://api.deepseek.com">
+                <small class="form-help">Padrão oficial da API DeepSeek.</small>
+              </div>
+
+              <div class="form-group">
+                <label for="DEEPSEEK_REASONING_EFFORT">Esforço de Raciocínio (CoT)</label>
+                <select id="DEEPSEEK_REASONING_EFFORT">
+                  <option value="high">high (Recomendado)</option>
+                  <option value="low">low (Rápido)</option>
+                  <option value="medium">medium (Equilibrado)</option>
+                  <option value="max">max (Profundo)</option>
+                </select>
+                <small class="form-help">Nível de pensamento prévio no modo Flash.</small>
+              </div>
+
+              <div class="form-group">
+                <label>Modo Thinking (CoT)</label>
+                <label class="switch-container" style="margin-top: 6px;">
+                  <input type="checkbox" id="DEEPSEEK_THINKING_MODE" checked>
+                  <span class="switch-slider"></span>
+                  <span class="switch-label">Ativar Chain-of-Thought</span>
+                </label>
+                <small class="form-help">Raciocínio passo a passo antes da resposta.</small>
               </div>
             </div>
           </div>

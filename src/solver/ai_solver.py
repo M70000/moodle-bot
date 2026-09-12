@@ -16,7 +16,7 @@ o robô migra instantaneamente para o próximo provedor configurado na cadeia.
 import asyncio
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from rich.console import Console
 
@@ -150,8 +150,14 @@ async def _call_deepseek(
     system_instruction: str,
     user_message: str,
     on_log: Optional[Any] = None,
+    json_output: bool = False,
+    images: Optional[List[Union[Path, str, bytes]]] = None,
+    thinking_mode: Optional[bool] = None,
+    reasoning_effort: Optional[str] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    tool_call_handler: Optional[Callable] = None,
 ) -> Tuple[str, str]:
-    """Chama a API do DeepSeek (compatível com OpenAI) e retorna (texto, modelo_usado)."""
+    """Chama a API do DeepSeek com suporte a deepseek-flash, Visão multimodal, JSON Output e Thinking CoT."""
     try:
         from openai import AsyncOpenAI
     except ImportError:
@@ -163,26 +169,127 @@ async def _call_deepseek(
     if not api_key or api_key in ("", "sua_chave_deepseek_aqui"):
         raise RuntimeError("Chave DEEPSEEK_API_KEY não configurada no .env.")
 
-    model = settings.DEEPSEEK_MODEL or "deepseek-chat"
+    model = settings.DEEPSEEK_MODEL or "deepseek-flash"
+    base_url = getattr(settings, "DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com"
     await _emit_log(on_log, f"Consultando DeepSeek ({model})...")
 
     client = AsyncOpenAI(
         api_key=api_key,
-        base_url="https://api.deepseek.com/v1",
+        base_url=base_url,
     )
-    response = await asyncio.wait_for(
-        client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_instruction},
-                {"role": "user", "content": user_message},
-            ],
-            max_tokens=4096,
-            temperature=0.1,
-        ),
-        timeout=120,
-    )
-    text = response.choices[0].message.content or ""
+
+    # 1. Preparação do prompt de sistema (garantindo palavra 'json' se json_output=True)
+    sys_content = system_instruction
+    if json_output and "json" not in sys_content.lower() and "json" not in user_message.lower():
+        sys_content += "\nResponda estritamente em formato JSON válido."
+
+    messages: List[Dict[str, Any]] = [
+        {"role": "system", "content": sys_content}
+    ]
+
+    # 2. Suporte à Visão Multimodal (deepseek-flash aceita imagens em base64 inline no conteúdo de usuário)
+    user_content_parts: List[Dict[str, Any]] = [
+        {"type": "text", "text": user_message}
+    ]
+
+    if images:
+        import base64
+        for img in images:
+            b64_data = ""
+            mime_type = "image/jpeg"
+            if isinstance(img, (str, Path)):
+                p = Path(img)
+                if p.exists() and p.is_file():
+                    suffix = p.suffix.lower()
+                    if suffix in (".png", ".webp", ".gif"):
+                        mime_type = f"image/{suffix[1:]}"
+                    elif suffix in (".jpg", ".jpeg"):
+                        mime_type = "image/jpeg"
+                    b64_data = base64.b64encode(p.read_bytes()).decode("utf-8")
+            elif isinstance(img, bytes):
+                b64_data = base64.b64encode(img).decode("utf-8")
+
+            if b64_data:
+                user_content_parts.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{mime_type};base64,{b64_data}"
+                    }
+                })
+
+    if len(user_content_parts) > 1:
+        messages.append({"role": "user", "content": user_content_parts})
+    else:
+        messages.append({"role": "user", "content": user_message})
+
+    # 3. Configuração de parâmetros de inferência
+    kwargs: Dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": 4096,
+    }
+
+    # JSON Output Estrito
+    if json_output:
+        kwargs["response_format"] = {"type": "json_object"}
+
+    # Thinking Mode (Chain-of-Thought) no deepseek-flash ou deepseek-reasoner
+    is_thinking = thinking_mode if thinking_mode is not None else getattr(settings, "DEEPSEEK_THINKING_MODE", True)
+    if "flash" in model.lower() or "reasoner" in model.lower():
+        if is_thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+            kwargs["reasoning_effort"] = reasoning_effort or getattr(settings, "DEEPSEEK_REASONING_EFFORT", "high") or "high"
+        else:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+    else:
+        kwargs["temperature"] = 0.1
+
+    if tools:
+        kwargs["tools"] = tools
+
+    # 4. Execução (com suporte a Tool Calls iterativos se handler fornecido)
+    sub_turn = 1
+    while True:
+        response = await asyncio.wait_for(
+            client.chat.completions.create(**kwargs),
+            timeout=120,
+        )
+        choice = response.choices[0]
+        msg = choice.message
+        tool_calls = getattr(msg, "tool_calls", None)
+
+        if not tool_calls or not tool_call_handler:
+            break
+
+        # Injeta reasoning_content e mensagem do assistente antes dos resultados das ferramentas
+        messages.append(msg)
+        import json as _j
+        for tc in tool_calls:
+            fn_name = tc.function.name
+            fn_args = _j.loads(tc.function.arguments) if tc.function.arguments else {}
+            tool_result = await tool_call_handler(fn_name, fn_args)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": tc.id,
+                "content": str(tool_result),
+            })
+
+        kwargs["messages"] = messages
+        sub_turn += 1
+        if sub_turn > 10:
+            break
+
+    # 5. Captura de Raciocínio (Chain-of-Thought) e Conteúdo Final
+    choice = response.choices[0]
+    msg = choice.message
+    reasoning_content = getattr(msg, "reasoning_content", None)
+    if reasoning_content:
+        preview = reasoning_content.strip().replace("\n", " ")
+        if len(preview) > 140:
+            preview = preview[:140] + "..."
+        await _emit_log(on_log, f"🧠 Raciocínio CoT (DeepSeek Flash): {preview}")
+
+    text = msg.content or ""
     await _emit_log(on_log, f"✔ Resposta do DeepSeek ({model}) recebida.")
     return text, model
 
@@ -237,6 +344,11 @@ class AISolver:
         user_message: str,
         temperature: float = 0.2,
         on_log: Optional[Any] = None,
+        json_output: bool = False,
+        images: Optional[List[Any]] = None,
+        thinking_mode: Optional[bool] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_call_handler: Optional[Callable] = None,
     ) -> Tuple[str, str]:
         """Gera texto puro percorrendo a cadeia de provedores configurada."""
         last_error = None
@@ -244,7 +356,7 @@ class AISolver:
         for idx, prov in enumerate(self.chain):
             is_ready, reason = self._is_provider_ready(prov)
             if not is_ready:
-                console.print(f"[dim]Pulanado {prov}: {reason}[/dim]")
+                console.print(f"[dim]Pulando {prov}: {reason}[/dim]")
                 continue
 
             try:
@@ -265,7 +377,16 @@ class AISolver:
                     return await _call_claude(system_instruction, user_message, on_log=on_log)
 
                 elif prov == "deepseek":
-                    return await _call_deepseek(system_instruction, user_message, on_log=on_log)
+                    return await _call_deepseek(
+                        system_instruction=system_instruction,
+                        user_message=user_message,
+                        on_log=on_log,
+                        json_output=json_output,
+                        images=images,
+                        thinking_mode=thinking_mode,
+                        tools=tools,
+                        tool_call_handler=tool_call_handler,
+                    )
 
             except Exception as err:
                 last_error = err
@@ -278,6 +399,29 @@ class AISolver:
             f"Todos os provedores de IA da cadeia falharam ({' → '.join(self.chain)}). "
             f"Último erro: {last_error}"
         )
+
+    async def generate_json(
+        self,
+        system_instruction: str,
+        user_message: str,
+        on_log: Optional[Any] = None,
+        images: Optional[List[Any]] = None,
+    ) -> Tuple[Union[Dict[str, Any], List[Any]], str]:
+        """Gera resposta em formato JSON estrito, já convertida em dicionário ou lista Python."""
+        raw_text, used_model = await self.generate_text(
+            system_instruction=system_instruction,
+            user_message=user_message,
+            on_log=on_log,
+            json_output=True,
+            images=images,
+        )
+        import json as _j
+        import re as _r
+        cleaned = raw_text.strip()
+        match = _r.search(r"```(?:json)?\s*([\s\S]*?)\s*```", cleaned)
+        if match:
+            cleaned = match.group(1).strip()
+        return _j.loads(cleaned), used_model
 
     async def solve_assignment(
         self,
@@ -296,6 +440,9 @@ class AISolver:
                 context_files.append(att.local_path)
         if extra_context_files:
             context_files.extend([f for f in extra_context_files if f.exists()])
+
+        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        image_files = [f for f in context_files if f.suffix.lower() in image_extensions]
 
         system_instruction = (
             "Você é um estudante universitário da UFMG realizando esta atividade acadêmica. "
@@ -343,7 +490,12 @@ class AISolver:
                         auto_triggered=auto_triggered,
                     )
                 elif prov == "deepseek":
-                    full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+                    full_text, used_model = await _call_deepseek(
+                        system_instruction,
+                        user_message,
+                        on_log,
+                        images=image_files if image_files else None,
+                    )
                     return await _build_solution_draft(
                         assignment=assignment,
                         full_text=full_text,
@@ -389,6 +541,9 @@ class AISolver:
         context_files = []
         if extra_context_files:
             context_files.extend([f for f in extra_context_files if f.exists()])
+
+        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+        image_files = [f for f in context_files if f.suffix.lower() in image_extensions]
 
         formatted_questions = []
         for q in questions_data:
@@ -443,7 +598,12 @@ class AISolver:
                         is_quiz=True,
                     )
                 elif prov == "deepseek":
-                    full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+                    full_text, used_model = await _call_deepseek(
+                        system_instruction,
+                        user_message,
+                        on_log,
+                        images=image_files if image_files else None,
+                    )
                     return await _build_solution_draft(
                         assignment=assignment,
                         full_text=full_text,
