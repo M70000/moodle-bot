@@ -72,6 +72,7 @@ logs/
 # AI Agent & Local Config (não commitar configurações locais de agentes)
 .agents/
 .claude/
+.cloud/
 .gemini/
 skills-lock.json
 GEMINI.md
