@@ -116,6 +116,7 @@ class SolutionDraft(BaseModel):
     structured_answers: Optional[List[Dict[str, Any]]] = None
     auto_triggered: bool = False              # True = automático (daemon/emergência) → PDF
                                               # False = manual (/resolver)             → DOCX
+    activity_type: str = "assign"             # "assign" ou "quiz"
 
 
 class GeminiSolver:
@@ -800,6 +801,20 @@ class GeminiSolver:
             on_log=on_log,
         )
 
+        # Extrai respostas estruturadas se for questionário
+        json_match = re.search(r"```(?:json:answers|json)\s*\n(.*?)\n```", response.text, re.DOTALL)
+        structured_answers = draft.structured_answers
+        if json_match:
+            try:
+                import json as _json
+                parsed = _json.loads(json_match.group(1).strip())
+                if isinstance(parsed, list):
+                    structured_answers = parsed
+                elif isinstance(parsed, dict):
+                    structured_answers = [{"key": k, "value": v} for k, v in parsed.items()]
+            except Exception:
+                pass
+
         new_markdown = re.sub(
             r"```(?:json:answers|json)\s*\n.*?\n```", "", response.text, flags=re.DOTALL
         ).strip()
@@ -839,6 +854,8 @@ class GeminiSolver:
             used_materials=draft.used_materials,
             used_model=used_model,
             auto_triggered=False,
+            structured_answers=structured_answers,
+            activity_type=getattr(draft, "activity_type", "assign"),
         )
 
 

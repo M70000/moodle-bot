@@ -632,15 +632,35 @@ class AISolver:
         on_log: Optional[Any] = None,
     ):
         """Aplica revisão do usuário sobre um draft existente percorrendo a cadeia de contingência."""
-        system_instruction = (
-            "Você é um assistente acadêmico. O aluno revisou a resolução abaixo e quer que você aplique as modificações. "
-            "Mantenha o formato Markdown com ### Questão X. Aplique APENAS as mudanças pedidas, "
-            "sem alterar o restante do conteúdo."
+        is_quiz = getattr(draft, "activity_type", "assign") == "quiz" or (
+            draft.structured_answers is not None and len(draft.structured_answers) > 0
         )
+
+        current_md = draft.full_markdown or ""
+        if not current_md and getattr(draft, "output_path", None) and Path(draft.output_path).exists():
+            try:
+                current_md = Path(draft.output_path).read_text(encoding="utf-8", errors="ignore")
+            except Exception:
+                pass
+
+        system_instruction = (
+            "Você é um assistente acadêmico especialista de alta precisão. O estudante analisou a resolução do trabalho/questionário "
+            "e solicitou modificações pontuais no arquivo final gerado.\n"
+            "Mantenha rigorosamente o formato acadêmico estruturado em Markdown com títulos '### Questão X'. "
+            "Aplique EXCLUSIVAMENTE as modificações e correções solicitadas pelo aluno, preservando com fidelidade "
+            "o restante do conteúdo e a formatação que não foram pedidos para alterar.\n"
+        )
+        if is_quiz:
+            system_instruction += (
+                "IMPORTANTE: Como se trata de um questionário/quiz, ao final de sua resposta inclua obrigatoriamente um bloco "
+                "```json:answers contendo o JSON com a lista de respostas atualizadas no formato:\n"
+                '[{"key": "q1", "value": "A"}, {"key": "q2", "value": "C"}, ...]\n```'
+            )
+
         user_message = (
-            f"RESOLUÇÃO ATUAL:\n{draft.full_markdown}\n\n"
-            f"INSTRUÇÕES DE MODIFICAÇÃO DO ALUNO:\n{revision_instructions}\n\n"
-            "Gere a resolução modificada completa."
+            f"ARQUIVO / RESOLUÇÃO ANTERIOR DO ALUNO:\n{current_md}\n\n"
+            f"MODIFICAÇÕES SOLICITADAS PELO ALUNO:\n{revision_instructions}\n\n"
+            "Reescreva e gere a resolução completa com as modificações aplicadas com precisão."
         )
 
         last_error = None
@@ -672,14 +692,19 @@ class AISolver:
                     title=draft.assignment_title,
                     url="",
                     description="",
+                    activity_type="quiz" if is_quiz else "assign",
                 )
-                return await _build_solution_draft(
+                res_draft = await _build_solution_draft(
                     assignment=mock_assign,
                     full_text=full_text,
                     used_model=used_model,
                     on_log=on_log,
-                    auto_triggered=False,
+                    auto_triggered=draft.auto_triggered,
+                    is_quiz=is_quiz,
                 )
+                if not res_draft.structured_answers and draft.structured_answers:
+                    res_draft.structured_answers = draft.structured_answers
+                return res_draft
 
             except Exception as err:
                 last_error = err
@@ -785,4 +810,5 @@ async def _build_solution_draft(
         used_materials=[],
         used_model=used_model,
         structured_answers=structured_answers,
+        activity_type="quiz" if is_quiz else getattr(assignment, "activity_type", "assign"),
     )

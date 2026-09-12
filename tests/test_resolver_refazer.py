@@ -101,5 +101,129 @@ class TestResolverRefazer(unittest.TestCase):
         self.assertIn("tarefas", cmd_names)
         self.assertIn("status", cmd_names)
 
+    def test_modificar_button_present_in_quiz_and_assignment(self):
+        """Garante que o botão 'Modificar' está presente tanto em questionários quanto em trabalhos."""
+        import discord
+        from src.notifier.discord_bot import ReviewActionView
+        from src.solver.gemini_solver import SolutionDraft
+        from pathlib import Path
+
+        draft = SolutionDraft(
+            assignment_id="555",
+            assignment_title="Cálculo 1 - Lista 3",
+            course_name="Cálculo 1",
+            summary="Resumo inicial",
+            full_markdown="### Questão 1\nResposta inicial.",
+            output_path=Path("storage/test_draft.md"),
+            activity_type="assign"
+        )
+
+        # 1. Tarefa (assign)
+        view_assign = ReviewActionView(
+            assignment_id="555",
+            assignment_url="https://moodle.ufmg.br/mod/assign/view.php?id=555",
+            activity_type="assign",
+            draft=draft
+        )
+        labels_assign = [b.label for b in view_assign.children if isinstance(b, discord.ui.Button)]
+        self.assertIn("Modificar", labels_assign)
+        self.assertIn("Aprovar e Enviar", labels_assign)
+
+        # 2. Questionário (quiz) não preenchido
+        view_quiz = ReviewActionView(
+            assignment_id="666",
+            assignment_url="https://moodle.ufmg.br/mod/quiz/view.php?id=666",
+            activity_type="quiz",
+            draft=draft
+        )
+        labels_quiz = [b.label for b in view_quiz.children if isinstance(b, discord.ui.Button)]
+        self.assertIn("Modificar", labels_quiz)
+        self.assertIn("Apenas Preencher Quiz", labels_quiz)
+        self.assertIn("Enviar Tudo e Terminar", labels_quiz)
+
+        # 3. Questionário (quiz) com rascunho preenchido
+        view_quiz_draft = ReviewActionView(
+            assignment_id="666",
+            assignment_url="https://moodle.ufmg.br/mod/quiz/view.php?id=666",
+            activity_type="quiz",
+            draft_saved=True,
+            draft=draft
+        )
+        labels_quiz_draft = [b.label for b in view_quiz_draft.children if isinstance(b, discord.ui.Button)]
+        self.assertIn("Modificar", labels_quiz_draft)
+
+        # 4. Finalizado (não deve exibir modificar)
+        view_finalized = ReviewActionView(
+            assignment_id="666",
+            assignment_url="https://moodle.ufmg.br/mod/quiz/view.php?id=666",
+            activity_type="quiz",
+            is_finalized=True,
+            draft=draft
+        )
+        labels_finalized = [b.label for b in view_finalized.children if isinstance(b, discord.ui.Button)]
+        self.assertNotIn("Modificar", labels_finalized)
+        self.assertIn("Enviado com Sucesso", labels_finalized)
+
+    def test_revision_modal_structure_and_flow(self):
+        """Verifica a inicialização e envio do modal de modificação."""
+        import asyncio
+        from unittest.mock import AsyncMock
+        from src.notifier.discord_bot import RevisionModal
+        from src.solver.gemini_solver import SolutionDraft
+        from pathlib import Path
+
+        draft = SolutionDraft(
+            assignment_id="777",
+            assignment_title="Física Experimental - Relatório 1",
+            course_name="Física Experimental",
+            summary="Resumo inicial",
+            full_markdown="### Questão 1\nCálculo inicial de gravidade.",
+            output_path=Path("storage/test_draft.md"),
+            activity_type="assign"
+        )
+
+        modal = RevisionModal(
+            draft=draft,
+            assignment_id="777",
+            assignment_url="https://moodle.ufmg.br/mod/assign/view.php?id=777",
+            title="✏️ Modificar Resolução",
+            activity_type="assign"
+        )
+
+        self.assertEqual(modal.title, "✏️ Modificar Resolução")
+        self.assertEqual(modal.revision_input.label, "O que deseja alterar no arquivo/resolução?")
+        self.assertEqual(modal.revision_input.min_length, 3)
+
+        # Mock de submissão do modal
+        mock_interaction = MagicMock()
+        mock_interaction.response.defer = AsyncMock()
+        mock_interaction.followup.send = AsyncMock(return_value=MagicMock())
+        mock_interaction.channel = MagicMock()
+        modal.revision_input._value = "Altere o valor de g para 9.81 m/s² na questão 1."
+
+        with patch("src.solver.ai_solver.AISolver.apply_revision", new_callable=AsyncMock) as mock_apply, \
+             patch("src.notifier.discord_bot.MoodleDiscordNotifier.send_assignment_review", new_callable=AsyncMock) as mock_send_review:
+            
+            updated_draft = SolutionDraft(
+                assignment_id="777",
+                assignment_title="Física Experimental - Relatório 1",
+                course_name="Física Experimental",
+                summary="Resumo atualizado com g=9.81",
+                full_markdown="### Questão 1\nCálculo com g = 9.81 m/s².",
+                output_path=Path("storage/test_draft_v2.md"),
+                docx_path=Path("storage/test_draft_v2.docx"),
+                activity_type="assign"
+            )
+            mock_apply.return_value = updated_draft
+            mock_send_review.return_value = True
+
+            asyncio.run(modal.on_submit(mock_interaction))
+
+            self.assertTrue(mock_apply.called)
+            self.assertEqual(mock_apply.call_args[1]["revision_instructions"], "Altere o valor de g para 9.81 m/s² na questão 1.")
+            self.assertTrue(mock_send_review.called)
+            self.assertEqual(mock_send_review.call_args[1]["draft"], updated_draft)
+            self.assertEqual(mock_send_review.call_args[1]["channel"], mock_interaction.channel)
+
 if __name__ == "__main__":
     unittest.main()

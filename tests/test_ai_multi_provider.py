@@ -175,6 +175,45 @@ class TestAIMultiProvider(unittest.TestCase):
             self.assertEqual(parsed["answer"], "Brasília")
             self.assertEqual(used_model, "deepseek-flash")
 
+    def test_aisolver_apply_revision_with_deepseek_flash(self):
+        """Testa o fluxo de apply_revision fazendo nova chamada via DeepSeek Flash e atualizando arquivos."""
+        import asyncio
+        from pathlib import Path
+        from src.solver.gemini_solver import SolutionDraft
+
+        old_draft = SolutionDraft(
+            assignment_id="999",
+            assignment_title="Algoritmos - Trabalho 1",
+            course_name="Algoritmos",
+            summary="Versão antiga",
+            full_markdown="### Questão 1\nComplexidade O(n²)",
+            output_path=Path("storage/test_old.md"),
+            activity_type="assign",
+            auto_triggered=False
+        )
+
+        with patch.object(settings, "AI_PROVIDER", "deepseek"), \
+             patch.object(settings, "DEEPSEEK_API_KEY", "sk-test"), \
+             patch("src.solver.ai_solver._call_deepseek", new_callable=AsyncMock) as mock_ds, \
+             patch("src.solver.docx_generator.AcademicDocxGenerator.generate_docx", return_value=True):
+
+            mock_ds.return_value = ("### Questão 1\nComplexidade otimizada para O(n log n)", "deepseek-flash")
+
+            solver = AISolver()
+            new_draft = asyncio.run(solver.apply_revision(
+                draft=old_draft,
+                revision_instructions="Otimize o algoritmo da questão 1 para O(n log n)."
+            ))
+
+            self.assertTrue(mock_ds.called)
+            call_system, call_user = mock_ds.call_args[0][:2]
+            self.assertIn("Complexidade O(n²)", call_user)
+            self.assertIn("Otimize o algoritmo", call_user)
+            self.assertIn("Questão 1", new_draft.full_markdown)
+            self.assertIn("O(n log n)", new_draft.full_markdown)
+            self.assertEqual(new_draft.used_model, "deepseek-flash")
+            self.assertEqual(new_draft.activity_type, "assign")
+
 
 if __name__ == "__main__":
     unittest.main()

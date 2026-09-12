@@ -708,96 +708,172 @@ class ReviewActionView(ui.View):
             return
 
         if self.activity_type == "quiz":
-            # 1. Apenas Preencher (Salva rascunho na tentativa sem enviar definitivamente)
+            # Row 0: Ações principais do Quiz
             btn_fill = ui.Button(
                 label="Apenas Preencher Quiz" if not draft_saved else "✔ Respostas Preenchidas",
                 style=discord.ButtonStyle.primary if not draft_saved else discord.ButtonStyle.secondary,
                 emoji="📝",
                 custom_id=f"btn_fill_{self.assignment_id}",
-                disabled=draft_saved
+                disabled=draft_saved,
+                row=0
             )
             btn_fill.callback = self.fill_quiz_button
             self.add_item(btn_fill)
 
-            # 2. Enviar tudo e terminar
             btn_finalize = ui.Button(
                 label="Enviar Tudo e Terminar",
                 style=discord.ButtonStyle.success,
                 emoji="🚀",
-                custom_id=f"btn_finalize_{self.assignment_id}"
+                custom_id=f"btn_finalize_{self.assignment_id}",
+                row=0
             )
             btn_finalize.callback = self.finalize_quiz_button
             self.add_item(btn_finalize)
+
+            # Botão Modificar para o Quiz (sempre ativo antes da finalização)
+            btn_revise = ui.Button(
+                label="Modificar",
+                style=discord.ButtonStyle.secondary,
+                emoji="✏️",
+                custom_id=f"btn_revise_{self.assignment_id}",
+                row=0
+            )
+            btn_revise.callback = self.revise_button
+            self.add_item(btn_revise)
+
         else:
-            # 1. Aprovar e Enviar (PDF ou DOCX)
+            # Row 0: Ações principais da Tarefa
             has_docx = self.file_to_submit and str(self.file_to_submit).endswith(".docx")
             btn_approve = ui.Button(
                 label="Aprovar e Enviar" if not draft_saved else "✔ Enviado (Rascunho)",
                 style=discord.ButtonStyle.success if not draft_saved else discord.ButtonStyle.secondary,
                 emoji="📄",
                 custom_id=f"btn_approve_{self.assignment_id}",
-                disabled=draft_saved
+                disabled=draft_saved,
+                row=0
             )
             btn_approve.callback = self.approve_assign_button
             self.add_item(btn_approve)
 
-            # 2. Fazer Modificação (DOCX / revisão via IA)
-            if not draft_saved:
-                btn_revise = ui.Button(
-                    label="Fazer Modificação",
-                    style=discord.ButtonStyle.primary,
-                    emoji="✏️",
-                    custom_id=f"btn_revise_{self.assignment_id}"
-                )
-                btn_revise.callback = self.revise_button
-                self.add_item(btn_revise)
+            # Botão Modificar para a Tarefa (sempre ativo antes da finalização)
+            btn_revise = ui.Button(
+                label="Modificar",
+                style=discord.ButtonStyle.primary,
+                emoji="✏️",
+                custom_id=f"btn_revise_{self.assignment_id}",
+                row=0
+            )
+            btn_revise.callback = self.revise_button
+            self.add_item(btn_revise)
 
-        # 3. Adiar (+1h)
+        # Row 1: Controle de agendamento e descarte
         btn_postpone = ui.Button(
             label="Adiar (+1h)",
             style=discord.ButtonStyle.secondary,
             emoji="⏱️",
-            custom_id=f"btn_postpone_{self.assignment_id}"
+            custom_id=f"btn_postpone_{self.assignment_id}",
+            row=1
         )
         btn_postpone.callback = self.postpone_button
         self.add_item(btn_postpone)
 
-        # 4. Cancelar / Descartar
         btn_cancel = ui.Button(
             label="Cancelar / Descartar",
             style=discord.ButtonStyle.danger,
             emoji="❌",
-            custom_id=f"btn_cancel_{self.assignment_id}"
+            custom_id=f"btn_cancel_{self.assignment_id}",
+            row=1
         )
         btn_cancel.callback = self.cancel_button
         self.add_item(btn_cancel)
 
-        # 5. Link direto para a atividade no Moodle (acesso sem atrito)
         if self.assignment_url:
             btn_moodle = ui.Button(
                 label="Abrir no Moodle",
                 style=discord.ButtonStyle.link,
                 url=self.assignment_url,
-                emoji="🔗"
+                emoji="🔗",
+                row=1
             )
             self.add_item(btn_moodle)
 
     def _extract_answers_payload(self) -> Dict[str, Any]:
         return extract_quiz_answers_payload(self.structured_answers, self.file_to_submit)
 
+    def _recover_draft(self):
+        """Recupera ou reconstrói o SolutionDraft caso a view tenha sido recriada sem o draft em memória."""
+        try:
+            from src.solver.gemini_solver import SolutionDraft
+            from src.scheduler.state import DaemonState
+            state = DaemonState()
+            item = state.get_assignment(self.assignment_id) or {}
+            course_name = item.get("course", "Geral")
+            title = item.get("title", f"Atividade {self.assignment_id}")
+
+            f_path = self.file_to_submit
+            if not f_path or not Path(f_path).exists():
+                draft_p = item.get("draft_path")
+                if draft_p and Path(draft_p).exists():
+                    f_path = Path(draft_p)
+
+            md_content = ""
+            docx_path = None
+            pdf_path = None
+            if f_path and Path(f_path).exists():
+                p = Path(f_path)
+                if p.suffix.lower() == ".md":
+                    md_content = p.read_text(encoding="utf-8", errors="ignore")
+                elif p.suffix.lower() == ".docx":
+                    docx_path = p
+                    adj_md = p.with_suffix(".md")
+                    if adj_md.exists():
+                        md_content = adj_md.read_text(encoding="utf-8", errors="ignore")
+                    else:
+                        adj_md2 = p.parent / f"{p.stem}_rascunho.md"
+                        if adj_md2.exists():
+                            md_content = adj_md2.read_text(encoding="utf-8", errors="ignore")
+                elif p.suffix.lower() == ".pdf":
+                    pdf_path = p
+                    adj_md = p.with_suffix(".md")
+                    if adj_md.exists():
+                        md_content = adj_md.read_text(encoding="utf-8", errors="ignore")
+
+            if not md_content:
+                md_content = f"### Resolução de {title}\nConteúdo da resolução."
+
+            recovered = SolutionDraft(
+                assignment_id=self.assignment_id,
+                assignment_title=title,
+                course_name=course_name,
+                summary=md_content[:300],
+                full_markdown=md_content,
+                output_path=Path(f_path) if f_path else Path("storage/submissions/rascunho.md"),
+                docx_path=docx_path,
+                pdf_path=pdf_path,
+                structured_answers=self.structured_answers,
+                activity_type=self.activity_type,
+            )
+            self._draft = recovered
+            return recovered
+        except Exception as e:
+            console.print(f"[yellow]Aviso ao recuperar draft: {e}[/yellow]")
+            return None
+
     async def revise_button(self, interaction: discord.Interaction):
         """Abre modal para o usuário digitar suas instruções de modificação."""
-        if not self._draft:
+        draft = self._draft or self._recover_draft()
+        if not draft:
             await interaction.response.send_message(
-                "⚠️ Rascunho não disponível para revisão. Gere a resolução novamente.",
+                "⚠️ Rascunho não disponível para revisão. Gere a resolução novamente com `/resolver` ou `/refazer`.",
                 ephemeral=True
             )
             return
         modal = RevisionModal(
-            draft=self._draft,
+            draft=draft,
             assignment_id=self.assignment_id,
             assignment_url=self.assignment_url,
-            title="✏️ Solicitar Modificação",
+            title="✏️ Modificar Resolução",
+            activity_type=self.activity_type,
         )
         await interaction.response.send_modal(modal)
 
@@ -1679,7 +1755,8 @@ async def _execute_solve_flow(
     instrucoes: Optional[str] = None,
     extra_files: Optional[List[Path]] = None,
     is_refazer: bool = False,
-    modo: str = "resolver"
+    modo: str = "resolver",
+    channel: Optional[Any] = None
 ):
     assignments = await _get_current_assignments()
 
@@ -1791,7 +1868,7 @@ async def _execute_solve_flow(
                     on_log=reporter.log
                 )
             sent = await notifier.send_assignment_review(
-                assign_obj, draft, draft_saved=submit_success, is_finalized=False, final_status_message=submit_msg
+                assign_obj, draft, draft_saved=submit_success, is_finalized=False, final_status_message=submit_msg, channel=channel
             )
             if submit_success:
                 await reporter.finish(f"🎉 **Respostas salvas no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
@@ -1824,7 +1901,7 @@ async def _execute_solve_flow(
             if submit_success:
                 DaemonState().mark_submitted(assign_obj.id)
             sent = await notifier.send_assignment_review(
-                assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg
+                assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg, channel=channel
             )
             if submit_success:
                 await reporter.finish(f"🎉 **Atividade finalizada e enviada no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
@@ -1832,7 +1909,7 @@ async def _execute_solve_flow(
                 await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Moodle: {submit_msg}")
 
         else:  # modo == "resolver" (manual → envia DOCX editável)
-            sent = await notifier.send_assignment_review(assign_obj, draft)
+            sent = await notifier.send_assignment_review(assign_obj, draft, channel=channel)
             if sent:
                 file_label = "DOCX editável" if (draft.docx_path and draft.docx_path.exists()) else "rascunho"
                 await reporter.finish(
@@ -1914,7 +1991,8 @@ async def enqueue_solve_flow(
             instrucoes=instrucoes,
             extra_files=extra_files,
             is_refazer=is_refazer,
-            modo=modo
+            modo=modo,
+            channel=channel
         )
         return True, f"Resolução de '{title}' concluída"
 
@@ -2160,24 +2238,26 @@ class RevisionModal(ui.Modal):
         draft,  # SolutionDraft
         assignment_id: str,
         assignment_url: str,
-        title: str = "✏️ Solicitar Modificação",
+        title: str = "✏️ Modificar Resolução",
+        activity_type: str = "assign",
     ):
-        super().__init__(title=title)
+        super().__init__(title=title[:45])
         self._draft = draft
         self._assignment_id = assignment_id
         self._assignment_url = assignment_url
+        self._activity_type = activity_type
 
         self.revision_input = ui.TextInput(
-            label="Descreva as modificações desejadas",
+            label="O que deseja alterar no arquivo/resolução?",
             style=discord.TextStyle.paragraph,
             placeholder=(
-                "Ex: Mude a resposta da Q3 para alternativa B; "
-                "Desenvolva mais a Questão 2; "
-                "Corrija o cálculo da questão 5..."
+                "Ex: Mude a questão 3 para alternativa B;\n"
+                "Desenvolva o cálculo da Questão 2 com mais detalhes;\n"
+                "Corrija o resultado da questão 5..."
             ),
             required=True,
-            min_length=10,
-            max_length=1000,
+            min_length=3,
+            max_length=2000,
         )
         self.add_item(self.revision_input)
 
@@ -2188,12 +2268,31 @@ class RevisionModal(ui.Modal):
         try:
             from src.solver.ai_solver import AISolver
             solver = AISolver()
+
+            active_prov = getattr(solver, "active_provider", "deepseek")
+            prov_label = "DeepSeek Flash" if active_prov == "deepseek" else ("Claude" if active_prov == "anthropic" else "Gemini")
+
+            status_msg = await interaction.followup.send(
+                f"🧠 **Fazendo nova chamada na API ({prov_label}) para aplicar modificações...**\n"
+                f"• Atividade: **{self._draft.assignment_title}**\n"
+                f"• Modificações solicitadas: *\"{instructions[:180]}{'...' if len(instructions) > 180 else ''}\"*\n"
+                f"• Aplicando edições no arquivo gerado...",
+                ephemeral=False
+            )
+
+            reporter = DiscordLiveReporter(status_msg, f"🧠 Aplicando modificações em **{self._draft.assignment_title}**...")
+            await reporter.log(f"Reescrevendo resolução via {prov_label} com raciocínio analítico...")
+
             new_draft = await solver.apply_revision(
                 draft=self._draft,
                 revision_instructions=instructions,
+                on_log=reporter.log,
             )
 
+            await reporter.log("✔ Modificações aplicadas! Gerando documento atualizado...")
+
             notifier = MoodleDiscordNotifier()
+            act_type = getattr(self._draft, "activity_type", self._activity_type) or "assign"
             assign_obj = Assignment(
                 id=self._draft.assignment_id,
                 course_id="",
@@ -2201,15 +2300,28 @@ class RevisionModal(ui.Modal):
                 title=self._draft.assignment_title,
                 url=self._assignment_url,
                 description="",
+                activity_type=act_type,
             )
-            await notifier.send_assignment_review(assign_obj, new_draft)
-            await interaction.followup.send(
-                f"✔ Resolução revisada enviada no canal de alertas com as modificações aplicadas!",
-                ephemeral=True,
+
+            target_channel = interaction.channel
+            sent = await notifier.send_assignment_review(
+                assignment=assign_obj,
+                draft=new_draft,
+                channel=target_channel,
+                final_status_message=f"Modificações aplicadas via {prov_label}: {instructions[:100]}",
             )
+
+            file_name = (new_draft.docx_path or new_draft.output_path or Path("resolucao.docx")).name
+            await reporter.finish(
+                f"🎉 **Resolução modificada e atualizada com sucesso!**\n"
+                f"• Novo arquivo gerado: **`{file_name}`**\n"
+                f"• Confira o novo card com os botões de revisão (você pode clicar em **Modificar** novamente se precisar de mais ajustes!)."
+            )
+
         except Exception as e:
+            console.print(f"[red]Erro ao aplicar modificações na IA: {e}[/red]")
             await interaction.followup.send(
-                f"❌ Erro ao aplicar modificações: {e}",
+                f"❌ Erro ao aplicar modificações com a IA: {e}",
                 ephemeral=True,
             )
 
@@ -3715,14 +3827,15 @@ class MoodleDiscordNotifier:
         draft: SolutionDraft,
         draft_saved: bool = False,
         is_finalized: bool = False,
-        final_status_message: Optional[str] = None
+        final_status_message: Optional[str] = None,
+        channel: Optional[Any] = None,
     ) -> bool:
         """Envia o rascunho de resolução (PDF e Markdown) para o canal privado com botões."""
         if not self.token or self.token == "seu_discord_bot_token_aqui":
             console.print("[yellow]Aviso: DISCORD_BOT_TOKEN não configurado no .env.[/yellow]")
             return False
 
-        if not self.channel_id or self.channel_id == 0:
+        if not channel and (not self.channel_id or self.channel_id == 0):
             console.print("[yellow]Aviso: DISCORD_CHANNEL_ID não configurado no .env.[/yellow]")
             return False
 
@@ -3738,9 +3851,9 @@ class MoodleDiscordNotifier:
         type_str = "Questionário Online" if act_type == "quiz" else "Trabalho Acadêmico"
 
         try:
-            channel = await self._resolve_channel()
+            target_ch = channel or (await self._resolve_channel())
 
-            if channel:
+            if target_ch:
                 if is_finalized:
                     embed_desc = (
                         "⚡ **Atividade resolvida e enviada em definitivo no Moodle (End-to-End)!**\n\n"
@@ -3830,7 +3943,7 @@ class MoodleDiscordNotifier:
                     draft=draft,  # para o botão "✏️ Fazer Modificação"
                 )
 
-                await channel.send(
+                await target_ch.send(
                     content=msg_header,
                     embed=embed,
                     file=discord_file,
