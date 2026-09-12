@@ -67,24 +67,42 @@ class Settings(BaseSettings):
         description="Token de integração do Notion (Secret API Key)"
     )
     NOTION_PAGE_ID: str = Field(
-        default="17db4e452b43449a9ca266065840f909",
+        default="",
         description="ID da página principal no Notion (Minha Central)"
     )
     NOTION_TASKS_DATABASE_ID: str = Field(
-        default="00e5c698-5139-4b4c-9cac-db04bfc22c4b",
+        default="",
         description="ID da database de Tarefas / À Fazer no Notion"
     )
     NOTION_COURSES_DATABASE_ID: str = Field(
-        default="751117de-c4d2-468c-9b46-571c036969b1",
+        default="",
         description="ID da database de Cursos / Disciplinas no Notion"
     )
     NOTION_DAILY_CHECKLIST_BLOCK_ID: str = Field(
-        default="25cd128a-26fe-49ac-8ab0-a895f1e0858d",
+        default="",
         description="ID do bloco toggle 'tarefas do dia' na página central do Notion"
     )
     NOTION_WEEKLY_SCHEDULE_TABLE_ID: str = Field(
-        default="2a9222dd-474a-4c40-9b96-a548f2c9ec11",
+        default="",
         description="ID da tabela 'Agenda Semanal' na página central do Notion"
+    )
+
+    # Provedor de IA Principal e Cadeia de Fallback (BYOK Multi-Provider)
+    AI_PROVIDER: str = Field(
+        default="gemini",
+        description="Provedor de IA principal: 'gemini', 'claude' (ou 'anthropic'), 'deepseek'"
+    )
+    AI_FALLBACK_PROVIDER_1: str = Field(
+        default="gemini",
+        description="Primeiro provedor de contingência: 'gemini', 'claude', 'deepseek', 'none'"
+    )
+    AI_FALLBACK_PROVIDER_2: str = Field(
+        default="deepseek",
+        description="Segundo provedor de contingência: 'gemini', 'claude', 'deepseek', 'none'"
+    )
+    AI_FALLBACK_PROVIDER_3: str = Field(
+        default="none",
+        description="Terceiro provedor de contingência: 'gemini', 'claude', 'deepseek', 'none'"
     )
 
     # Google Gemini AI (com Fallback Hierárquico)

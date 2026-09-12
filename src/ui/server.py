@@ -59,6 +59,10 @@ def get_current_config() -> Dict[str, Any]:
         "DISCORD_QUEUE_CHANNEL_ID": "0",
         "DISCORD_STUDY_CHANNEL_ID": "0",
         "RENDER_URL": "",
+        "AI_PROVIDER": "gemini",
+        "AI_FALLBACK_PROVIDER_1": "gemini",
+        "AI_FALLBACK_PROVIDER_2": "deepseek",
+        "AI_FALLBACK_PROVIDER_3": "none",
         "GEMINI_API_KEY": "",
         "GEMINI_MODEL": "gemini-3.8-flash",
         "GEMINI_FALLBACK_MODEL_1": "gemini-3.7-flash",
@@ -79,11 +83,11 @@ def get_current_config() -> Dict[str, Any]:
         "HEADLESS_LOGIN": "false",
         "LOGIN_TIMEOUT_SECONDS": "300",
         "NOTION_API_KEY": "",
-        "NOTION_PAGE_ID": "17db4e452b43449a9ca266065840f909",
-        "NOTION_TASKS_DATABASE_ID": "00e5c698-5139-4b4c-9cac-db04bfc22c4b",
-        "NOTION_COURSES_DATABASE_ID": "751117de-c4d2-468c-9b46-571c036969b1",
-        "NOTION_DAILY_CHECKLIST_BLOCK_ID": "25cd128a-26fe-49ac-8ab0-a895f1e0858d",
-        "NOTION_WEEKLY_SCHEDULE_TABLE_ID": "2a9222dd-474a-4c40-9b96-a548f2c9ec11",
+        "NOTION_PAGE_ID": "",
+        "NOTION_TASKS_DATABASE_ID": "",
+        "NOTION_COURSES_DATABASE_ID": "",
+        "NOTION_DAILY_CHECKLIST_BLOCK_ID": "",
+        "NOTION_WEEKLY_SCHEDULE_TABLE_ID": "",
     }
 
     merged = dict(base_defaults)
@@ -126,6 +130,12 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         "# -------------------------------------------------------------------",
         "# 3. Provedores de IA (Gemini, Claude, DeepSeek - BYOK)",
         "# -------------------------------------------------------------------",
+        f"AI_PROVIDER={new_values.get('AI_PROVIDER', 'gemini').strip()}",
+        f"AI_FALLBACK_PROVIDER_1={new_values.get('AI_FALLBACK_PROVIDER_1', 'gemini').strip()}",
+        f"AI_FALLBACK_PROVIDER_2={new_values.get('AI_FALLBACK_PROVIDER_2', 'deepseek').strip()}",
+        f"AI_FALLBACK_PROVIDER_3={new_values.get('AI_FALLBACK_PROVIDER_3', 'none').strip()}",
+        "",
+        "# Google Gemini",
         f"GEMINI_API_KEY={new_values.get('GEMINI_API_KEY', '').strip()}",
         f"GEMINI_MODEL={new_values.get('GEMINI_MODEL', 'gemini-3.8-flash').strip()}",
         f"GEMINI_FALLBACK_MODEL_1={new_values.get('GEMINI_FALLBACK_MODEL_1', 'gemini-3.7-flash').strip()}",
@@ -262,6 +272,80 @@ def test_gemini_connection(api_key: str, model_name: str) -> Dict[str, Any]:
         return {"ok": False, "error": f"Erro na API Gemini: {err_msg[:200]}"}
 
 
+def test_claude_connection(api_key: str, model_name: Optional[str] = None) -> Dict[str, Any]:
+    """Testa a chave de API do Anthropic Claude."""
+    if not api_key:
+        return {"ok": False, "error": "Chave de API do Anthropic não informada."}
+    try:
+        import anthropic
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Pacote 'anthropic' não instalado no ambiente. Execute: pip install anthropic"
+        }
+
+    start_time = time.time()
+    try:
+        model = model_name or "claude-haiku-4-5"
+        client = anthropic.Anthropic(api_key=api_key.strip(), timeout=15.0)
+        client.messages.create(
+            model=model,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Responda apenas: OK"}]
+        )
+        elapsed = round((time.time() - start_time) * 1000)
+        return {
+            "ok": True,
+            "model": model,
+            "elapsed_ms": elapsed,
+            "message": f"Anthropic Claude ({model}) validado com sucesso ({elapsed}ms)!"
+        }
+    except Exception as e:
+        err_msg = str(e)
+        if "authentication_error" in err_msg or "401" in err_msg:
+            return {"ok": False, "error": "Chave de API do Anthropic inválida (HTTP 401)."}
+        if "permission_error" in err_msg or "403" in err_msg:
+            return {"ok": False, "error": "Sem permissão para este modelo ou conta sem créditos."}
+        return {"ok": False, "error": f"Erro na API Claude: {err_msg[:200]}"}
+
+
+def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> Dict[str, Any]:
+    """Testa a chave de API do DeepSeek."""
+    if not api_key:
+        return {"ok": False, "error": "Chave de API do DeepSeek não informada."}
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return {
+            "ok": False,
+            "error": "Pacote 'openai' não instalado no ambiente (necessário para DeepSeek). Execute: pip install openai"
+        }
+
+    start_time = time.time()
+    try:
+        model = model_name or "deepseek-chat"
+        client = OpenAI(api_key=api_key.strip(), base_url="https://api.deepseek.com/v1", timeout=15.0)
+        client.chat.completions.create(
+            model=model,
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Responda apenas: OK"}]
+        )
+        elapsed = round((time.time() - start_time) * 1000)
+        return {
+            "ok": True,
+            "model": model,
+            "elapsed_ms": elapsed,
+            "message": f"DeepSeek ({model}) validado com sucesso ({elapsed}ms)!"
+        }
+    except Exception as e:
+        err_msg = str(e)
+        if "AuthenticationError" in err_msg or "401" in err_msg:
+            return {"ok": False, "error": "Chave de API do DeepSeek inválida (HTTP 401)."}
+        if "insufficient_balance" in err_msg or "balance" in err_msg.lower():
+            return {"ok": False, "error": "Saldo insuficiente na conta DeepSeek."}
+        return {"ok": False, "error": f"Erro na API DeepSeek: {err_msg[:200]}"}
+
+
 def test_discord_connection(bot_token: str, channel_id: Optional[str] = None) -> Dict[str, Any]:
     """Testa o token do Bot do Discord e opcionalmente o acesso ao canal."""
     if not bot_token:
@@ -380,6 +464,20 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             api_key = payload.get("api_key", "")
             model = payload.get("model", "")
             res = test_gemini_connection(api_key, model)
+            self._send_json(res)
+            return
+
+        if url_path == "/api/test-claude":
+            api_key = payload.get("api_key", "")
+            model = payload.get("model", "")
+            res = test_claude_connection(api_key, model)
+            self._send_json(res)
+            return
+
+        if url_path == "/api/test-deepseek":
+            api_key = payload.get("api_key", "")
+            model = payload.get("model", "")
+            res = test_deepseek_connection(api_key, model)
             self._send_json(res)
             return
 

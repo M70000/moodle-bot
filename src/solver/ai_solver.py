@@ -1,16 +1,16 @@
-﻿"""Camada de abstração multi-provider para resolução de atividades com IA.
+"""Camada de abstração multi-provider para resolução de atividades com IA.
 
-Suporta três provedores BYOK:
-  - Google Gemini  (GEMINI_API_KEY)    → google-genai SDK
+Suporta três provedores BYOK configuráveis:
+  - Google Gemini    (GEMINI_API_KEY)    → google-genai SDK
   - Anthropic Claude (ANTHROPIC_API_KEY) → anthropic SDK
   - DeepSeek         (DEEPSEEK_API_KEY)  → openai SDK com base_url customizada
 
-O provedor ativo é detectado automaticamente pela chave disponível no .env.
-Prioridade: Gemini > Claude > DeepSeek (primeira chave válida vence).
+O usuário pode escolher explicitamente o Provedor Principal (AI_PROVIDER)
+e configurar uma Cadeia de Contingência / Fallback dinâmica entre os três provedores:
+(AI_FALLBACK_PROVIDER_1, AI_FALLBACK_PROVIDER_2, AI_FALLBACK_PROVIDER_3).
 
-Uso interno: todos os comandos Discord e o daemon usam `AISolver` em vez de
-chamar `GeminiSolver` diretamente, garantindo que a chave BYOK do usuário
-seja sempre respeitada independente do provedor configurado.
+Se o provedor principal sofrer timeout, estourar cotas (429) ou ficar indisponível,
+o robô migra instantaneamente para o próximo provedor configurado na cadeia.
 """
 
 import asyncio
@@ -26,28 +26,73 @@ from src.scraper.moodle_scraper import Assignment
 console = Console()
 
 
-def _detect_provider() -> str:
-    """Detecta qual provedor está configurado pela chave disponível no .env."""
-    if settings.GEMINI_API_KEY and settings.GEMINI_API_KEY not in ("", "sua_chave_gemini_api_aqui"):
+def normalize_provider(name: Optional[str]) -> Optional[str]:
+    """Normaliza o nome do provedor para um identificador canônico ou None."""
+    if not name:
+        return None
+    cleaned = str(name).strip().lower()
+    if cleaned in ("gemini", "google", "google-gemini", "google_gemini"):
         return "gemini"
-    if settings.ANTHROPIC_API_KEY and settings.ANTHROPIC_API_KEY not in ("", "sua_chave_anthropic_aqui"):
+    if cleaned in ("claude", "anthropic", "anthropic-claude", "anthropic_claude"):
         return "anthropic"
-    if settings.DEEPSEEK_API_KEY and settings.DEEPSEEK_API_KEY not in ("", "sua_chave_deepseek_aqui"):
+    if cleaned in ("deepseek", "deep-seek", "deep_seek"):
         return "deepseek"
-    return "gemini"  # Fallback — GeminiSolver dará aviso de chave ausente
+    if cleaned in ("none", "nenhum", "desativado", "disabled", "off", "0", ""):
+        return None
+    return cleaned
+
+
+def get_fallback_chain() -> List[str]:
+    """Retorna a lista ordenada dos provedores configurados para execução e contingência."""
+    primary = normalize_provider(getattr(settings, "AI_PROVIDER", "gemini")) or "gemini"
+
+    raw_candidates = [
+        primary,
+        normalize_provider(getattr(settings, "AI_FALLBACK_PROVIDER_1", None)),
+        normalize_provider(getattr(settings, "AI_FALLBACK_PROVIDER_2", None)),
+        normalize_provider(getattr(settings, "AI_FALLBACK_PROVIDER_3", None)),
+    ]
+
+    chain: List[str] = []
+    for c in raw_candidates:
+        if c and c not in chain:
+            chain.append(c)
+
+    if not chain:
+        chain = ["gemini"]
+
+    return chain
 
 
 def get_active_provider() -> str:
-    """Retorna o nome do provedor ativo para exibição no /status."""
-    p = _detect_provider()
-    if p == "anthropic":
-        model = settings.ANTHROPIC_MODEL or "claude-haiku-4-5"
-        return f"Anthropic Claude ({model})"
-    if p == "deepseek":
-        model = settings.DEEPSEEK_MODEL or "deepseek-chat"
-        return f"DeepSeek ({model})"
-    model = settings.GEMINI_MODEL or "gemini-3.5-flash"
-    return f"Google Gemini ({model})"
+    """Retorna descrição clara do provedor principal e sua cadeia de contingência para o /status."""
+    chain = get_fallback_chain()
+    primary = chain[0] if chain else "gemini"
+
+    def _format_prov(p: str) -> str:
+        if p == "anthropic":
+            model = settings.ANTHROPIC_MODEL or "claude-haiku-4-5"
+            return f"Anthropic Claude ({model})"
+        elif p == "deepseek":
+            model = settings.DEEPSEEK_MODEL or "deepseek-chat"
+            return f"DeepSeek ({model})"
+        else:
+            model = settings.GEMINI_MODEL or "gemini-3.5-flash"
+            return f"Google Gemini ({model})"
+
+    primary_str = _format_prov(primary)
+    fallbacks = chain[1:]
+    if fallbacks:
+        fb_names = []
+        for fb in fallbacks:
+            if fb == "anthropic":
+                fb_names.append("Claude")
+            elif fb == "deepseek":
+                fb_names.append("DeepSeek")
+            else:
+                fb_names.append("Gemini")
+        return f"{primary_str} [Fallback: {' → '.join(fb_names)}]"
+    return primary_str
 
 
 async def _emit_log(callback: Optional[Any], msg: str):
@@ -63,7 +108,7 @@ async def _emit_log(callback: Optional[Any], msg: str):
 
 
 # ---------------------------------------------------------------------------
-# Claude Backend
+# Backends de Execução (Claude e DeepSeek)
 # ---------------------------------------------------------------------------
 
 async def _call_claude(
@@ -79,10 +124,14 @@ async def _call_claude(
             "SDK do Anthropic não instalado. Execute: pip install anthropic"
         )
 
+    api_key = settings.ANTHROPIC_API_KEY
+    if not api_key or api_key in ("", "sua_chave_anthropic_aqui"):
+        raise RuntimeError("Chave ANTHROPIC_API_KEY não configurada no .env.")
+
     model = settings.ANTHROPIC_MODEL or "claude-haiku-4-5"
     await _emit_log(on_log, f"Consultando Anthropic Claude ({model})...")
 
-    client = anthropic.AsyncAnthropic(api_key=settings.ANTHROPIC_API_KEY)
+    client = anthropic.AsyncAnthropic(api_key=api_key)
     response = await asyncio.wait_for(
         client.messages.create(
             model=model,
@@ -97,10 +146,6 @@ async def _call_claude(
     return text, model
 
 
-# ---------------------------------------------------------------------------
-# DeepSeek Backend
-# ---------------------------------------------------------------------------
-
 async def _call_deepseek(
     system_instruction: str,
     user_message: str,
@@ -114,11 +159,15 @@ async def _call_deepseek(
             "SDK da OpenAI não instalado (necessário para DeepSeek). Execute: pip install openai"
         )
 
+    api_key = settings.DEEPSEEK_API_KEY
+    if not api_key or api_key in ("", "sua_chave_deepseek_aqui"):
+        raise RuntimeError("Chave DEEPSEEK_API_KEY não configurada no .env.")
+
     model = settings.DEEPSEEK_MODEL or "deepseek-chat"
     await _emit_log(on_log, f"Consultando DeepSeek ({model})...")
 
     client = AsyncOpenAI(
-        api_key=settings.DEEPSEEK_API_KEY,
+        api_key=api_key,
         base_url="https://api.deepseek.com/v1",
     )
     response = await asyncio.wait_for(
@@ -139,32 +188,95 @@ async def _call_deepseek(
 
 
 # ---------------------------------------------------------------------------
-# AISolver — Fachada Unificada
+# AISolver — Fachada Unificada com Cadeia de Fallback Dinâmica
 # ---------------------------------------------------------------------------
 
 class AISolver:
-    """Motor de resolução unificado com suporte a Gemini, Claude e DeepSeek.
+    """Motor de resolução unificado com suporte flexível a Gemini, Claude e DeepSeek.
 
-    A lógica completa de resolução (prompts, parsing, geração de arquivo) é
-    delegada ao GeminiSolver quando o provedor for Gemini.
-
-    Para Claude e DeepSeek, este módulo constrói os prompts e chama os
-    backends correspondentes, usando a mesma lógica de saída.
+    Permite escolher o provedor principal e encadear múltiplos provedores
+    de contingência em caso de erro, rate limit ou timeout.
     """
 
     def __init__(self, api_key: Optional[str] = None):
-        self.provider = _detect_provider()
+        self.chain = get_fallback_chain()
+        self.provider = self.chain[0] if self.chain else "gemini"
         self._gemini_solver = None
 
-        if self.provider == "gemini" or not (
-            settings.ANTHROPIC_API_KEY or settings.DEEPSEEK_API_KEY
-        ):
-            # Sempre cria o GeminiSolver como fallback final
+        # Sempre prepara GeminiSolver se estiver na cadeia ou como rede de segurança
+        if "gemini" in self.chain or not self.chain:
             from src.solver.gemini_solver import GeminiSolver
             self._gemini_solver = GeminiSolver(api_key=api_key)
 
         console.print(
             f"[cyan]🤖 Provedor IA ativo: [bold]{get_active_provider()}[/bold][/cyan]"
+        )
+
+    def _is_provider_ready(self, provider: str) -> Tuple[bool, str]:
+        """Verifica se as credenciais do provedor estão presentes."""
+        if provider == "gemini":
+            key = settings.GEMINI_API_KEY
+            if not key or key in ("", "sua_chave_gemini_api_aqui"):
+                return False, "GEMINI_API_KEY ausente ou não configurada no .env"
+            return True, ""
+        elif provider == "anthropic":
+            key = settings.ANTHROPIC_API_KEY
+            if not key or key in ("", "sua_chave_anthropic_aqui"):
+                return False, "ANTHROPIC_API_KEY ausente ou não configurada no .env"
+            return True, ""
+        elif provider == "deepseek":
+            key = settings.DEEPSEEK_API_KEY
+            if not key or key in ("", "sua_chave_deepseek_aqui"):
+                return False, "DEEPSEEK_API_KEY ausente ou não configurada no .env"
+            return True, ""
+        return False, f"Provedor desconhecido: {provider}"
+
+    async def generate_text(
+        self,
+        system_instruction: str,
+        user_message: str,
+        temperature: float = 0.2,
+        on_log: Optional[Any] = None,
+    ) -> Tuple[str, str]:
+        """Gera texto puro percorrendo a cadeia de provedores configurada."""
+        last_error = None
+
+        for idx, prov in enumerate(self.chain):
+            is_ready, reason = self._is_provider_ready(prov)
+            if not is_ready:
+                console.print(f"[dim]Pulanado {prov}: {reason}[/dim]")
+                continue
+
+            try:
+                if prov == "gemini":
+                    if not self._gemini_solver:
+                        from src.solver.gemini_solver import GeminiSolver
+                        self._gemini_solver = GeminiSolver()
+                    resp, used_model = await self._gemini_solver._generate_with_fallback(
+                        contents=[user_message],
+                        system_instruction=system_instruction,
+                        temperature=temperature,
+                        on_log=on_log,
+                    )
+                    text = resp.text if resp and resp.text else ""
+                    return text, used_model
+
+                elif prov == "anthropic":
+                    return await _call_claude(system_instruction, user_message, on_log=on_log)
+
+                elif prov == "deepseek":
+                    return await _call_deepseek(system_instruction, user_message, on_log=on_log)
+
+            except Exception as err:
+                last_error = err
+                console.print(f"[yellow]Aviso: Falha no provedor {prov}: {err}[/yellow]")
+                if idx < len(self.chain) - 1:
+                    next_prov = self.chain[idx + 1]
+                    await _emit_log(on_log, f"⚠️ Falha em {prov}. Acionando fallback: {next_prov}...")
+
+        raise RuntimeError(
+            f"Todos os provedores de IA da cadeia falharam ({' → '.join(self.chain)}). "
+            f"Último erro: {last_error}"
         )
 
     async def solve_assignment(
@@ -175,30 +287,8 @@ class AISolver:
         on_log: Optional[Any] = None,
         auto_triggered: bool = False,
     ):
-        """Gera resolução completa delegando ao backend ativo.
-
-        Args:
-            auto_triggered: Se True → gera PDF (daemon/emergência).
-                            Se False → gera DOCX editável (resolução manual).
-        """
-        if self.provider == "gemini" or self._gemini_solver:
-            return await self._gemini_solver.solve_assignment(
-                assignment=assignment,
-                user_notes=user_notes,
-                extra_context_files=extra_context_files,
-                on_log=on_log,
-                auto_triggered=auto_triggered,
-            )
-
-        # Claude / DeepSeek: usa GeminiSolver como estrutura mas substitui a chamada AI
-        from src.solver.gemini_solver import GeminiSolver, SolutionDraft
+        """Gera resolução completa delegando através da cadeia de contingência configurada."""
         from src.solver.gemini_solver import extract_text_from_context_files
-        from src.scraper.moodle_scraper import sanitize_filename
-
-        dummy = GeminiSolver.__new__(GeminiSolver)
-        dummy.client = None
-        dummy.materials_dir = settings.STORAGE_MATERIALS_DIR
-        dummy.submissions_dir = settings.STORAGE_SUBMISSIONS_DIR
 
         context_files = []
         for att in assignment.attachments:
@@ -225,17 +315,63 @@ class AISolver:
         if user_notes:
             user_message += f"\nINSTRUÇÕES DO ALUNO:\n{user_notes}\n"
 
-        if self.provider == "anthropic":
-            full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
-        else:
-            full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+        last_error = None
 
-        return await _build_solution_draft(
-            assignment=assignment,
-            full_text=full_text,
-            used_model=used_model,
-            on_log=on_log,
-            auto_triggered=auto_triggered,
+        for idx, prov in enumerate(self.chain):
+            is_ready, reason = self._is_provider_ready(prov)
+            if not is_ready:
+                console.print(f"[dim]Pulando {prov} na resolução: {reason}[/dim]")
+                continue
+
+            try:
+                if prov == "gemini" and self._gemini_solver and self._gemini_solver.client:
+                    # Executa via GeminiSolver nativo (com suporte à API de arquivos e seus próprios fallbacks)
+                    return await self._gemini_solver.solve_assignment(
+                        assignment=assignment,
+                        user_notes=user_notes,
+                        extra_context_files=extra_context_files,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                    )
+                elif prov == "anthropic":
+                    full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
+                    return await _build_solution_draft(
+                        assignment=assignment,
+                        full_text=full_text,
+                        used_model=used_model,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                    )
+                elif prov == "deepseek":
+                    full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+                    return await _build_solution_draft(
+                        assignment=assignment,
+                        full_text=full_text,
+                        used_model=used_model,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                    )
+                elif prov == "gemini":
+                    # Gemini sem cliente completo ou fallback geral
+                    full_text, used_model = await self.generate_text(system_instruction, user_message, on_log=on_log)
+                    return await _build_solution_draft(
+                        assignment=assignment,
+                        full_text=full_text,
+                        used_model=used_model,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                    )
+
+            except Exception as err:
+                last_error = err
+                console.print(f"[yellow]Aviso: Falha ao resolver com {prov}: {err}[/yellow]")
+                if idx < len(self.chain) - 1:
+                    next_prov = self.chain[idx + 1]
+                    await _emit_log(on_log, f"⚠️ Falha no provedor {prov}. Alternando para contingência: {next_prov}...")
+
+        raise RuntimeError(
+            f"Todos os provedores configurados falharam para esta atividade ({' → '.join(self.chain)}). "
+            f"Último erro: {last_error}"
         )
 
     async def solve_quiz_with_live_context(
@@ -247,18 +383,7 @@ class AISolver:
         on_log: Optional[Any] = None,
         auto_triggered: bool = False,
     ):
-        """Resolve questionário ao vivo delegando ao backend ativo."""
-        if self.provider == "gemini" or self._gemini_solver:
-            return await self._gemini_solver.solve_quiz_with_live_context(
-                assignment=assignment,
-                questions_data=questions_data,
-                user_notes=user_notes,
-                extra_context_files=extra_context_files,
-                on_log=on_log,
-                auto_triggered=auto_triggered,
-            )
-
-        # Claude / DeepSeek fallback
+        """Resolve questionário ao vivo delegando através da cadeia de contingência."""
         from src.solver.gemini_solver import extract_text_from_context_files
 
         context_files = []
@@ -273,8 +398,8 @@ class AISolver:
         questions_body = "\n\n".join(formatted_questions)
 
         system_instruction = (
-            "Você é um estudante universitário da UFMG realizando questionário no Moodle. "
-            "Responda cada questão com letra e texto completo. "
+            "Você é um estudante universitário da UFMG realizando questionário no Moodle.\n"
+            "Responda cada questão com letra e texto completo.\n"
             "Formate a saída com ```json:answers``` no início e folha de respostas depois."
         )
 
@@ -289,18 +414,55 @@ class AISolver:
         if user_notes:
             user_message += f"\nINSTRUÇÕES DO ALUNO:\n{user_notes}\n"
 
-        if self.provider == "anthropic":
-            full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
-        else:
-            full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+        last_error = None
 
-        return await _build_solution_draft(
-            assignment=assignment,
-            full_text=full_text,
-            used_model=used_model,
-            on_log=on_log,
-            auto_triggered=auto_triggered,
-            is_quiz=True,
+        for idx, prov in enumerate(self.chain):
+            is_ready, reason = self._is_provider_ready(prov)
+            if not is_ready:
+                console.print(f"[dim]Pulando {prov} no questionário: {reason}[/dim]")
+                continue
+
+            try:
+                if prov == "gemini" and self._gemini_solver and self._gemini_solver.client:
+                    return await self._gemini_solver.solve_quiz_with_live_context(
+                        assignment=assignment,
+                        questions_data=questions_data,
+                        user_notes=user_notes,
+                        extra_context_files=extra_context_files,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                    )
+                elif prov == "anthropic":
+                    full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
+                    return await _build_solution_draft(
+                        assignment=assignment,
+                        full_text=full_text,
+                        used_model=used_model,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                        is_quiz=True,
+                    )
+                elif prov == "deepseek":
+                    full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+                    return await _build_solution_draft(
+                        assignment=assignment,
+                        full_text=full_text,
+                        used_model=used_model,
+                        on_log=on_log,
+                        auto_triggered=auto_triggered,
+                        is_quiz=True,
+                    )
+
+            except Exception as err:
+                last_error = err
+                console.print(f"[yellow]Aviso: Falha no quiz com {prov}: {err}[/yellow]")
+                if idx < len(self.chain) - 1:
+                    next_prov = self.chain[idx + 1]
+                    await _emit_log(on_log, f"⚠️ Falha no quiz via {prov}. Alternando para contingência: {next_prov}...")
+
+        raise RuntimeError(
+            f"Todos os provedores falharam para este questionário ({' → '.join(self.chain)}). "
+            f"Último erro: {last_error}"
         )
 
     async def apply_revision(
@@ -309,19 +471,7 @@ class AISolver:
         revision_instructions: str,
         on_log: Optional[Any] = None,
     ):
-        """Aplica revisão do usuário sobre um draft existente e gera novo DOCX.
-
-        Args:
-            draft: SolutionDraft existente com o conteúdo atual
-            revision_instructions: Instruções de modificação do usuário (texto livre)
-        """
-        if self.provider == "gemini" or self._gemini_solver:
-            return await self._gemini_solver.apply_revision(
-                draft=draft,
-                revision_instructions=revision_instructions,
-                on_log=on_log,
-            )
-
+        """Aplica revisão do usuário sobre um draft existente percorrendo a cadeia de contingência."""
         system_instruction = (
             "Você é um assistente acadêmico. O aluno revisou a resolução abaixo e quer que você aplique as modificações. "
             "Mantenha o formato Markdown com ### Questão X. Aplique APENAS as mudanças pedidas, "
@@ -333,27 +483,51 @@ class AISolver:
             "Gere a resolução modificada completa."
         )
 
-        if self.provider == "anthropic":
-            full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
-        else:
-            full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+        last_error = None
 
-        from src.scraper.moodle_scraper import Assignment as _Assign
-        mock_assign = _Assign(
-            id=draft.assignment_id,
-            course_id="",
-            course_name=draft.course_name,
-            title=draft.assignment_title,
-            url="",
-            description="",
-        )
-        return await _build_solution_draft(
-            assignment=mock_assign,
-            full_text=full_text,
-            used_model=used_model,
-            on_log=on_log,
-            auto_triggered=False,
-        )
+        for idx, prov in enumerate(self.chain):
+            is_ready, reason = self._is_provider_ready(prov)
+            if not is_ready:
+                continue
+
+            try:
+                if prov == "gemini" and self._gemini_solver and self._gemini_solver.client:
+                    return await self._gemini_solver.apply_revision(
+                        draft=draft,
+                        revision_instructions=revision_instructions,
+                        on_log=on_log,
+                    )
+                elif prov == "anthropic":
+                    full_text, used_model = await _call_claude(system_instruction, user_message, on_log)
+                elif prov == "deepseek":
+                    full_text, used_model = await _call_deepseek(system_instruction, user_message, on_log)
+                else:
+                    full_text, used_model = await self.generate_text(system_instruction, user_message, on_log=on_log)
+
+                from src.scraper.moodle_scraper import Assignment as _Assign
+                mock_assign = _Assign(
+                    id=draft.assignment_id,
+                    course_id="",
+                    course_name=draft.course_name,
+                    title=draft.assignment_title,
+                    url="",
+                    description="",
+                )
+                return await _build_solution_draft(
+                    assignment=mock_assign,
+                    full_text=full_text,
+                    used_model=used_model,
+                    on_log=on_log,
+                    auto_triggered=False,
+                )
+
+            except Exception as err:
+                last_error = err
+                if idx < len(self.chain) - 1:
+                    next_prov = self.chain[idx + 1]
+                    await _emit_log(on_log, f"⚠️ Falha na revisão via {prov}. Alternando para: {next_prov}...")
+
+        raise RuntimeError(f"Falha ao aplicar revisão em todos os provedores: {last_error}")
 
 
 # ---------------------------------------------------------------------------
@@ -402,7 +576,7 @@ async def _build_solution_draft(
     docx_path = None
 
     if auto_triggered:
-        # Resolução automática → gera PDF (comportamento original)
+        # Resolução automática → gera PDF
         pdf_path = dest_dir / f"{safe_title}.pdf"
         try:
             await _emit_log(on_log, "Compilando PDF acadêmico da resolução...")

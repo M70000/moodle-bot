@@ -283,8 +283,69 @@
         </div>
       </section>
 
-      <!-- Tab 3: Google Gemini IA -->
+      <!-- Tab 3: Inteligência Artificial (BYOK Multi-Provider) -->
       <section id="tab-gemini" class="tab-pane">
+
+        <!-- Card 0: Seleção de Provedor Principal e Cadeia de Fallback -->
+        <div class="card card-industrial-box byok-box" style="margin-bottom: 1.5rem;">
+          <div class="box-header-row">
+            <div>
+              <div class="tag-label">[ MULTI-PROVIDER AI ORCHESTRATION ]</div>
+              <h4 class="box-title">🤖 PROVEDOR PRINCIPAL E CADEIA DE CONTINGÊNCIA</h4>
+              <p class="box-desc">Selecione o motor primário de IA e configure a ordem de reserva caso ocorra estouro de cota, rate limit (429) ou timeout.</p>
+            </div>
+          </div>
+          <div class="card-body" style="padding-top: 1rem;">
+            <div class="grid-2">
+              <div class="form-group">
+                <label for="AI_PROVIDER"><strong>🎯 Provedor de IA Principal</strong></label>
+                <select id="AI_PROVIDER" style="font-weight: bold; border-color: var(--primary);">
+                  <option value="gemini">Google Gemini (Oficial / Gratuito)</option>
+                  <option value="claude">Anthropic Claude (BYOK)</option>
+                  <option value="deepseek">DeepSeek (BYOK)</option>
+                </select>
+                <small class="form-help">O robô sempre tentará resolver atividades primeiro com este provedor.</small>
+              </div>
+
+              <div class="form-group">
+                <label for="AI_FALLBACK_PROVIDER_1"><strong>🔄 1º Provedor de Fallback</strong></label>
+                <select id="AI_FALLBACK_PROVIDER_1">
+                  <option value="gemini">Google Gemini</option>
+                  <option value="claude">Anthropic Claude</option>
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="none">Nenhum (Desativado)</option>
+                </select>
+                <small class="form-help">Primeira contingência caso o principal falhe ou esgote cotas.</small>
+              </div>
+            </div>
+
+            <div class="grid-2 mt-4">
+              <div class="form-group">
+                <label for="AI_FALLBACK_PROVIDER_2">2º Provedor de Fallback</label>
+                <select id="AI_FALLBACK_PROVIDER_2">
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="claude">Anthropic Claude</option>
+                  <option value="none">Nenhum (Desativado)</option>
+                </select>
+                <small class="form-help">Segunda reserva se o principal e o 1º fallback falharem.</small>
+              </div>
+
+              <div class="form-group">
+                <label for="AI_FALLBACK_PROVIDER_3">3º Provedor de Fallback</label>
+                <select id="AI_FALLBACK_PROVIDER_3">
+                  <option value="none">Nenhum (Desativado)</option>
+                  <option value="gemini">Google Gemini</option>
+                  <option value="claude">Anthropic Claude</option>
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+                <small class="form-help">Último recurso de segurança na cadeia de execução.</small>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Card 1: Google Gemini API -->
         <div class="card">
           <div class="card-header">
             <div>
@@ -318,7 +379,7 @@
                   👁️
                 </button>
                 <button type="button" id="btn-test-gemini" class="btn btn-secondary">
-                  Testar Chave IA
+                  Testar Chave Gemini
                 </button>
               </div>
               <div id="gemini-test-result" class="test-feedback"></div>
@@ -329,8 +390,8 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <h3>Hierarquia de Modelos & Fallback</h3>
-              <p>Se o modelo oficial estiver sobrecarregado, o assistente chaveia suavemente para os secundários.</p>
+              <h3>Hierarquia Interna do Gemini (Sub-Fallbacks)</h3>
+              <p>Quando o Gemini estiver ativo, caso o modelo primário oscile, o assistente chaveia internamente.</p>
             </div>
           </div>
           <div class="card-body">
@@ -398,24 +459,22 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <h3>Anthropic Claude <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">Alternativo</span></h3>
-              <p>Use Claude como agente IA. Se preenchido, <strong>substitui o Gemini</strong> como provedor principal.</p>
+              <h3>Anthropic Claude <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">BYOK</span></h3>
+              <p>Configure sua chave da Anthropic para usar Claude como provedor principal ou na contingência.</p>
             </div>
             <a href="https://console.anthropic.com/" target="_blank" class="btn btn-outline btn-sm">Obter Chave ↗</a>
           </div>
           <div class="card-body">
-            <div class="info-callout" style="margin-bottom:1rem;">
-              <div class="info-icon">⚡</div>
-              <div class="info-text">Prioridade: <strong>Gemini → Claude → DeepSeek</strong>. Preencha <em>apenas uma</em> chave alternativa para substituir o Gemini como provedor.</div>
-            </div>
             <div class="grid-2">
               <div class="form-group">
                 <label for="ANTHROPIC_API_KEY">API Key do Anthropic</label>
                 <div class="input-password-wrapper">
                   <input type="password" id="ANTHROPIC_API_KEY" placeholder="sk-ant-...">
                   <button type="button" class="btn-toggle-password" onclick="togglePassword('ANTHROPIC_API_KEY')">👁️</button>
+                  <button type="button" id="btn-test-claude" class="btn btn-secondary">Testar Chave Claude</button>
                 </div>
-                <small class="form-help">Deixe em branco para usar Gemini.</small>
+                <div id="claude-test-result" class="test-feedback"></div>
+                <small class="form-help">Requer: <code>pip install anthropic</code></small>
               </div>
               <div class="form-group">
                 <label for="ANTHROPIC_MODEL">Modelo Claude</label>
@@ -433,8 +492,8 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <h3>DeepSeek <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">Alternativo</span></h3>
-              <p>Use DeepSeek como agente IA. Ativo apenas se Claude não estiver configurado.</p>
+              <h3>DeepSeek <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">BYOK</span></h3>
+              <p>Configure sua chave do DeepSeek para usar como motor principal ou na contingência.</p>
             </div>
             <a href="https://platform.deepseek.com/" target="_blank" class="btn btn-outline btn-sm">Obter Chave ↗</a>
           </div>
@@ -445,8 +504,10 @@
                 <div class="input-password-wrapper">
                   <input type="password" id="DEEPSEEK_API_KEY" placeholder="sk-...">
                   <button type="button" class="btn-toggle-password" onclick="togglePassword('DEEPSEEK_API_KEY')">👁️</button>
+                  <button type="button" id="btn-test-deepseek" class="btn btn-secondary">Testar Chave DeepSeek</button>
                 </div>
-                <small class="form-help">Deixe em branco para usar Gemini ou Claude.</small>
+                <div id="deepseek-test-result" class="test-feedback"></div>
+                <small class="form-help">Requer: <code>pip install openai</code></small>
               </div>
               <div class="form-group">
                 <label for="DEEPSEEK_MODEL">Modelo DeepSeek</label>

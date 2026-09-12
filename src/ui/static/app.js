@@ -12,8 +12,8 @@ const tabMetadata = {
     subtitle: 'Configure o token do bot e os canais para recebimento de alertas e revisão.'
   },
   'tab-gemini': {
-    title: 'Google Gemini IA',
-    subtitle: 'Gerencie a chave de API e a hierarquia de modelos com fallback automático.'
+    title: 'Inteligência Artificial & Fallbacks',
+    subtitle: 'Gerencie o provedor principal (Gemini, Claude, DeepSeek) e a cadeia de contingência.'
   },
   'tab-scheduler': {
     title: 'Prazos & Agendamento',
@@ -40,6 +40,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-test-moodle').addEventListener('click', testMoodle);
   document.getElementById('btn-test-discord').addEventListener('click', testDiscord);
   document.getElementById('btn-test-gemini').addEventListener('click', testGemini);
+
+  const btnTestClaude = document.getElementById('btn-test-claude');
+  if (btnTestClaude) btnTestClaude.addEventListener('click', testClaude);
+
+  const btnTestDeepSeek = document.getElementById('btn-test-deepseek');
+  if (btnTestDeepSeek) btnTestDeepSeek.addEventListener('click', testDeepSeek);
 
   document.getElementById('btn-trigger-login').addEventListener('click', triggerLogin);
   document.getElementById('btn-login-quick').addEventListener('click', triggerLogin);
@@ -87,6 +93,11 @@ async function loadConfig() {
     setInputValue('DISCORD_QUEUE_CHANNEL_ID', config.DISCORD_QUEUE_CHANNEL_ID || '0');
     setInputValue('DISCORD_STUDY_CHANNEL_ID', config.DISCORD_STUDY_CHANNEL_ID || '0');
     setInputValue('RENDER_URL', config.RENDER_URL || '');
+
+    setInputValue('AI_PROVIDER', config.AI_PROVIDER || 'gemini');
+    setInputValue('AI_FALLBACK_PROVIDER_1', config.AI_FALLBACK_PROVIDER_1 || 'gemini');
+    setInputValue('AI_FALLBACK_PROVIDER_2', config.AI_FALLBACK_PROVIDER_2 || 'deepseek');
+    setInputValue('AI_FALLBACK_PROVIDER_3', config.AI_FALLBACK_PROVIDER_3 || 'none');
 
     setInputValue('GEMINI_API_KEY', config.GEMINI_API_KEY || '');
     setInputValue('GEMINI_MODEL', config.GEMINI_MODEL || 'gemini-3.8-flash');
@@ -163,6 +174,11 @@ async function saveConfig() {
     DISCORD_QUEUE_CHANNEL_ID: getInputValue('DISCORD_QUEUE_CHANNEL_ID'),
     DISCORD_STUDY_CHANNEL_ID: getInputValue('DISCORD_STUDY_CHANNEL_ID'),
     RENDER_URL: getInputValue('RENDER_URL'),
+
+    AI_PROVIDER: getInputValue('AI_PROVIDER'),
+    AI_FALLBACK_PROVIDER_1: getInputValue('AI_FALLBACK_PROVIDER_1'),
+    AI_FALLBACK_PROVIDER_2: getInputValue('AI_FALLBACK_PROVIDER_2'),
+    AI_FALLBACK_PROVIDER_3: getInputValue('AI_FALLBACK_PROVIDER_3'),
 
     GEMINI_API_KEY: getInputValue('GEMINI_API_KEY'),
     GEMINI_MODEL: getInputValue('GEMINI_MODEL'),
@@ -260,9 +276,6 @@ async function testDiscord() {
   }
 }
 
-
-
-
 async function testGemini() {
   const api_key = getInputValue('GEMINI_API_KEY');
   const model = getInputValue('GEMINI_MODEL');
@@ -278,6 +291,52 @@ async function testGemini() {
     const data = await res.json();
     if (data.ok) {
       setFeedback(resultDiv, `✔ ${data.message} (Resposta: "${data.response}")`, 'success');
+    } else {
+      setFeedback(resultDiv, `✖ ${data.error}`, 'error');
+    }
+  } catch (err) {
+    setFeedback(resultDiv, `✖ Erro no teste: ${err.message}`, 'error');
+  }
+}
+
+async function testClaude() {
+  const api_key = getInputValue('ANTHROPIC_API_KEY');
+  const model = getInputValue('ANTHROPIC_MODEL');
+  const resultDiv = document.getElementById('claude-test-result');
+  setFeedback(resultDiv, `Enviando requisição de teste para o Claude (${model})...`, 'loading');
+
+  try {
+    const res = await fetch('/api/test-claude', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key, model })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(resultDiv, `✔ ${data.message}`, 'success');
+    } else {
+      setFeedback(resultDiv, `✖ ${data.error}`, 'error');
+    }
+  } catch (err) {
+    setFeedback(resultDiv, `✖ Erro no teste: ${err.message}`, 'error');
+  }
+}
+
+async function testDeepSeek() {
+  const api_key = getInputValue('DEEPSEEK_API_KEY');
+  const model = getInputValue('DEEPSEEK_MODEL');
+  const resultDiv = document.getElementById('deepseek-test-result');
+  setFeedback(resultDiv, `Enviando requisição de teste para o DeepSeek (${model})...`, 'loading');
+
+  try {
+    const res = await fetch('/api/test-deepseek', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key, model })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(resultDiv, `✔ ${data.message}`, 'success');
     } else {
       setFeedback(resultDiv, `✖ ${data.error}`, 'error');
     }

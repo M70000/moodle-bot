@@ -103,8 +103,45 @@ def clean_json_text(text: str) -> str:
 class StudyTutor:
     """Motor de IA para apoio ao estudo ativo, simulados e geração de decks Anki."""
 
-    def __init__(self, solver: Optional[GeminiSolver] = None):
-        self.solver = solver or GeminiSolver()
+    def __init__(self, solver: Optional[Any] = None):
+        if solver is None:
+            from src.solver.ai_solver import AISolver
+            self.solver = AISolver()
+        else:
+            self.solver = solver
+
+    async def _call_llm(
+        self,
+        system_instruction: str,
+        prompt: str,
+        temperature: float = 0.2
+    ) -> Tuple[str, str]:
+        """Gera texto usando AISolver com suporte a fallback de provedores ou legacy GeminiSolver."""
+        from src.solver.ai_solver import AISolver
+        if isinstance(self.solver, AISolver):
+            return await self.solver.generate_text(
+                system_instruction=system_instruction,
+                user_message=prompt,
+                temperature=temperature
+            )
+        elif hasattr(self.solver, "_generate_with_fallback"):
+            resp, used_model = await self.solver._generate_with_fallback(
+                contents=[prompt],
+                system_instruction=system_instruction,
+                temperature=temperature
+            )
+            text = resp.text if resp and hasattr(resp, "text") else (resp if isinstance(resp, str) else "")
+            return text, used_model
+        elif hasattr(self.solver, "generate_text"):
+            res = self.solver.generate_text(
+                system_instruction=system_instruction,
+                user_message=prompt,
+                temperature=temperature
+            )
+            if asyncio.iscoroutine(res) or isinstance(res, asyncio.Future):
+                return await res
+            return res
+        raise RuntimeError("Solver configurado não possui método compatível para geração de texto.")
 
     async def answer_question(
         self,
@@ -143,16 +180,14 @@ class StudyTutor:
         )
 
         full_prompt = "".join(prompt_parts)
-        response, used_model = await self.solver._generate_with_fallback(
-            contents=[full_prompt],
+        answer_text, used_model = await self._call_llm(
             system_instruction=system_instruction,
+            prompt=full_prompt,
             temperature=0.2
         )
 
-        answer_text = response.text if response and response.text else "Não foi possível gerar a resposta."
-
         return {
-            "answer": answer_text,
+            "answer": answer_text or "Não foi possível gerar a resposta.",
             "discipline": discipline,
             "question": question,
             "materials_used": [m.name for m in materials],
@@ -196,14 +231,12 @@ class StudyTutor:
             "]"
         )
 
-        response, used_model = await self.solver._generate_with_fallback(
-            contents=[prompt],
+        raw_text, used_model = await self._call_llm(
             system_instruction=system_instruction,
+            prompt=prompt,
             temperature=0.3
         )
-
-        raw_text = response.text if response and response.text else "[]"
-        cleaned_json = clean_json_text(raw_text)
+        cleaned_json = clean_json_text(raw_text or "[]")
 
         cards = []
         try:
@@ -313,14 +346,12 @@ class StudyTutor:
             "]"
         )
 
-        response, used_model = await self.solver._generate_with_fallback(
-            contents=[prompt],
+        raw_text, used_model = await self._call_llm(
             system_instruction=system_instruction,
+            prompt=prompt,
             temperature=0.3
         )
-
-        raw_text = response.text if response and response.text else "[]"
-        cleaned_json = clean_json_text(raw_text)
+        cleaned_json = clean_json_text(raw_text or "[]")
 
         questions = []
         try:
