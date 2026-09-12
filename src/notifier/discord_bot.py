@@ -206,7 +206,7 @@ BYOK_RELAY_MESSAGE = (
     "👉 **Para resolver com sua própria chave gratuita:**\n"
     "1. Inicie o assistente no seu computador pelo arquivo `iniciar.bat` (já configurado no `configurar.bat`).\n"
     "2. Assim que o assistente local estiver aberto, repita o comando `/resolver` para processar pelo seu PC!\n\n"
-    "💡 *Dica:* Se preferir resolução direta na nuvem 24/7 sem precisar ligar o PC, adicione sua `GEMINI_API_KEY` nas variáveis de ambiente do Render."
+    "💡 *Dica:* Se preferir resolução direta na nuvem 24/7 sem precisar ligar o PC, adicione sua chave de IA (`GEMINI_API_KEY`, `ANTHROPIC_API_KEY` ou `DEEPSEEK_API_KEY`) nas variáveis de ambiente do Render."
 )
 
 
@@ -1955,7 +1955,7 @@ async def _execute_solve_flow(
             )
             await send_func(
                 f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
-                f"A atividade **{title}** ({course}) está sendo processada no seu computador local com a sua chave do Gemini.\n"
+                f"A atividade **{title}** ({course}) está sendo processada no seu computador local com o seu provedor de IA configurado.\n"
                 f"Acompanhe o andamento e aguarde o rascunho ser enviado aqui em instantes!"
             )
             return

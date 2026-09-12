@@ -9,7 +9,13 @@ services:
     envVars:
       - key: DISCORD_BOT_TOKEN
         sync: false
-      - key: GEMINI_API_KEY
-        sync: false
       - key: BOT_MODE
         value: "relay"
+      - key: AI_PROVIDER
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: DEEPSEEK_API_KEY
+        sync: false
