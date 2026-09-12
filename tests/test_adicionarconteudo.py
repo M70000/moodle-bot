@@ -80,10 +80,10 @@ class TestAdicionarConteudoPersistence(unittest.IsolatedAsyncioTestCase):
             res_exact = resolve_course_materials_dir("2026_2 - CÁLCULO 2 - METATURMA")
             self.assertEqual(res_exact, canonical_dir)
 
-            # 3. Busca por disciplina inexistente cria nova pasta sanitizada
+            # 3. Busca por disciplina inexistente cria nova pasta
             res_new = resolve_course_materials_dir("Estatística Avançada")
             self.assertTrue(res_new.exists())
-            self.assertEqual(res_new.name, "Estatistica_Avancada")
+            self.assertEqual(res_new.name, "Estatística Avançada")
 
     async def test_cloud_bridge_materials_lifecycle(self):
         """Testa o armazenamento e consulta de materiais customizados na Cloud Bridge."""

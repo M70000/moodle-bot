@@ -176,22 +176,37 @@ def _is_relay_mode() -> bool:
 
 
 def _has_ai_key_configured() -> bool:
-    """Verifica se há qualquer chave de IA configurada no ambiente ativo."""
-    g_key = (settings.GEMINI_API_KEY or "").strip()
-    c_key = (settings.ANTHROPIC_API_KEY or "").strip()
-    d_key = (settings.DEEPSEEK_API_KEY or "").strip()
+    """Verifica se há qualquer chave de IA configurada no ambiente ativo (settings ou os.environ)."""
+    g_key = (
+        _os.environ.get("GEMINI_API_KEY")
+        or _os.environ.get("GOOGLE_API_KEY")
+        or getattr(settings, "GEMINI_API_KEY", "")
+        or ""
+    ).strip()
+    c_key = (
+        _os.environ.get("ANTHROPIC_API_KEY")
+        or getattr(settings, "ANTHROPIC_API_KEY", "")
+        or ""
+    ).strip()
+    d_key = (
+        _os.environ.get("DEEPSEEK_API_KEY")
+        or getattr(settings, "DEEPSEEK_API_KEY", "")
+        or ""
+    ).strip()
     return bool(
-        (g_key and g_key != "sua_chave_gemini_api_aqui")
-        or (c_key and c_key != "sua_chave_anthropic_aqui")
-        or (d_key and d_key != "sua_chave_deepseek_aqui")
+        (g_key and g_key not in ("sua_chave_gemini_api_aqui", "none", ""))
+        or (c_key and c_key not in ("sua_chave_anthropic_aqui", "none", ""))
+        or (d_key and d_key not in ("sua_chave_deepseek_aqui", "none", ""))
     )
 
 
 BYOK_RELAY_MESSAGE = (
-    "🔒 **Modelo Bring Your Own Key (BYOK) Ativo**\n\n"
-    "O servidor em nuvem (Render) opera sem chave central compartilhada para proteger as cotas dos estudantes.\n\n"
-    "👉 **Para utilizar com sua própria chave gratuita:**\n"
-    "Inicie o assistente no seu computador pelo arquivo `iniciar.bat` (configurado com sua chave própria no `configurar.bat`)."
+    "🔒 **Desktop Runner Offline (BYOK)**\n\n"
+    "O servidor na nuvem opera em modo seguro sem consumir chaves de terceiros.\n\n"
+    "👉 **Para resolver com sua própria chave gratuita:**\n"
+    "1. Inicie o assistente no seu computador pelo arquivo `iniciar.bat` (já configurado no `configurar.bat`).\n"
+    "2. Assim que o assistente local estiver aberto, repita o comando `/resolver` para processar pelo seu PC!\n\n"
+    "💡 *Dica:* Se preferir resolução direta na nuvem 24/7 sem precisar ligar o PC, adicione sua `GEMINI_API_KEY` nas variáveis de ambiente do Render."
 )
 
 
@@ -1892,10 +1907,6 @@ async def _execute_solve_flow(
     modo: str = "resolver",
     channel: Optional[Any] = None
 ):
-    if _is_relay_mode() and not _has_ai_key_configured():
-        await send_func(BYOK_RELAY_MESSAGE)
-        return
-
     assignments = await _get_current_assignments()
 
     target_item = None
@@ -1917,6 +1928,40 @@ async def _execute_solve_flow(
             "due_date": "Sob demanda",
             "time_remaining": "N/A"
         }
+
+    title = target_item.get("title", tarefa)
+    course = target_item.get("course", "Geral")
+
+    if _is_relay_mode() and not _has_ai_key_configured():
+        from src.notifier.bridge_manager import cloud_bridge
+        if await cloud_bridge.is_desktop_online():
+            task_id = await cloud_bridge.dispatch_action(
+                action="redo_task" if is_refazer else "solve_task",
+                assignment_id=str(target_item.get("id", tarefa)),
+                assignment_url=str(target_item.get("url", "")),
+                channel_id=str(getattr(channel, "id", 0)),
+                message_id="",
+                requester="Discord (Relay)",
+                title=title,
+                course=course,
+                file_to_submit="",
+                structured_answers={
+                    "instrucoes": instrucoes,
+                    "extra_files": [str(p) for p in (extra_files or [])],
+                    "is_refazer": is_refazer,
+                    "modo": modo,
+                    "tarefa": tarefa
+                }
+            )
+            await send_func(
+                f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                f"A atividade **{title}** ({course}) está sendo processada no seu computador local com a sua chave do Gemini.\n"
+                f"Acompanhe o andamento e aguarde o rascunho ser enviado aqui em instantes!"
+            )
+            return
+        else:
+            await send_func(BYOK_RELAY_MESSAGE)
+            return
 
     solver = AISolver()
     # AISolver usa o provedor ativo (Gemini/Claude/DeepSeek) — BYOK

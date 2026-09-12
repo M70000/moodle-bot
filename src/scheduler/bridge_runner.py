@@ -237,6 +237,45 @@ class BridgeRunner:
             answers = task.get("structured_answers") or {}
             return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=True)
 
+        elif action in ("solve_task", "redo_task"):
+            from src.notifier.discord_bot import _execute_solve_flow, bot
+            target_ch_id = int(task.get("channel_id") or 0)
+            target_ch = None
+            if bot.is_ready() and target_ch_id:
+                target_ch = bot.get_channel(target_ch_id)
+                if not target_ch:
+                    try:
+                        target_ch = await bot.fetch_channel(target_ch_id)
+                    except Exception:
+                        target_ch = None
+
+            async def _send_via_discord(*args, **kwargs):
+                if target_ch and hasattr(target_ch, "send"):
+                    return await target_ch.send(*args, **kwargs)
+                elif settings.DISCORD_CHANNEL_ID and bot.is_ready():
+                    ch = bot.get_channel(settings.DISCORD_CHANNEL_ID)
+                    if ch:
+                        return await ch.send(*args, **kwargs)
+                return None
+
+            answers = task.get("structured_answers") or {}
+            instrucoes = answers.get("instrucoes")
+            extra_files_str = answers.get("extra_files") or []
+            extra_paths = [Path(p) for p in extra_files_str if Path(p).exists()]
+            modo = answers.get("modo", "resolver")
+            tarefa_target = answers.get("tarefa") or task.get("assignment_id") or task.get("title") or ""
+
+            await _execute_solve_flow(
+                send_func=_send_via_discord,
+                tarefa=tarefa_target,
+                instrucoes=instrucoes,
+                extra_files=extra_paths,
+                is_refazer=(action == "redo_task"),
+                modo=modo,
+                channel=target_ch
+            )
+            return True, f"Resolução de '{title}' concluída com sucesso pelo Desktop Runner."
+
         return False, f"Ação desconhecida: {action}"
 
     async def run_loop(self, poll_interval: float = 4.0):

@@ -206,6 +206,18 @@ class Settings(BaseSettings):
         description="Tempo máximo (em segundos) para o usuário concluir o login manual e 2FA no MinhaUFMG"
     )
 
+    @field_validator("GEMINI_API_KEY", mode="before")
+    @classmethod
+    def fallback_google_api_key(cls, v) -> str:
+        """Permite que GOOGLE_API_KEY sirva como fallback automático se GEMINI_API_KEY estiver vazio."""
+        val = str(v or "").strip()
+        if not val or val == "sua_chave_gemini_api_aqui":
+            import os
+            g_key = (os.environ.get("GOOGLE_API_KEY") or "").strip()
+            if g_key and g_key != "sua_chave_gemini_api_aqui":
+                return g_key
+        return val
+
     @field_validator("MOODLE_BASE_URL")
     @classmethod
     def normalize_moodle_url(cls, v: str) -> str:

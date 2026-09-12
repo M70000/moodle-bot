@@ -90,6 +90,26 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status["courses_count"], 3)
         self.assertEqual(status["assignments_count"], 2)
 
+    @patch("src.scheduler.bridge_runner.urllib.request.urlopen")
+    async def test_bridge_runner_solve_task_execution(self, mock_urlopen):
+        """Testa o despacho e execução de solve_task pelo BridgeRunner no Desktop."""
+        runner = BridgeRunner(render_url="https://mock-app.onrender.com")
+
+        task = {
+            "task_id": "bridge_solv1",
+            "action": "solve_task",
+            "assignment_id": "999",
+            "title": "Trabalho 1",
+            "channel_id": "123",
+            "structured_answers": {"instrucoes": "resolver com calma", "modo": "resolver"}
+        }
+
+        with patch("src.notifier.discord_bot._execute_solve_flow", new_callable=AsyncMock) as mock_solve:
+            success, msg = await runner._execute_task(task)
+            self.assertTrue(success)
+            self.assertIn("Trabalho 1", msg)
+            mock_solve.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
