@@ -130,15 +130,22 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
             tasks = await cloud_bridge.get_pending_tasks(channel_id=channel_id)
             response_dict = {"tasks": tasks, "count": len(tasks)}
 
-        elif path == "/api/bridge/courses":
+        elif path in ("/api/bridge/courses", "/api/bridge/sync"):
             if method == "POST":
-                # Desktop publica a lista de disciplinão disponíveis
+                # Desktop publica a lista de disciplinas e catálogo de tarefas
                 try:
                     data = json.loads(body_bytes.decode("utf-8"))
-                    courses = data.get("courses", [])
-                    await cloud_bridge.publish_courses(courses)
-                    response_dict = {"ok": True, "courses_count": len(courses)}
-                    print(f"[Bridge] Desktop publicou {len(courses)} disciplinas.")
+                    courses = data.get("courses")
+                    assignments = data.get("assignments")
+                    await cloud_bridge.publish_state(courses=courses, assignments=assignments)
+                    c_count = len(courses) if courses is not None else 0
+                    a_count = len(assignments) if assignments is not None else 0
+                    response_dict = {
+                        "ok": True,
+                        "courses_count": c_count,
+                        "assignments_count": a_count,
+                    }
+                    print(f"[Bridge] Desktop sincronizou {c_count} disciplinas e {a_count} tarefas.")
                 except Exception as e:
                     status_code = "400 Bad Request"
                     response_dict = {"error": str(e)}
@@ -151,6 +158,15 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                     "desktop_online": online,
                     "count": len(courses)
                 }
+
+        elif path == "/api/bridge/assignments":
+            assignments = await cloud_bridge.get_published_assignments()
+            online = await cloud_bridge.is_desktop_online()
+            response_dict = {
+                "assignments": assignments,
+                "desktop_online": online,
+                "count": len(assignments)
+            }
 
         elif path == "/api/bridge/desktop-status":
             status = await cloud_bridge.desktop_status()

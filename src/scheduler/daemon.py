@@ -220,6 +220,14 @@ class MoodleDaemon:
                 except Exception as chk_err:
                     console.print(f"[yellow]Aviso ao atualizar checklist diária no Notion: {chk_err}[/yellow]")
 
+            # Sincroniza estado com Render Hub (nuvem) se a ponte estiver configurada
+            if settings.RENDER_URL:
+                try:
+                    from src.scheduler.bridge_runner import bridge_runner
+                    await bridge_runner.publish_courses_to_hub()
+                except Exception as b_err:
+                    console.print(f"[yellow]Aviso ao sincronizar com Render Hub após varredura: {b_err}[/yellow]")
+
             console.print("[green]✔ Ciclo de varredura concluído com sucesso.[/green]")
 
         except Exception as e:

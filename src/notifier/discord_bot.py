@@ -150,16 +150,15 @@ def get_available_courses() -> List[str]:
             if p.is_dir() and not p.name.startswith("."):
                 courses_set.add(p.name)
 
-    # 2. Fallback: disciplinas das atividades no state.json
-    if not courses_set:
-        try:
-            state = DaemonState()
-            for item in state.data.get("assignments", {}).values():
-                course = item.get("course", "").strip()
-                if course:
-                    courses_set.add(course)
-        except Exception:
-            pass
+    # 2. Disciplinas das atividades no state.json
+    try:
+        state = DaemonState()
+        for item in state.data.get("assignments", {}).values():
+            course = item.get("course", "").strip()
+            if course:
+                courses_set.add(course)
+    except Exception:
+        pass
 
     return sorted(courses_set)
 
@@ -169,7 +168,56 @@ import os as _os
 
 def _is_relay_mode() -> bool:
     """Retorna True quando o bot está no modo relay (rodando no Render, sem execução local)."""
-    return _os.environ.get("BOT_MODE", "desktop").lower() == "relay"
+    return (
+        _os.environ.get("BOT_MODE", "desktop").lower() == "relay"
+        or bool(_os.environ.get("RENDER"))
+        or bool(_os.environ.get("RENDER_SERVICE_ID"))
+    )
+
+
+async def _get_current_assignments() -> Dict[str, Any]:
+    """Retorna o dicionário de tarefas ativas, adaptado para execução local ou relay no Render."""
+    if _is_relay_mode():
+        try:
+            from src.notifier.bridge_manager import cloud_bridge
+            assignments = await cloud_bridge.get_published_assignments()
+            if assignments:
+                return assignments
+        except Exception:
+            pass
+
+    # Tenta leitura local do state.json
+    try:
+        state = DaemonState()
+        local_assignments = state.data.get("assignments", {})
+        if local_assignments:
+            return local_assignments
+    except Exception:
+        pass
+
+    # Se local vazio (ex: Render sem flag explícita), tenta bridge como fallback
+    try:
+        from src.notifier.bridge_manager import cloud_bridge
+        return await cloud_bridge.get_published_assignments()
+    except Exception:
+        return {}
+
+
+def _get_sync_assignments() -> Dict[str, Any]:
+    """Retorna o catálogo de atividades para contextos síncronos."""
+    try:
+        state = DaemonState()
+        local_assignments = state.data.get("assignments", {})
+        if local_assignments:
+            return local_assignments
+    except Exception:
+        pass
+
+    try:
+        from src.notifier.bridge_manager import cloud_bridge
+        return cloud_bridge._published_assignments or {}
+    except Exception:
+        return {}
 
 
 async def course_autocomplete(
@@ -181,23 +229,33 @@ async def course_autocomplete(
     Funciona em dois modos:
     - Desktop (local): lê de storage/materials/ + assignments do state.json
     - Relay (Render): lê cursos publicados pelo desktop via Bridge API,
-      com fallback para o state.json sincronizado
+      com fallback para o catálogo de tarefas sincronizado
     """
     try:
+        courses: List[str] = []
         if _is_relay_mode():
             # Modo relay: busca cursos publicados pelo desktop no Render Hub
             from src.notifier.bridge_manager import cloud_bridge
             courses = await cloud_bridge.get_published_courses()
-
             if not courses:
-                # Desktop offline ou ainda não publicou — mostra dica e retorna vazio
-                return [app_commands.Choice(
-                    name="⚡ Inicie iniciar.bat no seu PC para ver suas disciplinas",
-                    value="__offline__"
-                )]
+                # Fallback: tenta extrair das tarefas publicadas via bridge
+                pub_assign = await cloud_bridge.get_published_assignments()
+                courses = sorted({
+                    item.get("course", "").strip()
+                    for item in pub_assign.values()
+                    if item.get("course")
+                })
         else:
-            # Modo desktop: leitura local (materials + state.json fallback)
+            # Modo desktop: leitura local (materials + state.json)
             courses = get_available_courses()
+
+        if not courses:
+            # Fallback cruzado
+            try:
+                from src.notifier.bridge_manager import cloud_bridge
+                courses = await cloud_bridge.get_published_courses()
+            except Exception:
+                pass
 
         if not courses:
             return [app_commands.Choice(
@@ -242,8 +300,13 @@ async def pending_task_autocomplete(
 ) -> List[app_commands.Choice[str]]:
     """Autocomplete para /resolver: exibe tarefas e questionários pendentes em ordem alfabética natural (A-Z)."""
     try:
-        state = DaemonState()
-        assignments = state.data.get("assignments", {})
+        assignments = await _get_current_assignments()
+        if not assignments:
+            return [app_commands.Choice(
+                name="⚡ Inicie iniciar.bat no seu PC para sincronizar as tarefas",
+                value="__offline__"
+            )]
+
         norm_curr = normalize_text(current)
         candidates = []
         for aid, item in assignments.items():
@@ -282,8 +345,13 @@ async def completed_task_autocomplete(
 ) -> List[app_commands.Choice[str]]:
     """Autocomplete para /refazer: exibe exclusivamente tarefas e questionários já concluídos em ordem alfabética natural."""
     try:
-        state = DaemonState()
-        assignments = state.data.get("assignments", {})
+        assignments = await _get_current_assignments()
+        if not assignments:
+            return [app_commands.Choice(
+                name="⚡ Inicie iniciar.bat no seu PC para sincronizar as tarefas",
+                value="__offline__"
+            )]
+
         norm_curr = normalize_text(current)
         candidates = []
         for aid, item in assignments.items():
@@ -319,8 +387,7 @@ def get_course_materials_for_task(tarefa_or_course: str) -> List[Path]:
     if not settings.STORAGE_MATERIALS_DIR.exists():
         return []
 
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = _get_sync_assignments()
     target_course = ""
 
     if tarefa_or_course in assignments:
@@ -1368,13 +1435,15 @@ def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
 
 def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
     """Gera o painel visual das atividades e questionários cadastrados no Moodle."""
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = _get_sync_assignments()
 
     if not assignments:
+        desc = "📋 Nenhuma atividade cadastrada no momento."
+        if _is_relay_mode():
+            desc += "\n\n⚡ **Dica:** O bot está operando em nuvem no Render. Inicie o `iniciar.bat` no seu computador para sincronizar suas tarefas locais."
         return discord.Embed(
             title="📚 Painel de Atividades - Moodle UFMG",
-            description="📋 Nenhuma atividade cadastrada no momento. O robô varre o Moodle periodicamente.",
+            description=desc,
             color=discord.Color.blue()
         )
 
@@ -1467,8 +1536,7 @@ async def build_status_embed() -> discord.Embed:
     mat_dir = settings.STORAGE_MATERIALS_DIR
     total_files = sum(len(list(p.glob("*.*"))) for p in mat_dir.iterdir() if p.is_dir()) if mat_dir.exists() else 0
 
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = await _get_current_assignments()
     quizzes = [a for a in assignments.values() if a.get("activity_type") == "quiz"]
     assigns = [a for a in assignments.values() if a.get("activity_type") != "quiz"]
 
@@ -1529,10 +1597,20 @@ def get_materiais_payload(disciplina: str):
             mat_dir = candidates[0]
             disciplina = mat_dir.name
         else:
+            if _is_relay_mode():
+                return None, (
+                    f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
+                    f"Inicie o `iniciar.bat` no seu PC para consultar e baixar os materiais diretamente pelo Discord!"
+                ), []
             return None, f"❌ Disciplina `{disciplina}` não encontrada em `storage/materials/`.", []
 
     files = [p for p in mat_dir.iterdir() if p.is_file() and p.suffix.lower() in [".pdf", ".csv", ".docx", ".zip"]]
     if not files:
+        if _is_relay_mode():
+            return None, (
+                f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
+                f"Inicie o `iniciar.bat` no seu PC para consultar e baixar os materiais diretamente pelo Discord!"
+            ), []
         return None, f"📚 Nenhum material baixado encontrado para `{disciplina}`.", []
 
     embed = discord.Embed(
@@ -1603,8 +1681,7 @@ async def _execute_solve_flow(
     is_refazer: bool = False,
     modo: str = "resolver"
 ):
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = await _get_current_assignments()
 
     target_item = None
     if tarefa in assignments:
@@ -1783,8 +1860,7 @@ async def enqueue_solve_flow(
     channel: Optional[Any] = None
 ) -> int:
     """Enfileira a resolução de uma tarefa ou questionário no TaskQueueManager."""
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = await _get_current_assignments()
 
     target_item = None
     if tarefa in assignments:
@@ -2433,8 +2509,7 @@ async def cmd_resolver_lote(
     material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = await _get_current_assignments()
 
     extra_files: List[Path] = []
     if arquivo:
@@ -3344,8 +3419,7 @@ async def prefix_resolver_lote(ctx: commands.Context, *, args: Optional[str] = N
         else:
             disciplina = args.strip() or None
 
-    state = DaemonState()
-    assignments = state.data.get("assignments", {})
+    assignments = await _get_current_assignments()
 
     pending_items = []
     norm_disc = normalize_text(disciplina) if disciplina else None

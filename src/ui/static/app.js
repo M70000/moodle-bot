@@ -97,6 +97,11 @@ async function loadConfig() {
     setInputValue('GEMINI_FALLBACK_TIMEOUT_SECONDS', config.GEMINI_FALLBACK_TIMEOUT_SECONDS || '60');
     setInputValue('GEMINI_FALLBACK_DELAY_SECONDS', config.GEMINI_FALLBACK_DELAY_SECONDS || '2.0');
 
+    setInputValue('ANTHROPIC_API_KEY', config.ANTHROPIC_API_KEY || '');
+    setInputValue('ANTHROPIC_MODEL', config.ANTHROPIC_MODEL || 'claude-haiku-4-5');
+    setInputValue('DEEPSEEK_API_KEY', config.DEEPSEEK_API_KEY || '');
+    setInputValue('DEEPSEEK_MODEL', config.DEEPSEEK_MODEL || 'deepseek-chat');
+
     const checkInterval = config.CHECK_INTERVAL_MINUTES || '30';
     setInputValue('CHECK_INTERVAL_MINUTES', checkInterval);
     setInputValue('CHECK_INTERVAL_MINUTES_SLIDER', checkInterval);
@@ -167,6 +172,11 @@ async function saveConfig() {
     GEMINI_TIMEOUT_SECONDS: getInputValue('GEMINI_TIMEOUT_SECONDS'),
     GEMINI_FALLBACK_TIMEOUT_SECONDS: getInputValue('GEMINI_FALLBACK_TIMEOUT_SECONDS'),
     GEMINI_FALLBACK_DELAY_SECONDS: getInputValue('GEMINI_FALLBACK_DELAY_SECONDS'),
+
+    ANTHROPIC_API_KEY: getInputValue('ANTHROPIC_API_KEY'),
+    ANTHROPIC_MODEL: getInputValue('ANTHROPIC_MODEL'),
+    DEEPSEEK_API_KEY: getInputValue('DEEPSEEK_API_KEY'),
+    DEEPSEEK_MODEL: getInputValue('DEEPSEEK_MODEL'),
 
     CHECK_INTERVAL_MINUTES: getInputValue('CHECK_INTERVAL_MINUTES'),
     EMERGENCY_SUBMIT_ENABLED: document.getElementById('EMERGENCY_SUBMIT_ENABLED').checked ? 'true' : 'false',

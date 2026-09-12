@@ -96,26 +96,40 @@ class BridgeRunner:
             console.print(f"[red]Erro ao reportar conclusão da tarefa {task_id} ao Render: {e}[/red]")
 
     async def publish_courses_to_hub(self, url_base: str = "") -> bool:
-        """Publica a lista de disciplinas locais no Render Hub (heartbeat de presença do desktop)."""
+        """Publica a lista de disciplinas e catálogo de tarefas no Render Hub (heartbeat de presença)."""
         base = url_base or self.render_url or (settings.RENDER_URL or "").rstrip("/")
         if not base:
             return False
         loop = asyncio.get_running_loop()
         try:
             from src.notifier.discord_bot import get_available_courses
+            from src.scheduler.state import DaemonState
             courses = get_available_courses()
-            url = f"{base}/api/bridge/courses"
-            payload = json.dumps({"courses": courses}).encode("utf-8")
+            try:
+                state = DaemonState()
+                assignments = state.data.get("assignments", {})
+            except Exception:
+                assignments = {}
+
+            url = f"{base}/api/bridge/sync"
+            payload = json.dumps({
+                "courses": courses,
+                "assignments": assignments
+            }).encode("utf-8")
             req = urllib.request.Request(
                 url, data=payload,
                 headers={"Content-Type": "application/json", "User-Agent": "MoodleDesktopRunner/1.0"}
             )
             await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=8))
-            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas publicadas no Hub.[/cyan]")
+            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas e {len(assignments)} tarefas sincronizadas com o Hub.[/cyan]")
             return True
         except Exception as e:
-            console.print(f"[yellow]Aviso ao publicar disciplinas no Hub: {e}[/yellow]")
+            console.print(f"[yellow]Aviso ao publicar estado no Hub: {e}[/yellow]")
             return False
+
+    async def sync_state_to_hub(self, url_base: str = "") -> bool:
+        """Alias conveniente para sincronização forçada de estado."""
+        return await self.publish_courses_to_hub(url_base)
 
     async def _execute_task(self, task: dict):
         action = task.get("action")

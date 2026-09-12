@@ -67,6 +67,29 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(count, 1)
                     mock_exec.assert_called_once()
 
+    async def test_publish_state_courses_and_assignments(self):
+        """Testa sincronização de disciplinas e catálogo de tarefas na ponte nuvem."""
+        manager = CloudBridgeManager()
+
+        courses = ["Cálculo 1", "Física 2", "Estatística"]
+        assignments = {
+            "101": {"id": "101", "title": "Lista 1", "course": "Cálculo 1"},
+            "102": {"id": "102", "title": "Questionário 2", "course": "Física 2"}
+        }
+
+        await manager.publish_state(courses=courses, assignments=assignments)
+
+        pub_courses = await manager.get_published_courses()
+        pub_assign = await manager.get_published_assignments()
+        status = await manager.desktop_status()
+
+        self.assertEqual(pub_courses, courses)
+        self.assertEqual(len(pub_assign), 2)
+        self.assertEqual(pub_assign["101"]["title"], "Lista 1")
+        self.assertTrue(status["online"])
+        self.assertEqual(status["courses_count"], 3)
+        self.assertEqual(status["assignments_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()

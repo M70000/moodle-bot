@@ -23,29 +23,42 @@ class CloudBridgeManager:
         self._completed_tasks: Dict[str, Dict[str, Any]] = {}
         self._lock = asyncio.Lock()
 
-        # Presença e cursos publicados pelo desktop runner
+        # Presença, cursos e tarefas publicados pelo desktop runner
         self._published_courses: List[str] = []
+        self._published_assignments: Dict[str, Dict[str, Any]] = {}
         self._desktop_last_seen: float = 0.0  # Unix timestamp
         self._DESKTOP_TIMEOUT_SECONDS = 300   # 5 min sem heartbeat → offline
 
     # ------------------------------------------------------------------
-    # Desktop presence & published courses
+    # Desktop presence & published state (courses + assignments)
     # ------------------------------------------------------------------
 
-    async def publish_courses(self, courses: List[str]) -> None:
-        """Recebe e armazena a lista de disciplinas publicada pelo desktop.
-
-        O desktop chama periodicamente (via POST /api/bridge/courses) para que
-        o autocomplete do bot no Render exiba as disciplinas corretas.
-        """
+    async def publish_state(
+        self,
+        courses: Optional[List[str]] = None,
+        assignments: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Recebe e armazena disciplinas e catálogo de tarefas do desktop runner."""
         async with self._lock:
-            self._published_courses = list(courses)
+            if courses is not None:
+                self._published_courses = list(courses)
+            if assignments is not None:
+                self._published_assignments = dict(assignments)
             self._desktop_last_seen = time.time()
+
+    async def publish_courses(self, courses: List[str]) -> None:
+        """Recebe e armazena a lista de disciplinas publicada pelo desktop (retrocompatibilidade)."""
+        await self.publish_state(courses=courses)
 
     async def get_published_courses(self) -> List[str]:
         """Retorna as disciplinas publicadas pelo desktop (ou lista vazia se offline)."""
         async with self._lock:
             return list(self._published_courses)
+
+    async def get_published_assignments(self) -> Dict[str, Dict[str, Any]]:
+        """Retorna as tarefas catalogadas publicadas pelo desktop (ou dict vazio se offline)."""
+        async with self._lock:
+            return dict(self._published_assignments)
 
     async def is_desktop_online(self) -> bool:
         """Retorna True se o desktop publicou presença nos últimos 5 minutos."""
@@ -65,6 +78,7 @@ class CloudBridgeManager:
                 "online": online,
                 "last_seen": self._desktop_last_seen or None,
                 "courses_count": len(self._published_courses),
+                "assignments_count": len(self._published_assignments),
             }
 
     # ------------------------------------------------------------------
