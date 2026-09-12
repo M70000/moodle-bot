@@ -1,12 +1,13 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Moodle AI Assistant [UFMG-SYS] // Config Telemetry</title>
+  <title>Moodle AI Assistant · Configurações UFMG</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=JetBrains+Mono:wght@400;500;700;800&family=Plus+Jakarta+Sans:wght@700;800&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -21,8 +22,8 @@
           </svg>
         </div>
         <div class="brand-text">
-          <h2>MOODLE // AI</h2>
-          <span class="badge badge-ufmg">[ UFMG // BRUTALIST ]</span>
+          <h2>Moodle AI</h2>
+          <span class="badge badge-ufmg">UFMG</span>
         </div>
       </div>
 
@@ -31,21 +32,21 @@
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
           </svg>
-          <span>[01] // MOODLE & AUTH</span>
+          <span>Moodle & Autenticação</span>
         </button>
 
         <button class="nav-item" data-tab="tab-discord">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
           </svg>
-          <span>[02] // DISCORD GATEWAY</span>
+          <span>Discord Bot</span>
         </button>
 
         <button class="nav-item" data-tab="tab-gemini">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm0 14a4 4 0 1 1 4-4 4 4 0 0 1-4 4z"></path>
           </svg>
-          <span>[03] // GEMINI COGNITION</span>
+          <span>Inteligência Artificial</span>
         </button>
 
         <button class="nav-item" data-tab="tab-scheduler">
@@ -53,30 +54,30 @@
             <circle cx="12" cy="12" r="10"></circle>
             <polyline points="12 6 12 12 16 14"></polyline>
           </svg>
-          <span>[04] // TELEMETRY & ALERTS</span>
+          <span>Prazos & Alertas</span>
         </button>
 
         <button class="nav-item" data-tab="tab-storage">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
           </svg>
-          <span>[05] // STORAGE & BUFFERS</span>
+          <span>Armazenamento</span>
         </button>
       </nav>
 
       <div class="sidebar-status">
         <div class="status-header">
-          <span class="status-title">[ TELEMETRY // CORE ]</span>
-          <span id="session-badge" class="badge badge-warning">CHECKING</span>
+          <span class="status-title">Status da Sessão</span>
+          <span id="session-badge" class="badge badge-warning">Verificando</span>
         </div>
-        <p id="session-info" class="status-subtext">INICIALIZANDO BUFFER...</p>
+        <p id="session-info" class="status-subtext">Verificando autenticação...</p>
         <button id="btn-login-quick" class="btn btn-sm btn-outline btn-full">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
             <polyline points="10 17 15 12 10 7"></polyline>
             <line x1="15" y1="12" x2="3" y2="12"></line>
           </svg>
-          [ LOGIN // MINHAUFMG ]
+          Login MinhaUFMG
         </button>
       </div>
     </aside>
@@ -128,8 +129,11 @@
               </div>
               <div class="preset-links">
                 <span>Presets:</span>
-                <button type="button" class="btn-link" onclick="setPreset('MOODLE_BASE_URL', 'https://virtual.ufmg.br')">UFMG Virtual (Graduação)</button>
-                <button type="button" class="btn-link" onclick="setPreset('MOODLE_BASE_URL', 'https://moodle.grad.ufmg.br')">Moodle Graduação Alternativo</button>
+                <button type="button" class="btn-link"
+                  onclick="setPreset('MOODLE_BASE_URL', 'https://virtual.ufmg.br')">UFMG Virtual (Graduação)</button>
+                <button type="button" class="btn-link"
+                  onclick="setPreset('MOODLE_BASE_URL', 'https://moodle.grad.ufmg.br')">Moodle Graduação
+                  Alternativo</button>
               </div>
               <div id="moodle-test-result" class="test-feedback"></div>
             </div>
@@ -204,11 +208,13 @@
           <div class="card-body">
             <div class="form-group">
               <label for="DISCORD_BOT_TOKEN">Token do Bot</label>
-              <div class="input-password-wrapper">
-                <input type="password" id="DISCORD_BOT_TOKEN" placeholder="Cole o token do seu bot do Discord aqui...">
-                <button type="button" class="btn-toggle-password" onclick="togglePassword('DISCORD_BOT_TOKEN')">
-                  👁️
-                </button>
+              <div class="input-action-group">
+                <div class="input-with-eye">
+                  <input type="password" id="DISCORD_BOT_TOKEN" placeholder="Cole o token do seu bot do Discord aqui...">
+                  <button type="button" class="btn-toggle-password" onclick="togglePassword('DISCORD_BOT_TOKEN')" title="Mostrar/ocultar token">
+                    👁️
+                  </button>
+                </div>
                 <button type="button" id="btn-test-discord" class="btn btn-secondary">
                   Testar Token
                 </button>
@@ -231,13 +237,15 @@
               <div class="info-icon">💡</div>
               <div class="info-text">
                 <strong>Como criar seus canais privados?</strong>
-                Com o bot rodando no Discord, use o comando <code>!meuscanais</code> em qualquer canal do servidor. O bot criará automaticamente a categoria e os 5 canais exclusivos para você.
+                Com o bot rodando no Discord, use o comando <code>!meuscanais</code> em qualquer canal do servidor. O
+                bot criará automaticamente a categoria e os 5 canais exclusivos para você.
               </div>
             </div>
             <div class="form-group">
-              <label for="DISCORD_CHANNEL_ID">Canal Principal de Alertas & Revisões <span class="badge badge-required">Obrigatório</span></label>
+              <label for="DISCORD_CHANNEL_ID">Canal Principal de Alertas & Revisões <span
+                  class="badge badge-required">Obrigatório</span></label>
               <input type="text" id="DISCORD_CHANNEL_ID" placeholder="Ex: 112233445566778899">
-              <small class="form-help">ID do canal privado onde chegam os rascunhos com botões [✅ Aprovar] e [⏱️ Adiar].</small>
+              <small class="form-help">ID do canal privado onde chegam os rascunhos com botões de Aprovar e Adiar.</small>
             </div>
 
             <div class="grid-3">
@@ -262,21 +270,25 @@
               <div class="form-group">
                 <label for="DISCORD_STUDY_CHANNEL_ID">Canal de Estudos & Simulados</label>
                 <input type="text" id="DISCORD_STUDY_CHANNEL_ID" placeholder="0 (responde no canal chamado)">
-                <small class="form-help">Canal exclusivo para <code>/perguntar</code>, <code>/quiz</code> e <code>/flashcards</code>.</small>
+                <small class="form-help">Canal exclusivo para <code>/perguntar</code>, <code>/quiz</code> e
+                  <code>/flashcards</code>.</small>
               </div>
             </div>
 
             <div class="form-group mt-4">
               <label for="RENDER_URL">URL da Ponte Nuvem no Render (Opcional para envio remoto)</label>
               <input type="url" id="RENDER_URL" placeholder="https://moodle-discord-bot.onrender.com">
-              <small class="form-help">Insira a URL do seu bot no Render para que cliques em [Aprovar e Enviar] no Discord disparem a submissão no Moodle automaticamente pelo seu PC.</small>
+              <small class="form-help">Insira a URL do seu bot no Render para que cliques em Aprovar e Enviar no
+                Discord disparem a submissão no Moodle automaticamente pelo seu PC.</small>
             </div>
 
             <div class="info-callout">
               <div class="info-icon">💡</div>
               <div class="info-text">
                 <strong>Como pegar o ID de um canal no Discord?</strong>
-                No Discord, vá em <em>Configurações de Usuário > Avançado > Modo de Desenvolvedor</em> (ative-o). Depois, clique com o botão direito sobre o canal desejado no servidor e escolha <strong>"Copiar ID do Canal"</strong>.
+                No Discord, vá em <em>Configurações de Usuário > Avançado > Modo de Desenvolvedor</em> (ative-o).
+                Depois, clique com o botão direito sobre o canal desejado no servidor e escolha <strong>"Copiar ID do
+                  Canal"</strong>.
               </div>
             </div>
           </div>
@@ -290,9 +302,10 @@
         <div class="card card-industrial-box byok-box" style="margin-bottom: 1.5rem;">
           <div class="box-header-row">
             <div>
-              <div class="tag-label">[ MULTI-PROVIDER AI ORCHESTRATION ]</div>
-              <h4 class="box-title">🤖 PROVEDOR PRINCIPAL E CADEIA DE CONTINGÊNCIA</h4>
-              <p class="box-desc">Selecione o motor primário de IA e configure a ordem de reserva caso ocorra estouro de cota, rate limit (429) ou timeout.</p>
+              <div class="tag-label">Orquestração Multi-Provider</div>
+              <h4 class="box-title">🤖 Provedor Principal e Cadeia de Contingência</h4>
+              <p class="box-desc">Selecione o motor primário de IA e configure a ordem de reserva caso ocorra estouro de
+                cota, rate limit (429) ou timeout.</p>
             </div>
           </div>
           <div class="card-body" style="padding-top: 1rem;">
@@ -361,23 +374,26 @@
             <div class="card card-industrial-box byok-box">
               <div class="box-header-row">
                 <div>
-                  <div class="tag-label">[ PROTOCOL // BYOK FREE ACCESS ]</div>
-                  <h4 class="box-title">🔑 OBTENÇÃO DE CHAVE GOOGLE GEMINI (30 SEGUNDOS)</h4>
-                  <p class="box-desc">1. ACESSE GOOGLE AI STUDIO >>> 2. CLIQUE EM "CREATE API KEY" >>> 3. INJETE O TOKEN ABAIXO.</p>
+                  <div class="tag-label">Acesso Gratuito BYOK</div>
+                  <h4 class="box-title">🔑 Obtenção de Chave Google Gemini</h4>
+                  <p class="box-desc">1. Acesse o Google AI Studio > 2. Clique em "Create API Key" > 3. Cole sua chave abaixo.</p>
                 </div>
-                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="btn btn-primary btn-sm" style="white-space: nowrap;">
-                  [ GOOGLE AI STUDIO ↗ ]
+                <a href="https://aistudio.google.com/app/apikey" target="_blank" class="btn btn-primary btn-sm"
+                  style="white-space: nowrap;">
+                  Google AI Studio ↗
                 </a>
               </div>
             </div>
 
             <div class="form-group">
               <label for="GEMINI_API_KEY">API Key do Google AI Studio</label>
-              <div class="input-password-wrapper">
-                <input type="password" id="GEMINI_API_KEY" placeholder="AIzaSy...">
-                <button type="button" class="btn-toggle-password" onclick="togglePassword('GEMINI_API_KEY')">
-                  👁️
-                </button>
+              <div class="input-action-group">
+                <div class="input-with-eye">
+                  <input type="password" id="GEMINI_API_KEY" placeholder="AIzaSy...">
+                  <button type="button" class="btn-toggle-password" onclick="togglePassword('GEMINI_API_KEY')" title="Mostrar/ocultar chave">
+                    👁️
+                  </button>
+                </div>
                 <button type="button" id="btn-test-gemini" class="btn btn-secondary">
                   Testar Chave Gemini
                 </button>
@@ -459,7 +475,8 @@
         <div class="card">
           <div class="card-header">
             <div>
-              <h3>Anthropic Claude <span class="badge badge-secondary" style="font-size:10px;margin-left:6px;">BYOK</span></h3>
+              <h3>Anthropic Claude <span class="badge badge-secondary"
+                  style="font-size:10px;margin-left:6px;">BYOK</span></h3>
               <p>Configure sua chave da Anthropic para usar Claude como provedor principal ou na contingência.</p>
             </div>
             <a href="https://console.anthropic.com/" target="_blank" class="btn btn-outline btn-sm">Obter Chave ↗</a>
@@ -468,9 +485,12 @@
             <div class="grid-2">
               <div class="form-group">
                 <label for="ANTHROPIC_API_KEY">API Key do Anthropic</label>
-                <div class="input-password-wrapper">
-                  <input type="password" id="ANTHROPIC_API_KEY" placeholder="sk-ant-...">
-                  <button type="button" class="btn-toggle-password" onclick="togglePassword('ANTHROPIC_API_KEY')">👁️</button>
+                <div class="input-action-group">
+                  <div class="input-with-eye">
+                    <input type="password" id="ANTHROPIC_API_KEY" placeholder="sk-ant-...">
+                    <button type="button" class="btn-toggle-password"
+                      onclick="togglePassword('ANTHROPIC_API_KEY')" title="Mostrar/ocultar chave">👁️</button>
+                  </div>
                   <button type="button" id="btn-test-claude" class="btn btn-secondary">Testar Chave Claude</button>
                 </div>
                 <div id="claude-test-result" class="test-feedback"></div>
@@ -480,8 +500,8 @@
                 <label for="ANTHROPIC_MODEL">Modelo Claude</label>
                 <select id="ANTHROPIC_MODEL">
                   <option value="claude-haiku-4-5">claude-haiku-4-5 (Rápido · Econômico)</option>
-                  <option value="claude-sonnet-4-5">claude-sonnet-4-5 (Balanceado)</option>
-                  <option value="claude-opus-4-5">claude-opus-4-5 (Máximo · Lento)</option>
+                  <option value="claude-sonnet-5">claude-sonnet-5 (Balanceado)</option>
+                  <option value="claude-opus-5">claude-opus-5 (Máximo · Lento)</option>
                 </select>
               </div>
             </div>
@@ -501,9 +521,12 @@
             <div class="grid-2">
               <div class="form-group">
                 <label for="DEEPSEEK_API_KEY">API Key do DeepSeek</label>
-                <div class="input-password-wrapper">
-                  <input type="password" id="DEEPSEEK_API_KEY" placeholder="sk-...">
-                  <button type="button" class="btn-toggle-password" onclick="togglePassword('DEEPSEEK_API_KEY')">👁️</button>
+                <div class="input-action-group">
+                  <div class="input-with-eye">
+                    <input type="password" id="DEEPSEEK_API_KEY" placeholder="sk-...">
+                    <button type="button" class="btn-toggle-password"
+                      onclick="togglePassword('DEEPSEEK_API_KEY')" title="Mostrar/ocultar chave">👁️</button>
+                  </div>
                   <button type="button" id="btn-test-deepseek" class="btn btn-secondary">Testar Chave DeepSeek</button>
                 </div>
                 <div id="deepseek-test-result" class="test-feedback"></div>
@@ -534,11 +557,14 @@
             <div class="form-group">
               <label for="CHECK_INTERVAL_MINUTES">Intervalo de Varredura (Minutos)</label>
               <div class="slider-row">
-                <input type="range" id="CHECK_INTERVAL_MINUTES_SLIDER" min="5" max="120" step="5" value="30" oninput="syncSlider('CHECK_INTERVAL_MINUTES_SLIDER', 'CHECK_INTERVAL_MINUTES')">
-                <input type="number" id="CHECK_INTERVAL_MINUTES" min="5" max="240" value="30" oninput="syncSlider('CHECK_INTERVAL_MINUTES', 'CHECK_INTERVAL_MINUTES_SLIDER')">
+                <input type="range" id="CHECK_INTERVAL_MINUTES_SLIDER" min="5" max="120" step="5" value="30"
+                  oninput="syncSlider('CHECK_INTERVAL_MINUTES_SLIDER', 'CHECK_INTERVAL_MINUTES')">
+                <input type="number" id="CHECK_INTERVAL_MINUTES" min="5" max="240" value="30"
+                  oninput="syncSlider('CHECK_INTERVAL_MINUTES', 'CHECK_INTERVAL_MINUTES_SLIDER')">
                 <span class="unit">minutos</span>
               </div>
-              <small class="form-help">Recomendado: entre 15 e 30 minutos para equilíbrio ideal de monitoramento e carga.</small>
+              <small class="form-help">Recomendado: entre 15 e 30 minutos para equilíbrio ideal de monitoramento e
+                carga.</small>
             </div>
           </div>
         </div>
@@ -563,7 +589,9 @@
               <div class="warning-icon">⚠️</div>
               <div class="warning-text">
                 <strong>Atenção de Segurança:</strong>
-                Por padrão, o bot <em>NUNCA</em> submete sozinho para preservar 100% de controle humano. Se você ativar esta opção, caso uma tarefa esteja com rascunho gerado e falte menos de 1 minuto sem que você tenha clicado em aprovar ou adiar no Discord, o bot fará o envio para evitar nota zero por prazo vencido.
+                Por padrão, o bot <em>NUNCA</em> submete sozinho para preservar 100% de controle humano. Se você ativar
+                esta opção, caso uma tarefa esteja com rascunho gerado e falte menos de 1 minuto sem que você tenha
+                clicado em aprovar ou adiar no Discord, o bot fará o envio para evitar nota zero por prazo vencido.
               </div>
             </div>
           </div>
@@ -614,4 +642,5 @@
 
   <script src="app.js"></script>
 </body>
+
 </html>

@@ -146,7 +146,7 @@ class Settings(BaseSettings):
     )
     ANTHROPIC_MODEL: str = Field(
         default="claude-haiku-4-5",
-        description="Modelo Claude a usar (claude-opus-4-5, claude-sonnet-4-5, claude-haiku-4-5)"
+        description="Modelo Claude a usar (claude-opus-5, claude-sonnet-5, claude-haiku-4-5)"
     )
 
     # DeepSeek (BYOK alternativo)
