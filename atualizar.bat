@@ -46,5 +46,5 @@ echo ============================================================
 echo.
 echo Suas configuracoes locais .env e sua sessao do Moodle foram
 echo estritamente preservadas intactas.
-echo.
+-echo.
 pause
