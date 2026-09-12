@@ -241,11 +241,13 @@ class MoodleQuizAutomator:
                 "questions": []
             }
 
+        p = None
+        browser = None
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
-                context = await browser.new_context(storage_state=str(self.auth.cookies_path))
-                page = await context.new_page()
+            p = await async_playwright().start()
+            browser = await p.chromium.launch(headless=True)
+            context = await browser.new_context(storage_state=str(self.auth.cookies_path))
+            page = await context.new_page()
 
             try:
                 try:
@@ -423,7 +425,16 @@ class MoodleQuizAutomator:
                     "error": str(e)
                 }
             finally:
-                await browser.close()
+                if browser:
+                    try:
+                        await browser.close()
+                    except Exception:
+                        pass
+                if p:
+                    try:
+                        await p.stop()
+                    except Exception:
+                        pass
         except Exception as e:
             console.print(f"[yellow]Aviso: Falha ao inicializar Playwright para quiz ({e}). Prosseguindo com resolução direta via IA...[/yellow]")
             await _emit_log(on_log, f"Aviso ao inicializar navegador ({e}). Prosseguindo com resolução direta via IA...")

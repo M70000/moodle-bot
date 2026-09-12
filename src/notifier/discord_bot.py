@@ -73,6 +73,7 @@ class DiscordLiveReporter:
         self.logs.append(f"[{timestamp}] {clean_text}")
         if len(self.logs) > 12:
             self.logs = self.logs[-12:]
+        console.print(f"[dim cyan]⚡ [Live Log {timestamp}][/dim cyan] {clean_text}")
 
         now = time.time()
         if now - self._last_edit_time >= self._edit_throttle_seconds:

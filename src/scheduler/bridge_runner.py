@@ -32,10 +32,7 @@ class BridgeRunner:
         if not url_base:
             return 0
 
-        channel_id = str(settings.DISCORD_CHANNEL_ID or 0)
         url = f"{url_base}/api/bridge/pending"
-        if channel_id and channel_id != "0":
-            url += f"?channel_id={channel_id}"
 
         loop = asyncio.get_running_loop()
         try:
@@ -51,6 +48,8 @@ class BridgeRunner:
             task_id = task.get("task_id")
             if not task_id:
                 continue
+
+            console.print(f"[bold green]📥 Tarefa recebida da Nuvem (ID: {task_id}):[/bold green] {task.get('title')} ({task.get('action')})")
 
             # Marca como in_progress no Render
             await self._claim_task(task_id, url_base)
@@ -241,29 +240,69 @@ class BridgeRunner:
             from src.notifier.discord_bot import _execute_solve_flow, bot
             target_ch_id = int(task.get("channel_id") or 0)
             target_ch = None
-            if bot.is_ready() and target_ch_id:
-                target_ch = bot.get_channel(target_ch_id)
-                if not target_ch:
-                    try:
+            if target_ch_id:
+                try:
+                    if bot.is_ready():
+                        target_ch = bot.get_channel(target_ch_id)
+                    if not target_ch:
                         target_ch = await bot.fetch_channel(target_ch_id)
-                    except Exception:
-                        target_ch = None
+                except Exception as ch_err:
+                    console.print(f"[yellow]Nota ao obter canal do Discord {target_ch_id}: {ch_err}[/yellow]")
 
             async def _send_via_discord(*args, **kwargs):
                 if target_ch and hasattr(target_ch, "send"):
                     return await target_ch.send(*args, **kwargs)
-                elif settings.DISCORD_CHANNEL_ID and bot.is_ready():
-                    ch = bot.get_channel(settings.DISCORD_CHANNEL_ID)
-                    if ch:
-                        return await ch.send(*args, **kwargs)
+                elif settings.DISCORD_CHANNEL_ID:
+                    try:
+                        ch = bot.get_channel(settings.DISCORD_CHANNEL_ID)
+                        if not ch:
+                            ch = await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
+                        if ch:
+                            return await ch.send(*args, **kwargs)
+                    except Exception:
+                        pass
                 return None
 
             answers = task.get("structured_answers") or {}
             instrucoes = answers.get("instrucoes")
             extra_files_str = answers.get("extra_files") or []
-            extra_paths = [Path(p) for p in extra_files_str if Path(p).exists()]
+            extra_paths = []
+            for p_str in extra_files_str:
+                p = Path(p_str)
+                if p.exists() and p.is_file():
+                    extra_paths.append(p)
+                    continue
+
+                filename = p.name
+                course_name = task.get("course", "")
+                from src.scraper.moodle_scraper import sanitize_filename
+                candidates = []
+                if course_name:
+                    candidates.append(Path(settings.STORAGE_MATERIALS_PATH) / sanitize_filename(course_name) / filename)
+                    candidates.append(Path(settings.STORAGE_MATERIALS_PATH) / course_name / filename)
+
+                mat_root = Path(settings.STORAGE_MATERIALS_PATH)
+                if mat_root.exists():
+                    for found_path in mat_root.rglob(filename):
+                        if found_path.is_file():
+                            candidates.append(found_path)
+                            break
+
+                candidates.append(Path("storage/submissions/temp_uploads") / filename)
+
+                for cand in candidates:
+                    if cand.exists() and cand.is_file():
+                        extra_paths.append(cand)
+                        break
+
+            if extra_paths:
+                console.print(f"[cyan]📚 Materiais de apoio identificados no desktop ({len(extra_paths)}):[/cyan] {', '.join(p.name for p in extra_paths)}")
+            elif extra_files_str:
+                console.print(f"[yellow]⚠️ Materiais solicitados pela nuvem não encontrados localmente: {extra_files_str}[/yellow]")
+
             modo = answers.get("modo", "resolver")
-            tarefa_target = answers.get("tarefa") or task.get("assignment_id") or task.get("title") or ""
+            assignment_url = task.get("assignment_url", "")
+            tarefa_target = assignment_url or answers.get("tarefa") or task.get("assignment_id") or task.get("title") or ""
 
             await _execute_solve_flow(
                 send_func=_send_via_discord,

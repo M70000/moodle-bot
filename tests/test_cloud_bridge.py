@@ -101,14 +101,22 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
             "assignment_id": "999",
             "title": "Trabalho 1",
             "channel_id": "123",
-            "structured_answers": {"instrucoes": "resolver com calma", "modo": "resolver"}
+            "structured_answers": {
+                "instrucoes": "resolver com calma",
+                "modo": "resolver",
+                "extra_files": ["/opt/render/project/src/storage/materials/Calc/resumo.pdf"]
+            }
         }
 
-        with patch("src.notifier.discord_bot._execute_solve_flow", new_callable=AsyncMock) as mock_solve:
+        with patch("src.notifier.discord_bot._execute_solve_flow", new_callable=AsyncMock) as mock_solve, \
+             patch("pathlib.Path.exists", return_value=True), \
+             patch("pathlib.Path.is_file", return_value=True):
             success, msg = await runner._execute_task(task)
             self.assertTrue(success)
             self.assertIn("Trabalho 1", msg)
             mock_solve.assert_called_once()
+            _, kwargs = mock_solve.call_args
+            self.assertTrue(len(kwargs.get("extra_files", [])) >= 1)
 
 
 if __name__ == "__main__":
