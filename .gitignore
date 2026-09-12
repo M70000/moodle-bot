@@ -80,8 +80,6 @@ node_modules/
 package-lock.json
 package.json
 
-# Scratch / arquivos temporários de análise
-scratch/*.py
-scratch/*.json
-scratch/*.csv
+# Scratch / arquivos temporários de análise e testes
+scratch/
 
