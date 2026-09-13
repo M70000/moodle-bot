@@ -100,6 +100,13 @@ class TaskQueueManager:
         target_ch = settings.DISCORD_QUEUE_CHANNEL_ID or settings.DISCORD_CHANNEL_ID
         self._dashboard_channel_id = int(target_ch) if target_ch else 0
 
+    def set_dashboard_channel(self, channel_id: int):
+        """Define explicitamente o canal do Discord para o painel da fila (ex: canal privado do usuário)."""
+        if channel_id and int(channel_id) > 0:
+            self._dashboard_channel_id = int(channel_id)
+            if self._discord_bot:
+                asyncio.create_task(self.update_discord_dashboard())
+
     def is_busy(self) -> bool:
         """Indica se há alguma tarefa em execução no momento."""
         return self._running_item is not None
@@ -288,21 +295,66 @@ class TaskQueueManager:
         embed.set_footer(text="Moodle Bot UFMG • Fila Centralizada")
         return embed
 
+    async def _resolve_target_channel(self) -> Optional[Any]:
+        """Localiza o canal de fila adequado (configurado ou auto-detectado)."""
+        if not self._discord_bot:
+            return None
+
+        # 1. Canal explicitamente configurado em memória
+        if self._dashboard_channel_id and int(self._dashboard_channel_id) > 0:
+            ch = self._discord_bot.get_channel(int(self._dashboard_channel_id))
+            if not ch:
+                try:
+                    ch = await self._discord_bot.fetch_channel(int(self._dashboard_channel_id))
+                except Exception:
+                    ch = None
+            if ch:
+                return ch
+
+        # 2. Canal configurado nas variáveis de ambiente
+        target_env = settings.DISCORD_QUEUE_CHANNEL_ID
+        if target_env and int(target_env) > 0:
+            ch = self._discord_bot.get_channel(int(target_env))
+            if not ch:
+                try:
+                    ch = await self._discord_bot.fetch_channel(int(target_env))
+                except Exception:
+                    ch = None
+            if ch:
+                self._dashboard_channel_id = ch.id
+                return ch
+
+        # 3. Auto-detecção no Discord: busca canais nomeados com 'fila' ou 'fila-tarefas'
+        if hasattr(self._discord_bot, "guilds"):
+            for guild in self._discord_bot.guilds:
+                for ch in getattr(guild, "text_channels", []):
+                    c_name = ch.name.lower()
+                    if "fila" in c_name:
+                        self._dashboard_channel_id = ch.id
+                        return ch
+
+        # 4. Fallback para DISCORD_CHANNEL_ID geral
+        fb_id = settings.DISCORD_CHANNEL_ID
+        if fb_id and int(fb_id) > 0:
+            ch = self._discord_bot.get_channel(int(fb_id))
+            if not ch:
+                try:
+                    ch = await self._discord_bot.fetch_channel(int(fb_id))
+                except Exception:
+                    ch = None
+            if ch:
+                return ch
+
+        return None
+
     async def update_discord_dashboard(self):
         """Envia ou atualiza a mensagem fixa do painel no canal exclusivo da fila."""
         if not self._discord_bot:
             return
 
-        target_ch_id = self._dashboard_channel_id or settings.DISCORD_QUEUE_CHANNEL_ID or settings.DISCORD_CHANNEL_ID
-        if not target_ch_id or target_ch_id == 0:
-            return
-
-        channel = self._discord_bot.get_channel(int(target_ch_id))
+        channel = await self._resolve_target_channel()
         if not channel:
-            try:
-                channel = await self._discord_bot.fetch_channel(int(target_ch_id))
-            except Exception:
-                return
+            return
 
         embed = self.build_dashboard_embed()
 

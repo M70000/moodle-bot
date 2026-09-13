@@ -8,6 +8,8 @@ import discord
 from src.notifier.discord_bot import (
     BatchSelectView,
     ReviewActionView,
+    _coordinate_batch_followup,
+    _format_friendly_error,
     bot,
     enqueue_solve_flow,
     extract_quiz_answers_payload,
@@ -295,6 +297,189 @@ Enunciado da questão 2.
         self.assertIn("resolver", prefix_cmds)
         self.assertIn("resolver_lote", prefix_cmds)
         self.assertIn("refazer", prefix_cmds)
+
+
+    def test_format_friendly_error(self):
+        """Testa a conversão de exceções técnicas em explicações claras ao usuário."""
+        # 503
+        self.assertIn("503", _format_friendly_error("RuntimeError: 503 Service Unavailable / High demand"))
+        # 429
+        self.assertIn("429", _format_friendly_error("RESOURCE_EXHAUSTED: quota exceeded"))
+        # Timeout
+        self.assertIn("Tempo limite", _format_friendly_error("asyncio.exceptions.TimeoutError"))
+        # Moodle quiz closed
+        self.assertIn("inacessível", _format_friendly_error("Não foi possível abrir ou retomar a tentativa"))
+        # Genérico
+        self.assertEqual(_format_friendly_error("Erro de conexão genérico"), "Erro de conexão genérico")
+
+    def test_batch_coordinator_all_success(self):
+        """Testa o coordenador de lote quando todas as tarefas concluem com sucesso."""
+        chosen = [
+            {"id": "501", "title": "Quiz 1", "course": "Cálculo 1"},
+            {"id": "502", "title": "Tarefa 2", "course": "Cálculo 1"}
+        ]
+        ev1, ev2 = asyncio.Event(), asyncio.Event()
+        ev1.set()
+        ev2.set()
+        done_events = {"501": ev1, "502": ev2}
+        records = {
+            "501": {"item": chosen[0], "success": True, "message": "OK", "error": None, "retried": False},
+            "502": {"item": chosen[1], "success": True, "message": "OK", "error": None, "retried": False},
+        }
+        send_mock = AsyncMock()
+
+        asyncio.run(_coordinate_batch_followup(
+            records=records,
+            done_events=done_events,
+            chosen_items=chosen,
+            batch_send=send_mock,
+            modo="resolver",
+            instrucoes=None,
+            combined_files=[],
+            requester="User",
+            channel=None,
+            user_mention="@User"
+        ))
+
+        # Deve enviar 1 relatório final de sucesso
+        self.assertTrue(send_mock.called)
+        embed = send_mock.call_args.kwargs.get("embed")
+        self.assertIn("Sucesso Total", embed.title)
+        self.assertEqual(embed.color, discord.Color.green())
+
+    def test_batch_coordinator_auto_retry_recovers_503(self):
+        """Testa o coordenador disparando auto-retry após erro 503 e reportando recuperação."""
+        chosen = [
+            {"id": "601", "title": "Quiz 1", "course": "Física"},
+            {"id": "602", "title": "Quiz 2", "course": "Física"}
+        ]
+        ev1, ev2 = asyncio.Event(), asyncio.Event()
+        ev1.set()
+        ev2.set()
+        done_events = {"601": ev1, "602": ev2}
+        records = {
+            "601": {"item": chosen[0], "success": True, "message": "OK", "error": None, "retried": False},
+            "602": {"item": chosen[1], "success": False, "message": "503 Unavailable", "error": "503 Unavailable", "retried": False},
+        }
+        send_mock = AsyncMock()
+
+        with patch("src.notifier.discord_bot.enqueue_solve_flow", new_callable=AsyncMock) as mock_retry_enqueue, \
+             patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+            # Simula sucesso na repescagem para a tarefa 602
+            async def fake_enqueue(*args, **kwargs):
+                on_fin = kwargs.get("on_finish")
+                if on_fin:
+                    await on_fin(True, "Recuperado na 2ª tentativa")
+                return 1
+
+            mock_retry_enqueue.side_effect = fake_enqueue
+
+            asyncio.run(_coordinate_batch_followup(
+                records=records,
+                done_events=done_events,
+                chosen_items=chosen,
+                batch_send=send_mock,
+                modo="resolver",
+                instrucoes=None,
+                combined_files=[],
+                requester="User",
+                channel=None,
+                user_mention="@User"
+            ))
+
+            # Verifica se enqueue_solve_flow foi chamado para a tarefa 602 (retry)
+            mock_retry_enqueue.assert_called_once()
+            self.assertEqual(mock_retry_enqueue.call_args.kwargs["tarefa"], "602")
+            mock_sleep.assert_called_once_with(10.0)
+
+            # Verifica o relatório final com recuperação
+            last_embed = send_mock.call_args_list[-1].kwargs.get("embed")
+            self.assertIn("Sucesso Total", last_embed.title)
+            field_text = "".join(f.value for f in last_embed.fields)
+            self.assertIn("recuperada na repescagem", field_text)
+
+    def test_batch_coordinator_persistent_failure_state_preservation(self):
+        """Testa falha persistente mantendo a tarefa como pendente e indicando erro no relatório."""
+        from src.scheduler.state import DaemonState
+        state = DaemonState()
+        state.data["assignments"]["701"] = {
+            "id": "701",
+            "title": "Trabalho Difícil",
+            "course": "Álgebra",
+            "is_submitted": False,
+            "status": "pending_review"
+        }
+        state.save()
+
+        chosen = [{"id": "701", "title": "Trabalho Difícil", "course": "Álgebra"}]
+        ev1 = asyncio.Event()
+        ev1.set()
+        done_events = {"701": ev1}
+        records = {
+            "701": {"item": chosen[0], "success": False, "message": "503 Unavailable", "error": "503 Unavailable", "retried": False}
+        }
+        send_mock = AsyncMock()
+
+        with patch("src.notifier.discord_bot.enqueue_solve_flow", new_callable=AsyncMock) as mock_retry_enqueue, \
+             patch("asyncio.sleep", new_callable=AsyncMock):
+
+            # Continua falhando no retry
+            async def fake_enqueue(*args, **kwargs):
+                on_fin = kwargs.get("on_finish")
+                if on_fin:
+                    await on_fin(False, "503 Still Unavailable")
+                return 1
+
+            mock_retry_enqueue.side_effect = fake_enqueue
+
+            asyncio.run(_coordinate_batch_followup(
+                records=records,
+                done_events=done_events,
+                chosen_items=chosen,
+                batch_send=send_mock,
+                modo="resolver",
+                instrucoes=None,
+                combined_files=[],
+                requester="User",
+                channel=None,
+                user_mention="@User"
+            ))
+
+            last_embed = send_mock.call_args_list[-1].kwargs.get("embed")
+            self.assertIn("Falha", last_embed.title)
+            field_text = "".join(f.value for f in last_embed.fields)
+            self.assertIn("503", field_text)
+            self.assertIn("permanecem como pendentes", field_text)
+
+            # Verifica que a tarefa continua pendente no DaemonState
+            st = DaemonState()
+            item_st = st.get_assignment("701")
+            self.assertFalse(item_st.get("is_submitted", False))
+            self.assertNotEqual(item_st.get("status"), "submitted")
+
+    def test_queue_channel_auto_discovery(self):
+        """Testa o auto-descobrimento do canal fila-tarefas pelo TaskQueueManager."""
+        mock_bot = MagicMock()
+        mock_guild = MagicMock()
+        mock_queue_ch = MagicMock()
+        mock_queue_ch.id = 555444333
+        mock_queue_ch.name = "fila-tarefas"
+        mock_other_ch = MagicMock()
+        mock_other_ch.id = 111222333
+        mock_other_ch.name = "geral"
+
+        mock_guild.text_channels = [mock_other_ch, mock_queue_ch]
+        mock_bot.guilds = [mock_guild]
+        mock_bot.get_channel = MagicMock(return_value=None)
+
+        queue_manager.set_bot(mock_bot)
+        queue_manager._dashboard_channel_id = 0
+
+        # Resolução automática via _resolve_target_channel
+        res_ch = asyncio.run(queue_manager._resolve_target_channel())
+        self.assertEqual(res_ch, mock_queue_ch)
+        self.assertEqual(queue_manager._dashboard_channel_id, 555444333)
 
 
 if __name__ == "__main__":

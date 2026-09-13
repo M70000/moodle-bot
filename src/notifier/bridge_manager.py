@@ -21,6 +21,7 @@ class CloudBridgeManager:
     def __init__(self):
         self._pending_tasks: Dict[str, Dict[str, Any]] = {}
         self._completed_tasks: Dict[str, Dict[str, Any]] = {}
+        self._task_events: Dict[str, asyncio.Event] = {}
         self._lock = asyncio.Lock()
 
         # Presença, cursos, tarefas e materiais publicados pelo desktop runner ou Discord
@@ -158,8 +159,10 @@ class CloudBridgeManager:
             "status": "pending",
             "created_at": time.time(),
         }
+        event = asyncio.Event()
         async with self._lock:
             self._pending_tasks[task_id] = payload
+            self._task_events[task_id] = event
         return task_id
 
     async def get_pending_tasks(self, channel_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -180,7 +183,9 @@ class CloudBridgeManager:
 
     async def complete_task(self, task_id: str, success: bool, message: str) -> Optional[Dict[str, Any]]:
         """Finaliza uma tarefa e armazena o resultado para feedback no Discord."""
+        event = None
         async with self._lock:
+            event = self._task_events.pop(task_id, None)
             if task_id in self._pending_tasks:
                 task = self._pending_tasks.pop(task_id)
                 task["status"] = "completed" if success else "failed"
@@ -188,7 +193,28 @@ class CloudBridgeManager:
                 task["result_message"] = message
                 task["completed_at"] = time.time()
                 self._completed_tasks[task_id] = task
+                if event:
+                    event.set()
                 return task
+            elif event:
+                event.set()
+            return None
+
+    async def wait_for_task(self, task_id: str, timeout: float = 300.0) -> Optional[Dict[str, Any]]:
+        """Aguarda até que o desktop runner conclua a tarefa ou estoure o timeout."""
+        async with self._lock:
+            if task_id in self._completed_tasks:
+                return dict(self._completed_tasks[task_id])
+            event = self._task_events.get(task_id)
+
+        if not event:
+            return None
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            async with self._lock:
+                return dict(self._completed_tasks.get(task_id, {}))
+        except asyncio.TimeoutError:
             return None
 
 cloud_bridge = CloudBridgeManager()

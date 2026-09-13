@@ -333,16 +333,54 @@ class BridgeRunner:
             assignment_url = task.get("assignment_url", "")
             tarefa_target = assignment_url or answers.get("tarefa") or task.get("assignment_id") or task.get("title") or ""
 
-            await _execute_solve_flow(
-                send_func=_send_via_discord,
-                tarefa=tarefa_target,
-                instrucoes=instrucoes,
-                extra_files=extra_paths,
-                is_refazer=(action == "redo_task"),
-                modo=modo,
-                channel=target_ch
+            from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
+
+            is_quiz = "mod/quiz" in assignment_url.lower() or "quiz" in title.lower()
+            if action == "redo_task":
+                task_type = QueueTaskType.REDO_TASK
+            elif modo == "finalizar":
+                task_type = QueueTaskType.PIPELINE_COMPLETE
+            elif modo == "preencher":
+                task_type = QueueTaskType.PIPELINE_FILL
+            elif is_quiz:
+                task_type = QueueTaskType.RESOLVE_QUIZ
+            else:
+                task_type = QueueTaskType.RESOLVE_ASSIGNMENT
+
+            done_event = asyncio.Event()
+            result_box = {"success": False, "message": ""}
+
+            async def _bridge_solve_coro():
+                res = await _execute_solve_flow(
+                    send_func=_send_via_discord,
+                    tarefa=tarefa_target,
+                    instrucoes=instrucoes,
+                    extra_files=extra_paths,
+                    is_refazer=(action == "redo_task"),
+                    modo=modo,
+                    channel=target_ch
+                )
+                if isinstance(res, tuple) and len(res) == 2:
+                    return res
+                return True, f"Resolução de '{title}' concluída com sucesso pelo Desktop Runner."
+
+            async def _on_bridge_finish(success: bool, msg: str):
+                result_box["success"] = success
+                result_box["message"] = msg
+                done_event.set()
+
+            q_item = QueueItem(
+                task_type=task_type,
+                title=title,
+                course=task.get("course", "Geral"),
+                requester=task.get("requester", "Nuvem (Discord)"),
+                coro_func=_bridge_solve_coro,
+                on_finish=_on_bridge_finish
             )
-            return True, f"Resolução de '{title}' concluída com sucesso pelo Desktop Runner."
+
+            await queue_manager.enqueue(q_item)
+            await done_event.wait()
+            return result_box["success"], result_box["message"]
 
         return False, f"Ação desconhecida: {action}"
 

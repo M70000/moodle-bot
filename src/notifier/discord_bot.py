@@ -1972,10 +1972,13 @@ async def _execute_solve_flow(
                 f"A atividade **{title}** ({course}) está sendo processada no seu computador local com o seu provedor de IA configurado.\n"
                 f"Acompanhe o andamento e aguarde o rascunho ser enviado aqui em instantes!"
             )
-            return
+            res = await cloud_bridge.wait_for_task(task_id, timeout=360.0)
+            if res:
+                return res.get("success", False), res.get("result_message", "")
+            return False, "Tempo limite de resposta do Desktop Runner esgotado (6 min)."
         else:
             await send_func(BYOK_RELAY_MESSAGE)
-            return
+            return False, "Desktop Runner offline e nenhuma chave de IA configurada na nuvem."
 
     solver = AISolver()
     # AISolver usa o provedor ativo (Gemini/Claude/DeepSeek) — BYOK
@@ -2092,8 +2095,10 @@ async def _execute_solve_flow(
             )
             if submit_success:
                 await reporter.finish(f"🎉 **Respostas salvas no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+                return True, f"Respostas salvas no Moodle ({assign_obj.title})"
             else:
                 await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao preencher no Moodle: {submit_msg}")
+                return False, f"Falha ao preencher no Moodle: {submit_msg}"
 
         elif modo == "finalizar":
             await reporter.log("🚀 Preenchendo e submetendo em definitivo no Moodle...")
@@ -2125,8 +2130,10 @@ async def _execute_solve_flow(
             )
             if submit_success:
                 await reporter.finish(f"🎉 **Atividade finalizada e enviada no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+                return True, f"Atividade finalizada e enviada ({assign_obj.title})"
             else:
                 await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Moodle: {submit_msg}")
+                return False, f"Falha ao finalizar no Moodle: {submit_msg}"
 
         else:  # modo == "resolver" (manual → envia DOCX editável)
             sent = await notifier.send_assignment_review(assign_obj, draft, channel=channel)
@@ -2135,15 +2142,22 @@ async def _execute_solve_flow(
                 await reporter.finish(
                     f"✔ Resolução de **{assign_obj.title}** enviada como {file_label} com botões de revisão!"
                 )
+                return True, f"Resolução gerada e enviada como {file_label}"
             else:
                 await reporter.finish(f"⚠️ Resolução de **{assign_obj.title}** gerada, mas houve falha ao enviar o card no Discord.")
-
+                return False, "Falha ao enviar o card de revisão no Discord"
 
     except Exception as e:
+        err_msg = str(e)
+        try:
+            DaemonState().mark_failed(assign_obj.id, err_msg)
+        except Exception:
+            pass
         if reporter:
-            await reporter.finish(f"❌ Erro ao gerar resolução: {e}")
+            await reporter.finish(f"❌ Erro ao gerar resolução: {err_msg}")
         else:
-            await send_func(f"❌ Erro ao gerar resolução: {e}")
+            await send_func(f"❌ Erro ao gerar resolução: {err_msg}")
+        return False, err_msg
 
 
 async def enqueue_solve_flow(
@@ -2155,7 +2169,8 @@ async def enqueue_solve_flow(
     modo: str = "resolver",
     requester: str = "Usuário",
     channel: Optional[Any] = None,
-    silent_enqueue: bool = False
+    silent_enqueue: bool = False,
+    on_finish: Optional[Callable[[bool, str], Coroutine[Any, Any, Any]]] = None
 ) -> int:
     """Enfileira a resolução de uma tarefa ou questionário no TaskQueueManager."""
     assignments = await _get_current_assignments()
@@ -2206,7 +2221,7 @@ async def enqueue_solve_flow(
             raise
 
     async def _do_solve():
-        await _execute_solve_flow(
+        return await _execute_solve_flow(
             send_func=_safe_send,
             tarefa=tarefa,
             instrucoes=instrucoes,
@@ -2215,14 +2230,14 @@ async def enqueue_solve_flow(
             modo=modo,
             channel=channel
         )
-        return True, f"Resolução de '{title}' concluída"
 
     item = QueueItem(
         task_type=task_type,
         title=title,
         course=course,
         requester=requester,
-        coro_func=_do_solve
+        coro_func=_do_solve,
+        on_finish=on_finish
     )
 
     pos = await queue_manager.enqueue(item)
@@ -2569,6 +2584,174 @@ class BatchInstructionModal(ui.Modal, title="Instruções para o Lote"):
         await interaction.response.edit_message(embed=embed, view=self.parent_view)
 
 
+def _format_friendly_error(raw_err: Any) -> str:
+    """Formata mensagens técnicas de erro da IA/Playwright em explicações legíveis e limpas."""
+    err_str = str(raw_err or "Erro desconhecido").strip()
+    err_lower = err_str.lower()
+    if "503" in err_lower or "unavailable" in err_lower or "high demand" in err_lower:
+        return "Servidores com alta demanda (503 / Sobrecarga temporária da IA)"
+    if "429" in err_lower or "resource_exhausted" in err_lower or "quota" in err_lower:
+        return "Cota de requisições temporariamente excedida (429)"
+    if "timeout" in err_lower or "tempo limite" in err_lower:
+        return "Tempo limite de resposta esgotado"
+    if "não foi possível abrir ou retomar a tentativa" in err_lower:
+        return "Tentativa do questionário fechada ou inacessível no Moodle"
+    first_line = err_str.split("\n")[0].strip()
+    return first_line[:95]
+
+
+async def _coordinate_batch_followup(
+    records: Dict[str, Dict[str, Any]],
+    done_events: Dict[str, asyncio.Event],
+    chosen_items: List[Dict[str, Any]],
+    batch_send: Callable[..., asyncio.Future],
+    modo: str,
+    instrucoes: Optional[str],
+    combined_files: List[Path],
+    requester: str,
+    channel: Optional[Any],
+    user_mention: str
+):
+    """Monitora a execução sequencial do lote, dispara repescagem automática em caso de falha e envia relatório consolidado."""
+    # 1. Aguarda conclusão de todos os itens da 1ª rodada
+    for aid, ev in done_events.items():
+        try:
+            await ev.wait()
+        except Exception:
+            pass
+
+    # 2. Identifica falhas da 1ª rodada (ex: sobrecarga 503)
+    failed_aids = [aid for aid, rec in records.items() if not rec["success"]]
+
+    # 3. Fase 2: Repescagem Automática (Auto-Retry)
+    if failed_aids:
+        try:
+            retry_embed = discord.Embed(
+                title="🔄 Repescagem Automática do Lote Iniciada",
+                description=(
+                    f"Identificamos que **{len(failed_aids)} de {len(chosen_items)} atividade(s)** falharam na primeira tentativa (ex: sobrecarga 503 / instabilidade de conexão).\n\n"
+                    f"⏳ *Aguardando 10 segundos para resfriamento da API antes de retentar automaticamente apenas as atividades com falha...*"
+                ),
+                color=discord.Color.gold()
+            )
+            await batch_send(embed=retry_embed)
+        except Exception:
+            pass
+
+        await asyncio.sleep(10.0)
+
+        retry_events = {}
+        for aid in failed_aids:
+            records[aid]["retried"] = True
+            retry_events[aid] = asyncio.Event()
+
+            def _make_retry_finish(target_aid=aid):
+                async def _on_retry_finish(success: bool, msg: str):
+                    records[target_aid]["success"] = success
+                    records[target_aid]["message"] = msg
+                    if not success:
+                        records[target_aid]["error"] = msg
+                    else:
+                        records[target_aid]["error"] = None
+                    retry_events[target_aid].set()
+                return _on_retry_finish
+
+            await enqueue_solve_flow(
+                send_func=batch_send,
+                tarefa=aid,
+                instrucoes=instrucoes,
+                extra_files=combined_files,
+                is_refazer=False,
+                modo=modo,
+                requester=requester,
+                channel=channel,
+                silent_enqueue=True,
+                on_finish=_make_retry_finish(aid)
+            )
+
+        for aid, ev in retry_events.items():
+            try:
+                await ev.wait()
+            except Exception:
+                pass
+
+    # 4. Fase 3: Relatório Final Consolidado
+    total = len(chosen_items)
+    succeeded = [rec for rec in records.values() if rec["success"]]
+    recovered = [rec for rec in records.values() if rec["success"] and rec["retried"]]
+    first_try_success = [rec for rec in records.values() if rec["success"] and not rec["retried"]]
+    remaining_failures = [rec for rec in records.values() if not rec["success"]]
+
+    if not remaining_failures:
+        final_title = "🎉 Lote de Atividades Concluído com Sucesso Total!"
+        color = discord.Color.green()
+    elif len(succeeded) > 0:
+        final_title = "⚠️ Lote de Atividades Concluído com Algumas Pendências"
+        color = discord.Color.orange()
+    else:
+        final_title = "❌ Falha no Processamento do Lote de Atividades"
+        color = discord.Color.red()
+
+    report_desc = [
+        f"O processamento do lote solicitado por {user_mention} foi finalizado.\n",
+        f"📊 **Estatísticas Gerais:**",
+        f"• **Total de Atividades:** {total}",
+        f"• ✅ **Sucesso:** {len(succeeded)} ({len(first_try_success)} na 1ª tentativa" + (f", {len(recovered)} na repescagem" if recovered else "") + ")",
+        f"• ❌ **Falhas Restantes:** {len(remaining_failures)}"
+    ]
+
+    report_embed = discord.Embed(
+        title=final_title,
+        description="\n".join(report_desc),
+        color=color,
+        timestamp=datetime.now()
+    )
+
+    if succeeded:
+        succ_lines = []
+        for rec in succeeded:
+            it = rec["item"]
+            badge = " *(recuperada na repescagem)*" if rec["retried"] else ""
+            succ_lines.append(f"• ✅ **{it.get('title', 'Atividade')}** ({clean_display_course(it.get('course', 'Geral'))}){badge}")
+        report_embed.add_field(
+            name=f"✔ Atividades Concluídas ({len(succeeded)})",
+            value="\n".join(succ_lines[:15]),
+            inline=False
+        )
+
+    if remaining_failures:
+        fail_lines = []
+        for rec in remaining_failures:
+            it = rec["item"]
+            raw_err = rec.get("error") or "Erro desconhecido"
+            clean_err = _format_friendly_error(raw_err)
+            fail_lines.append(f"• ❌ **{it.get('title', 'Atividade')}** ({clean_display_course(it.get('course', 'Geral'))})\n  ↳ *Motivo:* `{clean_err}`")
+        report_embed.add_field(
+            name=f"❌ Falhas Restantes ({len(remaining_failures)})",
+            value="\n".join(fail_lines[:10]),
+            inline=False
+        )
+        report_embed.add_field(
+            name="💡 O que acontece com as atividades que falharam?",
+            value=(
+                "Essas tarefas **permanecem como pendentes** no sistema (não foram marcadas como concluídas).\n"
+                "Você pode tentar resolvê-las novamente a qualquer momento com o comando `/resolver`."
+            ),
+            inline=False
+        )
+
+    report_embed.set_footer(text="Moodle Bot UFMG • Relatório de Lote Consolidado")
+
+    try:
+        await batch_send(embed=report_embed)
+    except Exception:
+        if channel and hasattr(channel, "send"):
+            try:
+                await channel.send(embed=report_embed)
+            except Exception:
+                pass
+
+
 class BatchSelectView(ui.View):
     """Painel interativo para seleção de múltiplas tarefas pendentes, materiais de apoio e disparo em lote."""
 
@@ -2708,6 +2891,7 @@ class BatchSelectView(ui.View):
         except Exception:
             pass
 
+
     async def _dispatch_batch(self, interaction: discord.Interaction, modo: str):
         chosen_ids = list(self.task_select_menu.values) if self.task_select_menu.values else self.selected_ids
         if not chosen_ids:
@@ -2754,10 +2938,41 @@ class BatchSelectView(ui.View):
                 except Exception:
                     pass
 
+        # Auto-detecta e direciona para o canal 'fila-tarefas' da categoria do usuário se existir
+        category = getattr(channel, "category", None)
+        if category:
+            for cat_ch in getattr(category, "text_channels", []):
+                if "fila" in cat_ch.name.lower():
+                    queue_manager.set_dashboard_channel(cat_ch.id)
+                    break
+
         batch_send = channel.send if (channel and hasattr(channel, "send")) else interaction.followup.send
+        requester_str = interaction.user.display_name if interaction.user else self.requester
+        user_mention = interaction.user.mention if interaction.user else self.requester
+
+        records = {}
+        done_events = {}
 
         for item in chosen_items:
             aid = str(item.get("id", ""))
+            done_events[aid] = asyncio.Event()
+            records[aid] = {
+                "item": item,
+                "success": False,
+                "message": "",
+                "error": None,
+                "retried": False
+            }
+
+            def _make_pass1_finish(target_aid=aid):
+                async def _on_finish(success: bool, msg: str):
+                    records[target_aid]["success"] = success
+                    records[target_aid]["message"] = msg
+                    if not success:
+                        records[target_aid]["error"] = msg
+                    done_events[target_aid].set()
+                return _on_finish
+
             pos = await enqueue_solve_flow(
                 send_func=batch_send,
                 tarefa=aid,
@@ -2765,19 +2980,21 @@ class BatchSelectView(ui.View):
                 extra_files=combined_files,
                 is_refazer=False,
                 modo=modo,
-                requester=interaction.user.display_name if interaction.user else self.requester,
+                requester=requester_str,
                 channel=channel,
-                silent_enqueue=True
+                silent_enqueue=True,
+                on_finish=_make_pass1_finish(aid)
             )
             summary_lines.append(f"• **#{pos}** na fila: `{item.get('title', aid)}` ({clean_display_course(item.get('course', 'Geral'))})")
 
-        queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+        effective_queue_id = queue_manager._dashboard_channel_id or settings.DISCORD_QUEUE_CHANNEL_ID
+        queue_mention = f"<#{effective_queue_id}>" if effective_queue_id else "canal `#fila-de-tarefas`"
         embed = discord.Embed(
             title="📦 Lote de Atividades Enfileirado com Sucesso!",
             description=(
                 f"Foram agendadas **{len(chosen_items)} atividade(s)** para execução sequencial.\n\n"
                 f"⚙️ **Modo Escolhido:** `{mode_label}`\n"
-                f"👤 **Solicitante:** {interaction.user.mention if interaction.user else self.requester}\n"
+                f"👤 **Solicitante:** {user_mention}\n"
                 f"📍 **Acompanhamento:** Verifique a ordem e o andamento em tempo real no {queue_mention}.\n\n"
                 "**Ordem de Execução na Fila:**\n" + "\n".join(summary_lines[:15])
             ),
@@ -2805,6 +3022,22 @@ class BatchSelectView(ui.View):
             pass
 
         await interaction.followup.send(embed=embed)
+
+        # Inicia coordenador em segundo plano para auto-retry e relatório final
+        asyncio.create_task(
+            _coordinate_batch_followup(
+                records=records,
+                done_events=done_events,
+                chosen_items=chosen_items,
+                batch_send=batch_send,
+                modo=modo,
+                instrucoes=self.instrucoes,
+                combined_files=combined_files,
+                requester=requester_str,
+                channel=channel,
+                user_mention=user_mention
+            )
+        )
 
     @ui.button(label="Instruções", style=discord.ButtonStyle.secondary, emoji="✏️", row=2)
     async def btn_instrucoes(self, interaction: discord.Interaction, button: ui.Button):

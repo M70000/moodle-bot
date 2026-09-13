@@ -93,6 +93,18 @@ class DaemonState:
         item["updated_at"] = datetime.now().isoformat()
         self.save()
 
+    def mark_failed(self, assign_id: str, error: str = ""):
+        """Registra que a resolução falhou, mantendo a tarefa como pendente para novo /resolver."""
+        if "assignments" not in self.data:
+            self.data["assignments"] = {}
+        item = self.data["assignments"].setdefault(assign_id, {})
+        item["status"] = "pending_review"
+        item["is_submitted"] = False
+        item["last_error"] = str(error)
+        item["last_error_at"] = datetime.now().isoformat()
+        item["updated_at"] = datetime.now().isoformat()
+        self.save()
+
     def is_postponed(self, assign_id: str) -> bool:
         """Verifica se a tarefa está dentro do período de adiamento."""
         item = self.get_assignment(assign_id)
