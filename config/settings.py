@@ -177,6 +177,10 @@ class Settings(BaseSettings):
         default=30,
         description="Intervalo em minutos para verificação periódica de novas atividades/materiais"
     )
+    SESSION_HEARTBEAT_INTERVAL_MINUTES: int = Field(
+        default=15,
+        description="Intervalo em minutos para o heartbeat silencioso de manutenção da sessão do Moodle"
+    )
     EMERGENCY_SUBMIT_ENABLED: bool = Field(
         default=False,
         description="Se verdadeiro, submete rascunho em T-1min se não houver resposta do usuário"

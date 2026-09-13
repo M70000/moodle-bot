@@ -132,6 +132,56 @@ class MoodleAuth:
                 except Exception:
                     pass
 
+    async def heartbeat_session(self, save_refreshed: bool = True) -> Tuple[bool, Optional[str]]:
+        """Executa um heartbeat / keep-alive leve ao Moodle para renovar a sessão no servidor.
+
+        Utiliza o request context do Playwright (sem lançar Chromium completo),
+        garantindo execução em milissegundos com baixíssimo consumo de memória e CPU.
+        Se o Moodle responder com Set-Cookie (renovação de sessão), persiste o estado atualizado.
+
+        Returns:
+            Tuple[bool, Optional[str]]: (ativa, mensagem_ou_usuario)
+        """
+        if not self.session_exists:
+            return False, "Arquivo de sessão não encontrado"
+
+        async with async_playwright() as p:
+            try:
+                request_context = await p.request.new_context(
+                    storage_state=str(self.cookies_path),
+                    timeout=20000,
+                    extra_http_headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                    }
+                )
+                check_url = f"{self.base_url}/minhasturmas"
+                response = await request_context.get(check_url, max_redirects=10)
+                final_url = response.url
+
+                # Se redirecionou para IDP do MinhaUFMG, a sessão expirou
+                if "idp/login.jsp" in final_url or "sistemas.ufmg.br" in final_url:
+                    return False, "Sessão expirada (redirecionado para MinhaUFMG IDP)"
+
+                # Se respondeu com sucesso permanecendo no domínio do Moodle
+                if response.ok and "virtual.ufmg.br" in final_url:
+                    if save_refreshed:
+                        try:
+                            await request_context.storage_state(path=str(self.cookies_path))
+                        except Exception:
+                            pass
+                    return True, "Sessão ativa e renovada no servidor"
+
+                return False, f"Resposta inesperada do Moodle (HTTP {response.status} em {final_url})"
+            except Exception as e:
+                # Fallback em caso de erro na camada HTTP direta
+                try:
+                    val_ok, val_user = await self.validate_session()
+                    if val_ok:
+                        return True, f"Sessão validada via navegador ({val_user or 'Usuário ativo'})"
+                    return False, f"Falha na validação de sessão: {e}"
+                except Exception:
+                    return False, str(e)
+
     async def interactive_login(self, headless: Optional[bool] = None) -> bool:
         """Abre o navegador para o usuário realizar login manualmente no MinhaUFMG.
 
@@ -325,6 +375,13 @@ async def main():
         help="Apenas valida a sessão salva atual, sem abrir navegador para login."
     )
     parser.add_argument(
+        "--ping",
+        "--heartbeat",
+        dest="ping",
+        action="store_true",
+        help="Executa o heartbeat leve de keep-alive para renovar a sessão no servidor."
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Força um novo login interativo mesmo que a sessão atual pareça válida."
@@ -338,6 +395,15 @@ async def main():
     args = parser.parse_args()
 
     auth = MoodleAuth()
+
+    if args.ping:
+        active, msg = await auth.heartbeat_session()
+        if active:
+            console.print(f"[green]✔ Heartbeat OK: {msg}[/green]")
+            sys.exit(0)
+        else:
+            console.print(f"[red]❌ Heartbeat falhou: {msg}[/red]")
+            sys.exit(1)
 
     if args.check:
         valid, user = await auth.validate_session()

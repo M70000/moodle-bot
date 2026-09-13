@@ -46,6 +46,7 @@ class MoodleDaemon:
         self.state = DaemonState()
         self.scheduler = AsyncIOScheduler()
         self._running = False
+        self._session_expired_alerted = False
 
     async def run_cycle(self):
         """Executa um ciclo completo de verificação, resolução e notificação."""
@@ -294,15 +295,34 @@ class MoodleDaemon:
         except Exception as e:
             console.print(f"[yellow]Aviso no job diário da checklist do Notion: {e}[/yellow]")
 
+    async def session_heartbeat_job(self):
+        """Executa ping de keep-alive no Moodle para impedir expiração por inatividade e monitora status."""
+        try:
+            active, info = await self.auth.heartbeat_session()
+            now_str = datetime.now().strftime("%H:%M:%S")
+            if active:
+                console.print(f"[dim cyan]💓 [Heartbeat {now_str}] Sessão do Moodle mantida ativa com sucesso![/dim cyan]")
+                self._session_expired_alerted = False
+            else:
+                console.print(f"[bold yellow]⚠️ [Heartbeat {now_str}] Sessão do Moodle expirada ou inativa: {info}[/bold yellow]")
+                if not self._session_expired_alerted:
+                    self._session_expired_alerted = True
+                    if self.notifier.token and self.notifier.channel_id:
+                        await self.notifier.send_session_expired_alert()
+        except Exception as e:
+            console.print(f"[yellow]Nota no heartbeat da sessão: {e}[/yellow]")
+
     async def start(self):
         """Inicia o daemon e agenda os jobs em segundo plano."""
         self._running = True
 
+        heartbeat_minutes = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
         console.print(
             Panel.fit(
                 "[bold cyan]Moodle AI Assistant Daemon (UFMG)[/bold cyan]\n\n"
                 f"• URL: [underline]{settings.MOODLE_BASE_URL}[/underline]\n"
                 f"• Intervalo de varredura: [bold]{settings.CHECK_INTERVAL_MINUTES} minutos[/bold]\n"
+                f"• Heartbeat Keep-Alive: [bold cyan]A cada {heartbeat_minutes} minutos[/bold cyan]\n"
                 f"• IA: [bold]{settings.GEMINI_MODEL}[/bold]\n"
                 "• Submissão: [bold green]Estritamente sob aprovação humana[/bold green]\n"
                 "• Alertas de prazo: [bold yellow]Contagem regressiva intensiva (15m, 5m, 2m, 1m)[/bold yellow]\n"
@@ -354,6 +374,16 @@ class MoodleDaemon:
             minute=0,
             id="daily_checklist_notion_job",
             misfire_grace_time=3600,
+            coalesce=True
+        )
+
+        # 5. Agenda o heartbeat silencioso de manutenção da sessão do Moodle
+        self.scheduler.add_job(
+            self.session_heartbeat_job,
+            "interval",
+            minutes=heartbeat_minutes,
+            id="moodle_session_heartbeat_job",
+            misfire_grace_time=300,
             coalesce=True
         )
 

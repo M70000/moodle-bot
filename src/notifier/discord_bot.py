@@ -1779,9 +1779,14 @@ async def build_status_embed() -> discord.Embed:
         color=discord.Color.green() if is_valid else discord.Color.red()
     )
 
+    hb_min = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
     embed.add_field(
         name="🔐 Sessão Moodle / MinhaUFMG",
-        value=f"{'🟢 **Ativa & Headless**' if is_valid else '🔴 **Inativa/Expirada**'}\nUsuário: `{user or 'N/A'}`",
+        value=(
+            f"{'🟢 **Ativa & Headless**' if is_valid else '🔴 **Inativa/Expirada**'}\n"
+            f"Usuário: `{user or 'N/A'}`\n"
+            f"💓 Keep-Alive Heartbeat: a cada **{hb_min} min**"
+        ),
         inline=False
     )
 
@@ -4645,6 +4650,34 @@ class MoodleDiscordNotifier:
         except Exception as e:
             console.print(f"[red]Erro ao enviar alerta de contagem: {e}[/red]")
         return False
+
+    async def send_session_expired_alert(self) -> bool:
+        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou."""
+        try:
+            channel = await self._resolve_channel(self.channel_id)
+            if not channel:
+                return False
+
+            embed = discord.Embed(
+                title="⚠️ Sessão do Moodle Expirada",
+                description=(
+                    "A sua sessão de autenticação no **Moodle UFMG / MinhaUFMG** expirou no servidor.\n\n"
+                    "👉 **Para renovar a sua sessão:**\n"
+                    "1. No computador, abra o painel executando o arquivo `configurar.bat` e clique em **'Testar Conexão / Fazer Login'**;\n"
+                    "2. Ou no terminal execute: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
+                    "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
+                ),
+                color=discord.Color.red()
+            )
+            embed.set_footer(text=f"Detectado pelo Heartbeat do Moodle Bot às {datetime.now().strftime('%H:%M:%S')}")
+            await channel.send(
+                content="⚠️ **Atenção:** Sua sessão de login no Moodle expirou!",
+                embed=embed
+            )
+            return True
+        except Exception as e:
+            console.print(f"[yellow]Nota ao enviar alerta de sessão expirada no Discord: {e}[/yellow]")
+            return False
 
 
 async def run_bot():
