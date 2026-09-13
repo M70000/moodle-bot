@@ -139,6 +139,101 @@ def clean_display_course(course: str) -> str:
     return c.title() if c else course
 
 
+def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Localiza deterministicamente uma atividade em assignments com máxima precisão e segurança.
+
+    Regras de prioridade:
+    1. ID exato no dicionário (ex: '45759').
+    2. URL de atividade Moodle (/mod/assign ou /mod/quiz) extraindo o parâmetro ?id=.
+    3. URL exata de atividade (contendo /mod/).
+    4. NUNCA aceita match de URL base ou genérica (ex: virtual.ufmg.br sem /mod/).
+    5. Normalização de query (remove sufixos de autocomplete '(Prazo: ...)', '[Concluído]').
+    6. Busca ponderada por título exato, título+disciplina, prefixo, substring e sobreposição de termos.
+    """
+    if not query or not assignments:
+        return None
+    raw_query = str(query).strip()
+
+    # 1. Match direto pelo ID exato da atividade
+    if raw_query in assignments:
+        return assignments[raw_query]
+
+    # 2. Se for URL de atividade do Moodle com parâmetro id=
+    if "id=" in raw_query and ("mod/assign" in raw_query or "mod/quiz" in raw_query or "view.php" in raw_query):
+        m = re.search(r"[?&]id=(\d+)", raw_query)
+        if m:
+            extracted_id = m.group(1)
+            if extracted_id in assignments:
+                return assignments[extracted_id]
+            for aid, it in assignments.items():
+                if extracted_id == str(it.get("id")):
+                    return it
+
+    # 3. Se for URL exata de atividade (/mod/)
+    if raw_query.startswith("http") and ("/mod/" in raw_query):
+        clean_url = raw_query.split("#")[0].rstrip("/")
+        for aid, it in assignments.items():
+            if it.get("url", "").split("#")[0].rstrip("/") == clean_url:
+                return it
+
+    # SEGURANÇA CRÍTICA: Se for uma URL base ou genérica (sem /mod/), NUNCA tente casar como atividade!
+    if raw_query.startswith("http") and "/mod/" not in raw_query:
+        return None
+
+    # 4. Limpeza da query de títulos (remove sufixos de autocomplete)
+    clean_q = re.sub(r"\s*\((?:prazo|entrega|vence|data):[^\)]*\)", "", raw_query, flags=re.IGNORECASE)
+    clean_q = re.sub(r"\s*\[conclu[íi]do\]", "", clean_q, flags=re.IGNORECASE).strip()
+    norm_q = normalize_text(clean_q)
+    words_q = set(re.findall(r"\w+", norm_q))
+
+    # 5. Busca ponderada com pontuação
+    best_item = None
+    best_score = 0.0
+
+    for aid, item in assignments.items():
+        t_norm = normalize_text(item.get("title", ""))
+        c_norm = normalize_text(item.get("course", ""))
+        full_norm = f"{t_norm} {c_norm}".strip()
+        words_item = set(re.findall(r"\w+", t_norm))
+
+        score = 0.0
+        # a. Match exato de título
+        if norm_q == t_norm:
+            score = 100.0
+        # b. Match exato de título + disciplina
+        elif norm_q == full_norm:
+            score = 95.0
+        # c. O título do item é prefixo da query
+        elif norm_q.startswith(t_norm) and len(t_norm) >= 3:
+            score = 90.0 + (len(t_norm) / max(len(norm_q), 1)) * 4.0
+        # d. A query é prefixo do título do item
+        elif t_norm.startswith(norm_q) and len(norm_q) >= 3:
+            score = 85.0 + (len(norm_q) / max(len(t_norm), 1)) * 4.0
+        # e. Substring bidirecional
+        elif t_norm in norm_q and len(t_norm) >= 4:
+            score = 80.0 + (len(t_norm) / max(len(norm_q), 1)) * 5.0
+        elif norm_q in t_norm and len(norm_q) >= 4:
+            score = 75.0 + (len(norm_q) / max(len(t_norm), 1)) * 5.0
+        # f. Sobreposição de palavras-chave
+        elif words_item and words_item.issubset(words_q):
+            score = 70.0 + (len(words_item) / max(len(words_q), 1)) * 10.0
+        else:
+            # Avalia se compartilha números específicos (ex: unidade 7 e aula 3)
+            common = words_q.intersection(words_item)
+            nums_q = {w for w in words_q if w.isdigit()}
+            nums_item = {w for w in words_item if w.isdigit()}
+            if nums_q and nums_q == nums_item and len(common) >= 2:
+                score = 60.0 + len(common) * 5.0
+
+        if score > best_score:
+            best_score = score
+            best_item = item
+
+    if best_score >= 60.0:
+        return best_item
+    return None
+
+
 def get_available_courses() -> List[str]:
     """Retorna os nomes das disciplinas que possuem pasta em storage/materials/
     OU que aparecem nas atividades catalogadas no state.json."""
@@ -458,18 +553,10 @@ def get_course_materials_for_task(tarefa_or_course: str) -> List[Path]:
     assignments = _get_sync_assignments()
     target_course = ""
 
-    if tarefa_or_course in assignments:
-        target_course = assignments[tarefa_or_course].get("course", "")
+    matched = find_assignment_by_query(tarefa_or_course, assignments)
+    if matched:
+        target_course = matched.get("course", "")
     else:
-        norm = normalize_text(tarefa_or_course)
-        for aid, item in assignments.items():
-            t_norm = normalize_text(item.get("title", ""))
-            aid_norm = normalize_text(str(aid))
-            if norm and (norm in t_norm or norm in aid_norm or t_norm in norm):
-                target_course = item.get("course", "")
-                break
-
-    if not target_course:
         target_course = tarefa_or_course
 
     dest_dir = resolve_course_materials_dir(target_course)
@@ -540,7 +627,9 @@ class MaterialSelectionView(ui.View):
         modo: str = "resolver"
     ):
         super().__init__(timeout=180)
-        self.tarefa = tarefa
+        matched = find_assignment_by_query(tarefa, _get_sync_assignments())
+        self.expected_course = matched.get("course", "") if matched else ""
+        self.tarefa = str(matched["id"]) if matched and "id" in matched else tarefa
         self.instrucoes = instrucoes
         self.attached_files = list(attached_files)
         self.available_materials = available_materials
@@ -610,7 +699,8 @@ class MaterialSelectionView(ui.View):
             is_refazer=self.is_refazer,
             modo=self.modo,
             requester=requester,
-            channel=channel
+            channel=channel,
+            expected_course=self.expected_course
         )
 
     @ui.button(label="⏩ Resolver sem materiais extras", style=discord.ButtonStyle.secondary, row=1)
@@ -636,7 +726,8 @@ class MaterialSelectionView(ui.View):
             is_refazer=self.is_refazer,
             modo=self.modo,
             requester=requester,
-            channel=channel
+            channel=channel,
+            expected_course=self.expected_course
         )
 
 
@@ -1969,32 +2060,49 @@ async def _execute_solve_flow(
     extra_files: Optional[List[Path]] = None,
     is_refazer: bool = False,
     modo: str = "resolver",
-    channel: Optional[Any] = None
+    channel: Optional[Any] = None,
+    expected_course: Optional[str] = None
 ):
     assignments = await _get_current_assignments()
 
-    target_item = None
-    if tarefa in assignments:
-        target_item = assignments[tarefa]
-    else:
-        norm_tarefa = normalize_text(tarefa)
-        for aid, item in assignments.items():
-            if norm_tarefa in normalize_text(item.get("title", "")) or tarefa.lower() in item.get("url", "").lower():
-                target_item = item
-                break
+    target_item = find_assignment_by_query(tarefa, assignments)
 
     if not target_item:
-        target_item = {
-            "id": "custom_" + str(int(datetime.now().timestamp())),
-            "title": tarefa,
-            "course": "Geral / Sob Demanda",
-            "url": tarefa if "http" in tarefa else settings.MOODLE_BASE_URL,
-            "due_date": "Sob demanda",
-            "time_remaining": "N/A"
-        }
+        if tarefa.startswith("http") and "/mod/" in tarefa:
+            target_item = {
+                "id": "custom_" + str(int(datetime.now().timestamp())),
+                "title": tarefa,
+                "course": expected_course or "Geral / Sob Demanda",
+                "url": tarefa,
+                "due_date": "Sob demanda",
+                "time_remaining": "N/A",
+                "activity_type": "quiz" if "mod/quiz" in tarefa else "assign"
+            }
+        else:
+            err_msg = (
+                f"❌ **Atividade não encontrada:** `{tarefa}`.\n"
+                "Não foi possível localizar essa atividade no catálogo do Moodle UFMG.\n"
+                "💡 *Dica:* Digite `/tarefas` para consultar as atividades disponíveis ou use a seleção do `/resolver`."
+            )
+            await send_func(err_msg)
+            return False, f"Atividade '{tarefa}' não encontrada no catálogo do Moodle."
 
     title = target_item.get("title", tarefa)
     course = target_item.get("course", "Geral")
+
+    # VALIDAÇÃO DE SEGURANÇA CONTRA TROCA DE DISCIPLINAS:
+    if expected_course and expected_course != "Geral":
+        norm_exp = normalize_text(clean_display_course(expected_course))
+        norm_act = normalize_text(clean_display_course(course))
+        if norm_exp and norm_act and norm_act != "geral":
+            if norm_exp != norm_act and not (norm_exp in norm_act or norm_act in norm_exp):
+                err_msg = (
+                    f"⚠️ **Incompatibilidade de Disciplina Detectada:** A solicitação indicou a matéria **{expected_course}**, "
+                    f"mas a atividade selecionada pertence a **{course}** (`{title}`).\n"
+                    f"A execução foi abortada imediatamente por segurança para não resolver/submeter na matéria errada!"
+                )
+                await send_func(err_msg)
+                return False, f"Abortado por incompatibilidade de disciplinas ({expected_course} vs {course})"
 
     if _is_relay_mode() and not _has_ai_key_configured():
         from src.notifier.bridge_manager import cloud_bridge
@@ -2020,7 +2128,9 @@ async def _execute_solve_flow(
                     "extra_files": [str(p) for p in (extra_files or [])],
                     "is_refazer": is_refazer,
                     "modo": modo,
-                    "tarefa": tarefa
+                    "tarefa": str(target_item.get("id", tarefa)),
+                    "expected_course": course,
+                    "task_title": title
                 }
             )
             await send_func(
@@ -2226,30 +2336,32 @@ async def enqueue_solve_flow(
     requester: str = "Usuário",
     channel: Optional[Any] = None,
     silent_enqueue: bool = False,
-    on_finish: Optional[Callable[[bool, str], Coroutine[Any, Any, Any]]] = None
+    on_finish: Optional[Callable[[bool, str], Coroutine[Any, Any, Any]]] = None,
+    expected_course: Optional[str] = None
 ) -> int:
     """Enfileira a resolução de uma tarefa ou questionário no TaskQueueManager."""
     assignments = await _get_current_assignments()
 
-    target_item = None
-    if tarefa in assignments:
-        target_item = assignments[tarefa]
-    else:
-        norm_tarefa = normalize_text(tarefa)
-        for aid, item in assignments.items():
-            if norm_tarefa in normalize_text(item.get("title", "")) or tarefa.lower() in item.get("url", "").lower():
-                target_item = item
-                break
+    target_item = find_assignment_by_query(tarefa, assignments)
 
     if not target_item:
-        target_item = {
-            "id": "custom_" + str(int(datetime.now().timestamp())),
-            "title": tarefa,
-            "course": "Geral / Sob Demanda",
-            "url": tarefa if "http" in tarefa else settings.MOODLE_BASE_URL,
-            "due_date": "Sob demanda",
-            "time_remaining": "N/A"
-        }
+        if tarefa.startswith("http") and "/mod/" in tarefa:
+            target_item = {
+                "id": "custom_" + str(int(datetime.now().timestamp())),
+                "title": tarefa,
+                "course": expected_course or "Geral / Sob Demanda",
+                "url": tarefa,
+                "due_date": "Sob demanda",
+                "time_remaining": "N/A",
+                "activity_type": "quiz" if "mod/quiz" in tarefa else "assign"
+            }
+        else:
+            await send_func(
+                f"❌ **Atividade não encontrada:** `{tarefa}`.\n"
+                "Não foi possível localizar essa atividade no catálogo do Moodle UFMG.\n"
+                "💡 *Dica:* Digite `/tarefas` para ver a lista de atividades pendentes ou use a seleção do `/resolver`."
+            )
+            return -1
 
     title = target_item.get("title", tarefa)
     course = clean_display_course(target_item.get("course", "Geral"))
@@ -2284,7 +2396,8 @@ async def enqueue_solve_flow(
             extra_files=extra_files,
             is_refazer=is_refazer,
             modo=modo,
-            channel=channel
+            channel=channel,
+            expected_course=expected_course or course
         )
 
     item = QueueItem(
@@ -2354,6 +2467,11 @@ async def cmd_resolver(
     await interaction.response.defer(ephemeral=False)
     chosen_modo = modo.value if isinstance(modo, app_commands.Choice) else (modo or "resolver")
 
+    assignments = _get_sync_assignments()
+    matched = find_assignment_by_query(tarefa, assignments)
+    target_tarefa = str(matched["id"]) if matched and "id" in matched else tarefa
+    expected_course = matched.get("course", "") if matched else None
+
     extra_files: List[Path] = []
     if arquivo:
         temp_dir = Path("storage/submissions/temp_uploads")
@@ -2362,7 +2480,7 @@ async def cmd_resolver(
         await arquivo.save(dest_file)
         extra_files.append(dest_file)
 
-    available_mats = get_course_materials_for_task(tarefa)
+    available_mats = get_course_materials_for_task(target_tarefa)
 
     # Verifica se o usuário especificou materiais diretamente nos parâmetros do comando
     specified_mats = [m for m in [material_1, material_2, material_3] if m]
@@ -2375,13 +2493,14 @@ async def cmd_resolver(
                     break
         await enqueue_solve_flow(
             send_func=interaction.followup.send,
-            tarefa=tarefa,
+            tarefa=target_tarefa,
             instrucoes=instrucoes,
             extra_files=extra_files,
             is_refazer=False,
             modo=chosen_modo,
             requester=interaction.user.display_name,
-            channel=interaction.channel
+            channel=interaction.channel,
+            expected_course=expected_course
         )
         return
 
@@ -2403,7 +2522,7 @@ async def cmd_resolver(
                 inline=False
             )
         view = MaterialSelectionView(
-            tarefa=tarefa,
+            tarefa=target_tarefa,
             instrucoes=instrucoes,
             attached_files=extra_files,
             available_materials=available_mats,
@@ -2418,13 +2537,14 @@ async def cmd_resolver(
     # Caso não haja materiais salvos para a disciplina:
     await enqueue_solve_flow(
         send_func=interaction.followup.send,
-        tarefa=tarefa,
+        tarefa=target_tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
         is_refazer=False,
         modo=chosen_modo,
         requester=interaction.user.display_name,
-        channel=interaction.channel
+        channel=interaction.channel,
+        expected_course=expected_course
     )
 
 
@@ -2453,6 +2573,12 @@ async def cmd_refazer(
     material_3: Optional[str] = None
 ):
     await interaction.response.defer(ephemeral=False)
+
+    assignments = _get_sync_assignments()
+    matched = find_assignment_by_query(tarefa, assignments)
+    target_tarefa = str(matched["id"]) if matched and "id" in matched else tarefa
+    expected_course = matched.get("course", "") if matched else None
+
     extra_files: List[Path] = []
     if arquivo:
         temp_dir = Path("storage/submissions/temp_uploads")
@@ -2461,7 +2587,7 @@ async def cmd_refazer(
         await arquivo.save(dest_file)
         extra_files.append(dest_file)
 
-    available_mats = get_course_materials_for_task(tarefa)
+    available_mats = get_course_materials_for_task(target_tarefa)
 
     specified_mats = [m for m in [material_1, material_2, material_3] if m]
     if specified_mats:
@@ -2473,12 +2599,13 @@ async def cmd_refazer(
                     break
         await enqueue_solve_flow(
             send_func=interaction.followup.send,
-            tarefa=tarefa,
+            tarefa=target_tarefa,
             instrucoes=instrucoes,
             extra_files=extra_files,
             is_refazer=True,
             requester=interaction.user.display_name,
-            channel=interaction.channel
+            channel=interaction.channel,
+            expected_course=expected_course
         )
         return
 
@@ -2499,7 +2626,7 @@ async def cmd_refazer(
                 inline=False
             )
         view = MaterialSelectionView(
-            tarefa=tarefa,
+            tarefa=target_tarefa,
             instrucoes=instrucoes,
             attached_files=extra_files,
             available_materials=available_mats,
@@ -2512,12 +2639,13 @@ async def cmd_refazer(
 
     await enqueue_solve_flow(
         send_func=interaction.followup.send,
-        tarefa=tarefa,
+        tarefa=target_tarefa,
         instrucoes=instrucoes,
         extra_files=extra_files,
         is_refazer=True,
         requester=interaction.user.display_name,
-        channel=interaction.channel
+        channel=interaction.channel,
+        expected_course=expected_course
     )
 
 

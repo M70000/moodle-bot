@@ -330,12 +330,28 @@ class BridgeRunner:
                 console.print(f"[yellow]⚠️ Materiais solicitados pela nuvem não encontrados localmente: {extra_files_str}[/yellow]")
 
             modo = answers.get("modo", "resolver")
-            assignment_url = task.get("assignment_url", "")
-            tarefa_target = assignment_url or answers.get("tarefa") or task.get("assignment_id") or task.get("title") or ""
+            raw_url = (task.get("assignment_url") or "").strip()
+            is_valid_act_url = raw_url.startswith("http") and "/mod/" in raw_url
+
+            assign_id = str(task.get("assignment_id") or "").strip()
+            is_real_id = assign_id and not assign_id.startswith("custom_")
+
+            if is_valid_act_url:
+                tarefa_target = raw_url
+            elif is_real_id:
+                tarefa_target = assign_id
+            elif answers.get("tarefa") and not str(answers.get("tarefa")).startswith("http"):
+                tarefa_target = answers.get("tarefa")
+            else:
+                tarefa_target = task.get("title") or answers.get("tarefa") or ""
 
             from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
 
-            is_quiz = "mod/quiz" in assignment_url.lower() or "quiz" in title.lower()
+            is_quiz = (
+                (is_valid_act_url and "mod/quiz" in raw_url.lower())
+                or "quiz" in title.lower()
+                or "aula" in title.lower()
+            )
             if action == "redo_task":
                 task_type = QueueTaskType.REDO_TASK
             elif modo == "finalizar":
@@ -358,7 +374,8 @@ class BridgeRunner:
                     extra_files=extra_paths,
                     is_refazer=(action == "redo_task"),
                     modo=modo,
-                    channel=target_ch
+                    channel=target_ch,
+                    expected_course=task.get("course", "")
                 )
                 if isinstance(res, tuple) and len(res) == 2:
                     return res

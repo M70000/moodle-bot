@@ -1,5 +1,5 @@
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from src.notifier.discord_bot import (
     _is_task_completed,
     pending_task_autocomplete,
@@ -225,5 +225,146 @@ class TestResolverRefazer(unittest.TestCase):
             self.assertEqual(mock_send_review.call_args[1]["draft"], updated_draft)
             self.assertEqual(mock_send_review.call_args[1]["channel"], mock_interaction.channel)
 
+    def test_find_assignment_by_query_precision_and_safety(self):
+        """Verifica a precisão determinística e segurança do find_assignment_by_query."""
+        from src.notifier.discord_bot import find_assignment_by_query
+
+        sample_assignments = {
+            "102068": {
+                "id": "102068",
+                "title": "Exercício 1 - Estatística Descritiva",
+                "course": "2026_2 - FUNDAMENTOS DE ESTATÍSTICA E CIÊNCIA DE DADOS - TB1",
+                "url": "https://virtual.ufmg.br/20262/mod/assign/view.php?id=102068",
+                "activity_type": "assign"
+            },
+            "45759": {
+                "id": "45759",
+                "title": "Unidade 7 :: Aula 3",
+                "course": "2026_2 - INGLÊS INSTRUMENTAL I - METATURMA",
+                "url": "https://virtual.ufmg.br/20262/mod/quiz/view.php?id=45759",
+                "activity_type": "quiz"
+            },
+            "45695": {
+                "id": "45695",
+                "title": "Unidade 1 :: Aula 3",
+                "course": "2026_2 - INGLÊS INSTRUMENTAL I - METATURMA",
+                "url": "https://virtual.ufmg.br/20262/mod/quiz/view.php?id=45695",
+                "activity_type": "quiz"
+            }
+        }
+
+        # 1. Match exato por ID
+        r = find_assignment_by_query("45759", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 2. Match exato por título
+        r = find_assignment_by_query("Unidade 7 :: Aula 3", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 3. Match por rótulo do autocomplete com disciplina (caso real que gerou o bug)
+        r = find_assignment_by_query("Unidade 7 :: Aula 3 - Inglês Instrumental I", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 4. Match com sufixo de prazo
+        r = find_assignment_by_query("Unidade 7 :: Aula 3 - Inglês Instrumental I (Prazo: 7 de janeiro)", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 5. Match com sufixo [Concluído]
+        r = find_assignment_by_query("Unidade 7 :: Aula 3 [Concluído]", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 6. Match por URL direta com id=
+        r = find_assignment_by_query("https://virtual.ufmg.br/20262/mod/quiz/view.php?id=45759", sample_assignments)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["id"], "45759")
+
+        # 7. SEGURANÇA CRÍTICA: URLs base/genéricas NUNCA devem casar com o primeiro item
+        r_base1 = find_assignment_by_query("https://virtual.ufmg.br/20262", sample_assignments)
+        self.assertIsNone(r_base1)
+
+        r_base2 = find_assignment_by_query("https://virtual.ufmg.br", sample_assignments)
+        self.assertIsNone(r_base2)
+
+        # 8. Tarefa de outra disciplina não se confunde
+        r_est = find_assignment_by_query("Exercício 1 - Estatística Descritiva", sample_assignments)
+        self.assertIsNotNone(r_est)
+        self.assertEqual(r_est["id"], "102068")
+
+        # 9. Tarefa inexistente retorna None (fail-fast)
+        r_none = find_assignment_by_query("Física Quântica 99", sample_assignments)
+        self.assertIsNone(r_none)
+
+    def test_execute_solve_flow_aborts_on_course_mismatch(self):
+        """Verifica se _execute_solve_flow aborta com alerta de segurança se houver incompatibilidade de matérias."""
+        import asyncio
+        from src.notifier.discord_bot import _execute_solve_flow
+
+        mock_assignments = {
+            "102068": {
+                "id": "102068",
+                "title": "Exercício 1 - Estatística Descritiva",
+                "course": "2026_2 - FUNDAMENTOS DE ESTATÍSTICA E CIÊNCIA DE DADOS - TB1",
+                "url": "https://virtual.ufmg.br/20262/mod/assign/view.php?id=102068",
+                "activity_type": "assign"
+            }
+        }
+
+        mock_send = AsyncMock()
+
+        with patch("src.notifier.discord_bot._get_current_assignments", AsyncMock(return_value=mock_assignments)):
+            success, msg = asyncio.run(_execute_solve_flow(
+                send_func=mock_send,
+                tarefa="102068",
+                expected_course="2026_2 - INGLÊS INSTRUMENTAL I - METATURMA"
+            ))
+
+            self.assertFalse(success)
+            self.assertIn("incompatibilidade", msg.lower())
+            self.assertTrue(mock_send.called)
+            sent_text = mock_send.call_args[0][0]
+            self.assertIn("Incompatibilidade de Disciplina", sent_text)
+
+    def test_bridge_runner_ignores_base_url_and_resolves_task(self):
+        """Verifica se o BridgeRunner ignora URLs genéricas da nuvem e preserva o nome/id real."""
+        import asyncio
+        from src.scheduler.bridge_runner import BridgeRunner
+
+        runner = BridgeRunner(render_url="https://mock-app.onrender.com")
+
+        # Simula o payload que causou o incidente: assignment_url genérico + título de inglês
+        task = {
+            "task_id": "bridge_bug_test",
+            "action": "solve_task",
+            "assignment_id": "custom_12345",
+            "assignment_url": "https://virtual.ufmg.br/20262",  # URL genérica perigosa
+            "title": "Unidade 7 :: Aula 3 - Inglês Instrumental I",
+            "course": "2026_2 - INGLÊS INSTRUMENTAL I - METATURMA",
+            "channel_id": "123",
+            "structured_answers": {
+                "instrucoes": None,
+                "modo": "resolver",
+                "tarefa": "Unidade 7 :: Aula 3 - Inglês Instrumental I"
+            }
+        }
+
+        with patch("src.notifier.discord_bot._execute_solve_flow", new_callable=AsyncMock) as mock_solve:
+            mock_solve.return_value = (True, "Resolução concluída com sucesso")
+
+            success, msg = asyncio.run(runner._execute_task(task))
+
+            self.assertTrue(success)
+            self.assertTrue(mock_solve.called)
+            call_kwargs = mock_solve.call_args.kwargs
+            self.assertNotEqual(call_kwargs["tarefa"], "https://virtual.ufmg.br/20262")
+            self.assertIn("Aula 3", call_kwargs["tarefa"])
+            self.assertIn("INGLÊS", call_kwargs["expected_course"].upper())
+
+
 if __name__ == "__main__":
     unittest.main()
+
