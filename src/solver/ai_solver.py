@@ -446,9 +446,23 @@ class AISolver:
 
         system_instruction = (
             "Você é um estudante universitário da UFMG realizando esta atividade acadêmica. "
-            "Resolva de forma clara, direta e acadêmica, sem texto introdutório de IA.\n\n"
-            "FORMATO: Comece com ### Questão 1 e assim por diante. "
-            "Ao final, adicione um bloco ```json:answers``` com as respostas estruturadas para quiz."
+            "Resolva de forma clara, direta e acadêmica, sem texto introdutório de IA ou metatexto.\n\n"
+            "DIRETRIZES DE RESOLUÇÃO:\n"
+            "1. REGRA DE OURO - Se houver materiais de apoio, gabarito ou anotações fornecidos contendo respostas para esta atividade, siga 100% as respostas e termos indicados neles.\n"
+            "2. FOCO TOTAL NA ATIVIDADE ESPECÍFICA: Resolva exclusivamente o que foi pedido no enunciado.\n"
+            "3. FORMATO OBRIGATÓRIO (DUAS PARTES):\n"
+            "   PARTE 1: Folha de Respostas Acadêmica (para leitura e conferência):\n"
+            "     ### Questão 1\n"
+            "     - **Resposta:** [Sua resposta direta e fundamentada]\n\n"
+            "     ### Questão 2\n"
+            "     - **Resposta:** [Sua resposta]\n\n"
+            "   PARTE 2: Dados Estruturados (no final, se aplicável):\n"
+            "   ```json:answers\n"
+            "   [\n"
+            '     {"key": "Q1", "value": "resposta 1"},\n'
+            '     {"key": "Q2", "value": "resposta 2"}\n'
+            "   ]\n"
+            "   ```"
         )
 
         extracted_ref = extract_text_from_context_files(context_files)
@@ -553,9 +567,34 @@ class AISolver:
         questions_body = "\n\n".join(formatted_questions)
 
         system_instruction = (
-            "Você é um estudante universitário da UFMG realizando questionário no Moodle.\n"
-            "Responda cada questão com letra e texto completo.\n"
-            "Formate a saída com ```json:answers``` no início e folha de respostas depois."
+            "Você é um estudante universitário da UFMG realizando uma atividade avaliativa no Moodle.\n"
+            "Abaixo está o conteúdo extraído da tela do questionário, contendo questões avaliativas que podem conter:\n"
+            "- Marcadores pontuais [[CAMPO_1]], [[CAMPO_2]]... que representam lacunas, caixas de texto, áreas de arrastar/soltar ou questões dissertativas;\n"
+            "- Questões de múltipla escolha com alternativas (ex: a, b, c, d);\n"
+            "- Questões de seleção múltipla (caixas de seleção / checkboxes);\n"
+            "- Questões abertas/dissertativas que exigem redação de resposta fundamentada.\n\n"
+            "DIRETRIZES DE RESOLUÇÃO:\n"
+            "1. REGRA DE OURO - PRIORIDADE ABSOLUTA DO GABARITO / MATERIAL DE APOIO FORNECIDO:\n"
+            "   - Se houver materiais de apoio, gabarito ou anotações fornecidos, siga 100% as respostas e termos indicados neles.\n"
+            "   - É PROIBIDO divergir ou tentar 're-resolver' uma questão que já possui resposta no material.\n"
+            "2. PREENCHA CADA CAMPO E QUESTÃO: Forneça a resposta para cada marcador [[CAMPO_X]], questão de múltipla escolha (Q1, Q2, etc.) e questão dissertativa.\n"
+            "3. ALTERNATIVAS DE MÚLTIPLA ESCOLHA: Indique a letra E o texto completo da alternativa escolhida (ex: 'a. fast').\n"
+            "4. CORRESPONDÊNCIA / LACUNAS: Numere-os na folha de respostas (1. **item 1**, 2. **item 2**...).\n\n"
+            "FORMATO OBRIGATÓRIO DE SAÍDA (DUAS PARTES ESTRITAMENTE OBRIGATÓRIAS):\n\n"
+            "PARTE 1: Bloco JSON estruturado no início (usado pelo robô para preenchimento automático no Moodle):\n"
+            "```json:answers\n"
+            "{\n"
+            '  "CAMPO_1": "resposta da lacuna ou palavra arrastada",\n'
+            '  "Q1": "letra e texto completo da alternativa escolhida (ex: a. fast)",\n'
+            '  "Q2": "texto da resposta dissertativa ou alternativas"\n'
+            "}\n"
+            "```\n\n"
+            "PARTE 2: Folha de Respostas Acadêmica (renderizada no documento DOCX/PDF para leitura humana):\n"
+            "Logo abaixo do bloco JSON, escreva a folha de respostas limpa e organizada:\n"
+            "- Separe estritamente por questão avaliativa (ex: '### Questão 1', '### Questão 2').\n"
+            "- Para cada questão, escreva:\n"
+            "  - **Resposta:** [letra e texto completo da alternativa, ou texto dissertativo]\n"
+            "- NUNCA omita a PARTE 2. Ambas as partes são estritamente obrigatórias."
         )
 
         extracted_ref = extract_text_from_context_files(context_files)
@@ -732,12 +771,22 @@ async def _build_solution_draft(
     from src.scraper.moodle_scraper import sanitize_filename
     from src.solver.gemini_solver import SolutionDraft
 
-    # Extrai JSON:answers
+    # Extrai JSON:answers de forma robusta (com ou sem crases)
     structured_answers = None
-    json_match = re.search(r"```(?:json:answers|json)\s*\n(.*?)\n```", full_text, re.DOTALL)
+    json_match = re.search(r"```(?:json:answers|json)?\s*([\s\S]*?)\s*```", full_text)
+    candidate_json = None
     if json_match:
+        cand = json_match.group(1).strip()
+        if (cand.startswith("{") and cand.endswith("}")) or (cand.startswith("[") and cand.endswith("]")):
+            candidate_json = cand
+    if not candidate_json:
+        raw_m = re.search(r"(?:json:answers|json)?\s*(\{[\s\S]*\}|\[[\s\S]*\])", full_text)
+        if raw_m:
+            candidate_json = raw_m.group(1).strip()
+
+    if candidate_json:
         try:
-            parsed = _json.loads(json_match.group(1).strip())
+            parsed = _json.loads(candidate_json)
             if isinstance(parsed, list):
                 structured_answers = parsed
             elif isinstance(parsed, dict):
@@ -745,9 +794,43 @@ async def _build_solution_draft(
         except Exception:
             pass
 
+    # Limpeza do markdown: remove bloco json e resíduos
     clean_markdown = re.sub(r"```(?:json:answers|json)\s*\n.*?\n```", "", full_text, flags=re.DOTALL).strip()
+    clean_markdown = re.sub(r"```json\s*[\s\S]*?```", "", clean_markdown, flags=re.IGNORECASE).strip()
+    clean_markdown = re.sub(r"^json:answers\s*\{[\s\S]*?\}", "", clean_markdown, flags=re.IGNORECASE).strip()
+    clean_markdown = re.sub(r"^json:answers\s*", "", clean_markdown, flags=re.IGNORECASE).strip()
+    clean_markdown = re.sub(r"(?i)texto (?:informativo|da questão)", "", clean_markdown)
+    clean_markdown = re.sub(r"(?i)resposta \d+\s*questão \d+", "", clean_markdown)
+    clean_markdown = re.sub(r"(?i)verificar questão \d+", "", clean_markdown)
+    clean_markdown = re.sub(r"### Informação\s*\n.*?(?=### Questão|\Z)", "", clean_markdown, flags=re.DOTALL)
+    clean_markdown = re.sub(r"\n{3,}", "\n\n", clean_markdown).strip()
+
+    # Se a IA respondeu apenas JSON e clean_markdown ficou vazio, reconstrói Folha de Respostas
+    if not clean_markdown.strip() and structured_answers:
+        reconstructed = ["### Folha de Respostas\n"]
+        for idx, item in enumerate(structured_answers, 1):
+            k = item.get("key") or item.get("field") or f"Questão {idx}"
+            v = item.get("value", "")
+            if re.match(r"^Q\d+$", str(k), re.IGNORECASE):
+                q_num = re.sub(r"\D", "", str(k))
+                reconstructed.append(f"### Questão {q_num}\n- **Resposta:** {v}\n")
+            elif str(k).upper().startswith("CAMPO_"):
+                reconstructed.append(f"- **{k}:** {v}\n")
+            else:
+                reconstructed.append(f"### {k}\n- **Resposta:** {v}\n")
+        clean_markdown = "\n".join(reconstructed).strip()
+
+    # Prepara o resumo sem ruídos e garantindo que não fique em branco
     summary_lines = [l for l in clean_markdown.splitlines() if l.strip() and not l.startswith("#")]
-    summary = "\n".join(summary_lines[:6]) if summary_lines else clean_markdown[:400]
+    if summary_lines:
+        summary = "\n".join(summary_lines[:8])
+    elif structured_answers:
+        summary = "\n".join(
+            f"• {it.get('key') or it.get('field') or 'Q'}: {it.get('value', '')}"
+            for it in structured_answers[:8]
+        )
+    else:
+        summary = clean_markdown[:400] if clean_markdown else "Resolução concluída com sucesso."
 
     safe_course = sanitize_filename(assignment.course_name)
     safe_title = sanitize_filename(assignment.title)

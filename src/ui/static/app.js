@@ -331,6 +331,9 @@ async function testClaude() {
 async function testDeepSeek() {
   const api_key = getInputValue('DEEPSEEK_API_KEY');
   const model = getInputValue('DEEPSEEK_MODEL');
+  const base_url = getInputValue('DEEPSEEK_BASE_URL');
+  const reasoning_effort = getInputValue('DEEPSEEK_REASONING_EFFORT');
+  const thinking_mode = document.getElementById('DEEPSEEK_THINKING_MODE')?.checked;
   const resultDiv = document.getElementById('deepseek-test-result');
   setFeedback(resultDiv, `Enviando requisição de teste para o DeepSeek (${model})...`, 'loading');
 
@@ -338,7 +341,7 @@ async function testDeepSeek() {
     const res = await fetch('/api/test-deepseek', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ api_key, model })
+      body: JSON.stringify({ api_key, model, base_url, reasoning_effort, thinking_mode })
     });
     const data = await res.json();
     if (data.ok) {

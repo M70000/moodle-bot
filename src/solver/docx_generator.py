@@ -1,4 +1,4 @@
-﻿"""Gerador de documentos Word (.docx) editáveis para resoluções acadêmicas manuais.
+"""Gerador de documentos Word (.docx) editáveis para resoluções acadêmicas manuais.
 
 Utilizado quando o usuário dispara a resolução manualmente (/resolver, /resolver_lote),
 gerando um arquivo .docx editável em vez de PDF — permitindo ao usuário revisar,
@@ -95,7 +95,13 @@ class AcademicDocxGenerator:
                 doc.add_paragraph()  # espaço após cabeçalho
 
             # Converte Markdown linha a linha
-            lines = markdown_text.splitlines()
+            if not markdown_text or not markdown_text.strip():
+                p = doc.add_paragraph("Resolução gerada pela IA e salva na tentativa da plataforma.")
+                p.italic = True
+                lines = []
+            else:
+                lines = markdown_text.splitlines()
+
             i = 0
             while i < len(lines):
                 line = lines[i]

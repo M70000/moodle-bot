@@ -4535,7 +4535,23 @@ class MoodleDiscordNotifier:
                 embed.add_field(name="⏳ Tempo Restante", value=assignment.time_remaining or "N/A", inline=True)
                 embed.add_field(name="🧠 Modelo Utilizado", value=f"`{draft.used_model}`", inline=True)
 
-                summary_text = draft.summary[:800] + ("..." if len(draft.summary) > 800 else "")
+                summary_raw = (draft.summary or "").strip()
+                if not summary_raw and draft.structured_answers:
+                    items = []
+                    if isinstance(draft.structured_answers, list):
+                        for it in draft.structured_answers[:10]:
+                            k = it.get("key") or it.get("field") or "Q"
+                            v = it.get("value", "")
+                            items.append(f"• {k}: {v}")
+                    elif isinstance(draft.structured_answers, dict):
+                        for k, v in list(draft.structured_answers.items())[:10]:
+                            items.append(f"• {k}: {v}")
+                    summary_raw = "\n".join(items)
+
+                if not summary_raw:
+                    summary_raw = "Respostas resolvidas pela IA e salvas na tentativa do Moodle."
+
+                summary_text = summary_raw[:800] + ("..." if len(summary_raw) > 800 else "")
                 embed.add_field(name="📝 Respostas Preparadas", value=f"```markdown\n{summary_text}\n```", inline=False)
 
                 if draft.used_materials:

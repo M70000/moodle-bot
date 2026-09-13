@@ -13,6 +13,11 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+try:
+    from config.settings import settings
+except Exception:
+    settings = None
+
 # Raiz do projeto (c:\moodle-bot)
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -317,8 +322,14 @@ def test_claude_connection(api_key: str, model_name: Optional[str] = None) -> Di
         return {"ok": False, "error": f"Erro na API Claude: {err_msg[:200]}"}
 
 
-def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> Dict[str, Any]:
-    """Testa a chave de API do DeepSeek com suporte ao modelo deepseek-flash."""
+def test_deepseek_connection(
+    api_key: str,
+    model_name: Optional[str] = None,
+    base_url: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    thinking_mode: Optional[bool] = None,
+) -> Dict[str, Any]:
+    """Testa a chave de API do DeepSeek com suporte ao modelo deepseek-flash e thinking mode."""
     if not api_key:
         return {"ok": False, "error": "Chave de API do DeepSeek não informada."}
     try:
@@ -331,9 +342,29 @@ def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> 
 
     start_time = time.time()
     try:
-        model = model_name or "deepseek-flash"
-        base_url = getattr(settings, "DEEPSEEK_BASE_URL", "https://api.deepseek.com") or "https://api.deepseek.com"
-        client = OpenAI(api_key=api_key.strip(), base_url=base_url, timeout=20.0)
+        current_cfg = get_current_config().get("config", {})
+        model = (model_name or "").strip() or current_cfg.get("DEEPSEEK_MODEL") or "deepseek-flash"
+
+        target_base_url = (
+            (base_url or "").strip()
+            or current_cfg.get("DEEPSEEK_BASE_URL")
+            or (getattr(settings, "DEEPSEEK_BASE_URL", None) if settings else None)
+            or "https://api.deepseek.com"
+        )
+        target_effort = (
+            (reasoning_effort or "").strip()
+            or current_cfg.get("DEEPSEEK_REASONING_EFFORT")
+            or (getattr(settings, "DEEPSEEK_REASONING_EFFORT", None) if settings else None)
+            or "high"
+        )
+
+        if thinking_mode is None:
+            raw_tm = current_cfg.get("DEEPSEEK_THINKING_MODE", "true")
+            is_thinking = str(raw_tm).lower() not in ("false", "0", "no")
+        else:
+            is_thinking = bool(thinking_mode)
+
+        client = OpenAI(api_key=api_key.strip(), base_url=target_base_url, timeout=20.0)
 
         kwargs: Dict[str, Any] = {
             "model": model,
@@ -341,14 +372,17 @@ def test_deepseek_connection(api_key: str, model_name: Optional[str] = None) -> 
                 {"role": "system", "content": "You are a test assistant. Answer with json."},
                 {"role": "user", "content": "Return a JSON object with key 'status' and value 'ok'."},
             ],
-            "max_tokens": 128,
+            "max_tokens": 256,
             "response_format": {"type": "json_object"},
         }
 
-        # Se for deepseek-flash ou reasoner, testa com thinking mode
+        # Se for deepseek-flash ou reasoner, configura thinking mode
         if "flash" in model.lower() or "reasoner" in model.lower():
-            kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
-            kwargs["reasoning_effort"] = getattr(settings, "DEEPSEEK_REASONING_EFFORT", "high") or "high"
+            if is_thinking:
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                kwargs["reasoning_effort"] = target_effort
+            else:
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
 
         completion = client.chat.completions.create(**kwargs)
         elapsed = round((time.time() - start_time) * 1000)
@@ -505,7 +539,16 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
         if url_path == "/api/test-deepseek":
             api_key = payload.get("api_key", "")
             model = payload.get("model", "")
-            res = test_deepseek_connection(api_key, model)
+            base_url = payload.get("base_url")
+            reasoning_effort = payload.get("reasoning_effort")
+            thinking_mode = payload.get("thinking_mode")
+            res = test_deepseek_connection(
+                api_key=api_key,
+                model_name=model,
+                base_url=base_url,
+                reasoning_effort=reasoning_effort,
+                thinking_mode=thinking_mode,
+            )
             self._send_json(res)
             return
 

@@ -214,6 +214,47 @@ class TestAIMultiProvider(unittest.TestCase):
             self.assertEqual(new_draft.used_model, "deepseek-flash")
             self.assertEqual(new_draft.activity_type, "assign")
 
+    def test_build_solution_draft_reconstructs_empty_markdown(self):
+        """Verifica se _build_solution_draft reconstrói a Folha de Respostas se a IA retornar apenas o bloco JSON."""
+        import asyncio
+        from src.scraper.moodle_scraper import Assignment
+        from src.solver.ai_solver import _build_solution_draft
+
+        assign = Assignment(
+            id="12345",
+            course_id="c1",
+            course_name="Inglês Instrumental",
+            title="Unidade 7 :: Aula 1",
+            url="https://virtual.ufmg.br/mod/quiz/view.php?id=12345",
+            description="Quiz de inglês",
+            activity_type="quiz",
+        )
+
+        # Simula resposta do DeepSeek contendo APENAS o bloco JSON
+        pure_json_response = '```json:answers\n{\n  "Q1": "a. fast",\n  "CAMPO_1": "computer"\n}\n```'
+
+        with patch("src.solver.docx_generator.AcademicDocxGenerator.generate_docx", return_value=True):
+            draft = asyncio.run(_build_solution_draft(
+                assignment=assign,
+                full_text=pure_json_response,
+                used_model="deepseek-flash",
+                on_log=None,
+                auto_triggered=False,
+                is_quiz=True,
+            ))
+
+            self.assertIsNotNone(draft.structured_answers)
+            self.assertTrue(len(draft.structured_answers) > 0)
+            # Verifica se o resumo NÃO está vazio
+            self.assertTrue(len(draft.summary) > 0)
+            self.assertIn("fast", draft.summary)
+            # Verifica se o arquivo de rascunho reconstruído contém a folha de respostas
+            saved_md = draft.output_path.read_text(encoding="utf-8")
+            self.assertIn("Folha de Respostas", saved_md)
+            self.assertIn("Questão 1", saved_md)
+            self.assertIn("a. fast", saved_md)
+            self.assertIn("CAMPO_1", saved_md)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -687,8 +687,25 @@ class GeminiSolver:
                             if clean_body:
                                 structured_dict[ans_key] = clean_body
 
+            if not clean_markdown.strip() and structured_dict:
+                reconstructed = ["### Folha de Respostas\n"]
+                for k, v in structured_dict.items():
+                    if re.match(r"^Q\d+$", str(k), re.IGNORECASE):
+                        q_num = re.sub(r"\D", "", str(k))
+                        reconstructed.append(f"### Questão {q_num}\n- **Resposta:** {v}\n")
+                    elif str(k).upper().startswith("CAMPO_"):
+                        reconstructed.append(f"- **{k}:** {v}\n")
+                    else:
+                        reconstructed.append(f"### {k}\n- **Resposta:** {v}\n")
+                clean_markdown = "\n".join(reconstructed).strip()
+
             summary_lines = [l for l in clean_markdown.splitlines() if l.strip() and not l.startswith("#")]
-            summary = "\n".join(summary_lines[:8]) if summary_lines else clean_markdown[:400]
+            if summary_lines:
+                summary = "\n".join(summary_lines[:8])
+            elif structured_dict:
+                summary = "\n".join(f"• {k}: {v}" for k, v in list(structured_dict.items())[:8])
+            else:
+                summary = clean_markdown[:400] if clean_markdown else "Respostas salvas na tentativa."
 
             safe_course = sanitize_filename(assignment.course_name)
             safe_title = sanitize_filename(assignment.title)

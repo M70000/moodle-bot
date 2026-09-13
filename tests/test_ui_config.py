@@ -14,6 +14,7 @@ from src.ui.server import (
     get_system_status,
     parse_env_file,
     save_config_to_env,
+    test_deepseek_connection as check_deepseek_connection,
     test_discord_connection as check_discord_connection,
     test_gemini_connection as check_gemini_connection,
     test_moodle_connection as check_moodle_connection,
@@ -67,6 +68,29 @@ class TestUIConfig(unittest.TestCase):
         self.assertFalse(res["ok"])
         self.assertIn("não informado", res["error"])
 
+    def test_test_deepseek_connection_empty(self):
+        res = check_deepseek_connection("")
+        self.assertFalse(res["ok"])
+        self.assertIn("não informada", res["error"])
+
+    def test_test_deepseek_connection_mocked(self):
+        from unittest.mock import MagicMock, patch
+        mock_client = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.reasoning_content = "Pensamento"
+        mock_choice = MagicMock()
+        mock_choice.message = mock_msg
+        mock_resp = MagicMock()
+        mock_resp.choices = [mock_choice]
+        mock_client.chat.completions.create.return_value = mock_resp
+
+        with patch("openai.OpenAI", return_value=mock_client):
+            res = check_deepseek_connection("sk-fake-key", model_name="deepseek-flash", base_url="https://api.deepseek.com", reasoning_effort="high", thinking_mode=True)
+            self.assertTrue(res["ok"])
+            self.assertEqual(res["model"], "deepseek-flash")
+            self.assertIn("validado com sucesso", res["message"])
+            self.assertIn("Raciocínio CoT ativo", res["message"])
+
     def test_get_system_status(self):
         status = get_system_status()
         self.assertIn("session_exists", status)
@@ -112,6 +136,17 @@ class TestUIConfig(unittest.TestCase):
                 headers={"Content-Type": "application/json"}
             )
             with urllib.request.urlopen(req, timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertFalse(data["ok"])
+
+            # 5. POST /api/test-deepseek
+            req_ds = urllib.request.Request(
+                f"{base_url}/api/test-deepseek",
+                data=json.dumps({"api_key": "", "model": "deepseek-flash"}).encode("utf-8"),
+                headers={"Content-Type": "application/json"}
+            )
+            with urllib.request.urlopen(req_ds, timeout=5) as resp:
                 self.assertEqual(resp.status, 200)
                 data = json.loads(resp.read().decode("utf-8"))
                 self.assertFalse(data["ok"])
