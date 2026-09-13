@@ -24,7 +24,7 @@ async def notify_discord_completion(task: dict):
     try:
         channel_id = int(task.get("channel_id") or 0)
         message_id = int(task.get("message_id") or 0)
-        if not channel_id or not message_id:
+        if not channel_id:
             return
 
         channel = bot.get_channel(channel_id)
@@ -33,30 +33,40 @@ async def notify_discord_completion(task: dict):
         if not channel:
             return
 
-        msg = await channel.fetch_message(message_id)
-        if not msg:
-            return
-
         success = task.get("success", False)
         result_msg = task.get("result_message", "")
         title = task.get("title", "Atividade")
+        action = task.get("action", "")
 
-        embed = msg.embeds[0] if msg.embeds else None
-        if embed:
-            current_time = datetime.now().strftime("%H:%M:%S")
-            if success:
-                embed.color = discord.Color.green()
-                embed.title = f"✅ Submetido com Sucesso: {title}"
-                embed.set_footer(
-                    text=f"Submetido no Moodle via Desktop Runner às {current_time}."
-                )
-            else:
-                embed.color = discord.Color.red()
-                embed.set_footer(
-                    text=f"Falha na submissão via Desktop Runner: {result_msg[:100]}"
-                )
+        if message_id:
+            try:
+                msg = await channel.fetch_message(message_id)
+                if msg:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        current_time = datetime.now().strftime("%H:%M:%S")
+                        if success:
+                            embed.color = discord.Color.green()
+                            embed.title = f"✅ Submetido com Sucesso: {title}"
+                            embed.set_footer(
+                                text=f"Submetido no Moodle via Desktop Runner às {current_time}."
+                            )
+                        else:
+                            embed.color = discord.Color.red()
+                            embed.set_footer(
+                                text=f"Falha na submissão via Desktop Runner: {result_msg[:100]}"
+                            )
+                    await msg.edit(embed=embed, view=None)
+            except Exception as msg_err:
+                print(f"[Render Bridge] Nota ao atualizar mensagem original {message_id}: {msg_err}")
 
-        await msg.edit(embed=embed, view=None)
+        # Se for solve_task / redo_task sem message_id:
+        if action in ("solve_task", "redo_task") and not message_id:
+            if not success:
+                await channel.send(
+                    f"⚠️ **Falha no processamento de '{title}' pelo Desktop Runner:**\n{result_msg}"
+                )
+            return
 
         if success:
             await channel.send(

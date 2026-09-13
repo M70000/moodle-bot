@@ -25,6 +25,7 @@ class BridgeRunner:
         self._is_running = False
         self._last_courses_publish: float = 0.0
         self._COURSES_PUBLISH_INTERVAL = 120.0  # Publica cursos a cada 2 minutos
+        self._failed_materials = set()
 
     async def poll_once(self) -> int:
         """Consulta o Render e executa qualquer submissão pendente para este canal."""
@@ -55,7 +56,14 @@ class BridgeRunner:
             await self._claim_task(task_id, url_base)
 
             # Executa a ação localmente
-            success, message = await self._execute_task(task)
+            try:
+                success, message = await self._execute_task(task)
+            except Exception as exc:
+                console.print(f"[bold red]❌ Erro inesperado ao executar tarefa {task_id}: {exc}[/bold red]")
+                import traceback
+                traceback.print_exc()
+                success = False
+                message = f"Erro inesperado no executor local: {exc}"
 
             # Reporta de volta ao Render para atualizar o Discord
             await self._report_complete(task_id, success, message, url_base)
@@ -108,7 +116,11 @@ class BridgeRunner:
             try:
                 state = DaemonState()
                 assignments = state.data.get("assignments", {})
-                custom_materials = state.get_custom_materials()
+                raw_materials = state.get_custom_materials()
+                custom_materials = [
+                    m for m in raw_materials
+                    if "magicmock" not in str(m).lower()
+                ]
             except Exception:
                 assignments = {}
                 custom_materials = []
@@ -161,6 +173,14 @@ class BridgeRunner:
             if not course or not filename or not att_url:
                 continue
 
+            # Ignora materiais com MagicMock ou que falharam anteriormente com 403/404
+            if (
+                "magicmock" in str(item).lower()
+                or not att_url.startswith("http")
+                or att_url in self._failed_materials
+            ):
+                continue
+
             target_dir = resolve_course_materials_dir(course)
             target_file = target_dir / sanitize_filename(filename)
 
@@ -178,7 +198,10 @@ class BridgeRunner:
 
             try:
                 console.print(f"[cyan]Baixando material adicionado via Discord: [bold]{filename}[/bold] ({course})...[/cyan]")
-                req_file = urllib.request.Request(att_url, headers={"User-Agent": "MoodleDesktopRunner/1.0"})
+                req_file = urllib.request.Request(
+                    att_url,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"}
+                )
                 content = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req_file, timeout=30).read())
                 if content:
                     target_dir.mkdir(parents=True, exist_ok=True)
@@ -194,6 +217,10 @@ class BridgeRunner:
                     )
                     downloaded += 1
                     console.print(f"[green]✔ Material sincronizado no PC local:[/green] {target_file.name} em {target_dir.name}")
+            except urllib.error.HTTPError as http_err:
+                if http_err.code in (403, 404):
+                    self._failed_materials.add(att_url)
+                console.print(f"[yellow]Aviso ao baixar material {filename} da ponte: {http_err}[/yellow]")
             except Exception as dl_err:
                 console.print(f"[yellow]Aviso ao baixar material {filename} da ponte: {dl_err}[/yellow]")
 
@@ -237,27 +264,37 @@ class BridgeRunner:
             return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=True)
 
         elif action in ("solve_task", "redo_task"):
+            import discord
             from src.notifier.discord_bot import _execute_solve_flow, bot
             target_ch_id = int(task.get("channel_id") or 0)
             target_ch = None
             if target_ch_id:
                 try:
+                    if settings.DISCORD_BOT_TOKEN and not getattr(bot.http, "token", None):
+                        await bot.login(settings.DISCORD_BOT_TOKEN)
+                    if getattr(bot._connection, "_ready", None) is discord.utils.MISSING:
+                        bot._connection._ready = asyncio.Event()
+                        bot._connection._ready.set()
                     if bot.is_ready():
                         target_ch = bot.get_channel(target_ch_id)
-                    if not target_ch:
-                        target_ch = await bot.fetch_channel(target_ch_id)
+                    if not target_ch and getattr(bot.http, "token", None):
+                        target_ch = await asyncio.wait_for(bot.fetch_channel(target_ch_id), timeout=5.0)
                 except Exception as ch_err:
                     console.print(f"[yellow]Nota ao obter canal do Discord {target_ch_id}: {ch_err}[/yellow]")
 
             async def _send_via_discord(*args, **kwargs):
-                if target_ch and hasattr(target_ch, "send"):
-                    return await target_ch.send(*args, **kwargs)
-                elif settings.DISCORD_CHANNEL_ID:
+                try:
+                    if target_ch and hasattr(target_ch, "send"):
+                        return await target_ch.send(*args, **kwargs)
+                except Exception as ch_send_err:
+                    console.print(f"[yellow]Nota ao enviar no canal {target_ch_id}: {ch_send_err}[/yellow]")
+
+                if settings.DISCORD_CHANNEL_ID:
                     try:
                         ch = bot.get_channel(settings.DISCORD_CHANNEL_ID)
-                        if not ch:
-                            ch = await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
-                        if ch:
+                        if not ch and getattr(bot.http, "token", None):
+                            ch = await asyncio.wait_for(bot.fetch_channel(settings.DISCORD_CHANNEL_ID), timeout=5.0)
+                        if ch and hasattr(ch, "send"):
                             return await ch.send(*args, **kwargs)
                     except Exception:
                         pass

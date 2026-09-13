@@ -34,11 +34,23 @@ class CloudBridgeManager:
     # Desktop presence & published state (courses + assignments + materials)
     # ------------------------------------------------------------------
 
-    def _upsert_material_unlocked(self, material: Dict[str, Any]) -> None:
+    def _is_valid_material(self, material: Dict[str, Any]) -> bool:
         c = material.get("course")
         fn = material.get("filename")
-        if not c or not fn:
+        att = str(material.get("attachment_url", ""))
+        uploader = str(material.get("uploader", ""))
+        if not c or not fn or not att:
+            return False
+        # Descarta objetos de MagicMock acidentalmente vazados
+        if "magicmock" in uploader.lower():
+            return False
+        return True
+
+    def _upsert_material_unlocked(self, material: Dict[str, Any]) -> None:
+        if not self._is_valid_material(material):
             return
+        c = material.get("course")
+        fn = material.get("filename")
         for existing in self._custom_materials:
             if existing.get("course") == c and existing.get("filename") == fn:
                 existing.update(material)
@@ -53,7 +65,7 @@ class CloudBridgeManager:
     async def get_custom_materials(self) -> List[Dict[str, Any]]:
         """Retorna todos os materiais customizados conhecidos na ponte."""
         async with self._lock:
-            return [dict(m) for m in self._custom_materials]
+            return [dict(m) for m in self._custom_materials if self._is_valid_material(m)]
 
     async def publish_state(
         self,
@@ -68,8 +80,12 @@ class CloudBridgeManager:
             if assignments is not None:
                 self._published_assignments = dict(assignments)
             if custom_materials is not None:
+                # Sincroniza a lista com base no desktop runner e elimina resíduos de mock
+                clean_mats = []
                 for mat in custom_materials:
-                    self._upsert_material_unlocked(mat)
+                    if self._is_valid_material(mat):
+                        clean_mats.append(dict(mat))
+                self._custom_materials = clean_mats
             self._desktop_last_seen = time.time()
 
     async def publish_courses(self, courses: List[str]) -> None:
