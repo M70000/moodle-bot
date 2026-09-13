@@ -432,17 +432,16 @@ class AISolver:
         auto_triggered: bool = False,
     ):
         """Gera resolução completa delegando através da cadeia de contingência configurada."""
-        from src.solver.gemini_solver import extract_text_from_context_files
+        from src.solver.gemini_solver import extract_context_materials
 
         context_files = []
-        for att in assignment.attachments:
+        for att in getattr(assignment, "attachments", []):
             if att.local_path and att.local_path.exists():
                 context_files.append(att.local_path)
         if extra_context_files:
             context_files.extend([f for f in extra_context_files if f.exists()])
 
-        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-        image_files = [f for f in context_files if f.suffix.lower() in image_extensions]
+        extracted_ref, extracted_images, used_material_names = extract_context_materials(context_files)
 
         system_instruction = (
             "Você é um estudante universitário da UFMG realizando esta atividade acadêmica. "
@@ -465,7 +464,6 @@ class AISolver:
             "   ```"
         )
 
-        extracted_ref = extract_text_from_context_files(context_files)
         user_message = (
             f"DISCIPLINA: {assignment.course_name}\n"
             f"ATIVIDADE: {assignment.title}\n"
@@ -502,13 +500,14 @@ class AISolver:
                         used_model=used_model,
                         on_log=on_log,
                         auto_triggered=auto_triggered,
+                        used_materials=used_material_names,
                     )
                 elif prov == "deepseek":
                     full_text, used_model = await _call_deepseek(
                         system_instruction,
                         user_message,
                         on_log,
-                        images=image_files if image_files else None,
+                        images=extracted_images if extracted_images else None,
                     )
                     return await _build_solution_draft(
                         assignment=assignment,
@@ -516,6 +515,7 @@ class AISolver:
                         used_model=used_model,
                         on_log=on_log,
                         auto_triggered=auto_triggered,
+                        used_materials=used_material_names,
                     )
                 elif prov == "gemini":
                     # Gemini sem cliente completo ou fallback geral
@@ -526,6 +526,7 @@ class AISolver:
                         used_model=used_model,
                         on_log=on_log,
                         auto_triggered=auto_triggered,
+                        used_materials=used_material_names,
                     )
 
             except Exception as err:
@@ -550,14 +551,16 @@ class AISolver:
         auto_triggered: bool = False,
     ):
         """Resolve questionário ao vivo delegando através da cadeia de contingência."""
-        from src.solver.gemini_solver import extract_text_from_context_files
+        from src.solver.gemini_solver import extract_context_materials
 
         context_files = []
+        for att in getattr(assignment, "attachments", []):
+            if att.local_path and att.local_path.exists():
+                context_files.append(att.local_path)
         if extra_context_files:
             context_files.extend([f for f in extra_context_files if f.exists()])
 
-        image_extensions = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
-        image_files = [f for f in context_files if f.suffix.lower() in image_extensions]
+        extracted_ref, extracted_images, used_material_names = extract_context_materials(context_files)
 
         formatted_questions = []
         for q in questions_data:
@@ -597,7 +600,6 @@ class AISolver:
             "- NUNCA omita a PARTE 2. Ambas as partes são estritamente obrigatórias."
         )
 
-        extracted_ref = extract_text_from_context_files(context_files)
         user_message = (
             f"DISCIPLINA: {assignment.course_name}\n"
             f"ATIVIDADE: {assignment.title}\n\n"
@@ -635,13 +637,14 @@ class AISolver:
                         on_log=on_log,
                         auto_triggered=auto_triggered,
                         is_quiz=True,
+                        used_materials=used_material_names,
                     )
                 elif prov == "deepseek":
                     full_text, used_model = await _call_deepseek(
                         system_instruction,
                         user_message,
                         on_log,
-                        images=image_files if image_files else None,
+                        images=extracted_images if extracted_images else None,
                     )
                     return await _build_solution_draft(
                         assignment=assignment,
@@ -650,6 +653,7 @@ class AISolver:
                         on_log=on_log,
                         auto_triggered=auto_triggered,
                         is_quiz=True,
+                        used_materials=used_material_names,
                     )
 
             except Exception as err:
@@ -740,6 +744,7 @@ class AISolver:
                     on_log=on_log,
                     auto_triggered=draft.auto_triggered,
                     is_quiz=is_quiz,
+                    used_materials=getattr(draft, "used_materials", []),
                 )
                 if not res_draft.structured_answers and draft.structured_answers:
                     res_draft.structured_answers = draft.structured_answers
@@ -765,6 +770,7 @@ async def _build_solution_draft(
     on_log: Optional[Any],
     auto_triggered: bool,
     is_quiz: bool = False,
+    used_materials: Optional[List[str]] = None,
 ):
     """Constrói SolutionDraft a partir do texto bruto da IA, gerando PDF ou DOCX conforme contexto."""
     import json as _json
@@ -890,7 +896,7 @@ async def _build_solution_draft(
         output_path=draft_path,
         pdf_path=pdf_path,
         docx_path=docx_path,
-        used_materials=[],
+        used_materials=used_materials or [],
         used_model=used_model,
         structured_answers=structured_answers,
         activity_type="quiz" if is_quiz else getattr(assignment, "activity_type", "assign"),

@@ -255,6 +255,115 @@ class TestAIMultiProvider(unittest.TestCase):
             self.assertIn("a. fast", saved_md)
             self.assertIn("CAMPO_1", saved_md)
 
+    def test_extract_context_materials_docx_tables(self):
+        """Verifica se extract_context_materials extrai tabelas e textos em formato Markdown de arquivos DOCX."""
+        import tempfile
+        from pathlib import Path
+        import docx
+        from src.solver.gemini_solver import extract_context_materials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            docx_path = Path(tmpdir) / "teste.docx"
+            doc = docx.Document()
+            doc.add_heading("Título do Documento", level=1)
+            doc.add_paragraph("Este é um parágrafo explicativo.")
+            table = doc.add_table(rows=2, cols=2)
+            table.cell(0, 0).text = "Chave"
+            table.cell(0, 1).text = "Valor"
+            table.cell(1, 0).text = "Item A"
+            table.cell(1, 1).text = "100"
+            doc.save(str(docx_path))
+
+            text_content, images, used_files = extract_context_materials([str(docx_path)])
+
+            self.assertIn("teste.docx", used_files)
+            self.assertIn("Título do Documento", text_content)
+            self.assertIn("Este é um parágrafo explicativo.", text_content)
+            self.assertIn("| Chave | Valor |", text_content)
+            self.assertIn("| Item A | 100 |", text_content)
+            self.assertEqual(len(images), 0)
+
+    def test_extract_context_materials_image_file(self):
+        """Verifica se extract_context_materials extrai arquivos de imagem diretamente como bytes."""
+        import tempfile
+        from pathlib import Path
+        from src.solver.gemini_solver import extract_context_materials
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            img_path = Path(tmpdir) / "grafico.png"
+            fake_bytes = b"\x89PNG\r\n\x1a\nfakeimagebytes"
+            img_path.write_bytes(fake_bytes)
+
+            text_content, images, used_files = extract_context_materials([str(img_path)])
+
+            self.assertIn("grafico.png", used_files)
+            self.assertEqual(len(images), 1)
+            self.assertEqual(images[0], img_path)
+
+    def test_solve_quiz_with_materials_propagates_to_deepseek_and_draft(self):
+        """Verifica se solve_quiz_with_live_context extrai materiais, repassa imagens e preenche used_materials no rascunho."""
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from src.scraper.moodle_scraper import Assignment, CourseMaterial
+        from src.solver.ai_solver import AISolver
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mat_path = Path(tmpdir) / "enunciado.txt"
+            mat_path.write_text("Conteúdo de referência da questão", encoding="utf-8")
+            img_path = Path(tmpdir) / "esquema.png"
+            img_path.write_bytes(b"\x89PNG\r\n\x1a\nfakeimage")
+
+            mat = CourseMaterial(
+                id="mat1",
+                course_id="c9",
+                title="Enunciado de Apoio",
+                url="https://virtual.ufmg.br/mod/resource/view.php?id=mat1",
+                filename="enunciado.txt",
+                local_path=mat_path,
+            )
+
+            assign = Assignment(
+                id="999",
+                course_id="c9",
+                course_name="Física Experimental",
+                title="Lab 1",
+                url="https://virtual.ufmg.br/mod/quiz/view.php?id=999",
+                description="Quiz de física",
+                activity_type="quiz",
+                attachments=[mat],
+            )
+
+            solver = AISolver()
+            mock_ds_response = (
+                "```json:answers\n{\"Q1\": \"Opção B\"}\n```\n\n### Folha de Respostas\n- Questão 1: Opção B",
+                "deepseek-flash"
+            )
+
+            with patch("src.solver.ai_solver._call_deepseek", AsyncMock(return_value=mock_ds_response)) as mock_ds, \
+                 patch.object(settings, "AI_PROVIDER", "deepseek"), \
+                 patch.object(settings, "DEEPSEEK_API_KEY", "sk-test-deepseek"), \
+                 patch("src.solver.docx_generator.AcademicDocxGenerator.generate_docx", return_value=True):
+
+                draft = asyncio.run(solver.solve_quiz_with_live_context(
+                    assignment=assign,
+                    questions_data=[{"qNumberText": "Questão 1", "fullTextWithTokens": "Calcule a aceleração."}],
+                    extra_context_files=[img_path],
+                    on_log=None,
+                ))
+
+                self.assertIsNotNone(draft)
+                self.assertIn("enunciado.txt", draft.used_materials)
+                self.assertIn("esquema.png", draft.used_materials)
+                self.assertTrue(mock_ds.called)
+                call_args = mock_ds.call_args
+                call_sys, call_user = call_args[0][:2]
+                call_kwargs = call_args.kwargs
+                self.assertIn("enunciado.txt", call_user)
+                self.assertIn("Conteúdo de referência da questão", call_user)
+                self.assertEqual(len(call_kwargs["images"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -53,52 +53,134 @@ async def _emit_log(callback: Optional[Any], msg: str):
         pass
 
 
-def extract_text_from_context_files(files: List[Path]) -> str:
-    """Extrai texto legível de PDFs, TXT, Markdown, CSV e JSON para injeção direta no prompt do Gemini."""
+def extract_context_materials(
+    files: List[Path],
+    max_text_chars: int = 50000,
+    max_images: int = 6,
+) -> Tuple[str, List[Union[Path, bytes]], List[str]]:
+    """Extrai texto estruturado em Markdown e imagens de apoio de arquivos de contexto.
+
+    Suporta:
+    - DOCX / DOC: extrai parágrafos, listas e formata tabelas em Markdown (| col1 | col2 |).
+    - PDF: extrai texto por página via pypdf; se houver imagens embutidas (esquemas/gráficos), extrai-as.
+    - TXT / MD / CSV / JSON / XML / HTML / Código: lê texto com detecção de encoding.
+    - Imagens diretas (.png, .jpg, .jpeg, .webp, .gif): repassa para visão multimodal.
+
+    Retorna:
+    (markdown_text, image_list, used_filenames)
+    """
     extracted_blocks = []
-    for file_path in files:
-        if not file_path.exists() or file_path.stat().st_size == 0:
+    extracted_images: List[Union[Path, bytes]] = []
+    used_filenames: List[str] = []
+    image_exts = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+    for raw_path in files:
+        if not raw_path:
+            continue
+        try:
+            file_path = Path(raw_path) if isinstance(raw_path, str) else raw_path
+            if not file_path.exists() or file_path.stat().st_size == 0:
+                continue
+        except Exception:
             continue
         ext = file_path.suffix.lower()
         content = ""
-        try:
-            if ext == ".pdf":
+        file_had_content = False
+
+        # 1. Imagem direta
+        if ext in image_exts:
+            if len(extracted_images) < max_images:
+                extracted_images.append(file_path)
+            used_filenames.append(file_path.name)
+            continue
+
+        # 2. Documento DOCX
+        elif ext in [".docx", ".doc"]:
+            try:
+                import docx
+                doc = docx.Document(str(file_path))
+                doc_parts = []
+                for para in doc.paragraphs:
+                    p_text = para.text.strip()
+                    if p_text:
+                        if para.style and para.style.name and "heading" in para.style.name.lower():
+                            doc_parts.append(f"### {p_text}")
+                        else:
+                            doc_parts.append(p_text)
+                for table in doc.tables:
+                    t_lines = []
+                    header_added = False
+                    for row in table.rows:
+                        cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+                        t_lines.append("| " + " | ".join(cells) + " |")
+                        if not header_added:
+                            t_lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
+                            header_added = True
+                    if t_lines:
+                        doc_parts.append("\n".join(t_lines))
+                if doc_parts:
+                    content = "\n\n".join(doc_parts)
+                    file_had_content = True
+            except Exception as docx_err:
+                console.print(f"  [yellow]Aviso ao extrair texto do DOCX {file_path.name}: {docx_err}[/yellow]")
+
+        # 3. Documento PDF
+        elif ext == ".pdf":
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(str(file_path))
+                pages_text = []
+                for p_idx, page in enumerate(reader.pages):
+                    pt = page.extract_text()
+                    if pt and pt.strip():
+                        pages_text.append(f"[Página {p_idx+1}]\n{pt.strip()}")
+                    # Tenta extrair imagens embutidas para visão multimodal
+                    if hasattr(page, "images") and len(extracted_images) < max_images:
+                        try:
+                            for img in page.images:
+                                if len(extracted_images) < max_images and hasattr(img, "data") and img.data:
+                                    extracted_images.append(img.data)
+                        except Exception:
+                            pass
+                if pages_text:
+                    content = "\n\n".join(pages_text)
+                    file_had_content = True
+            except Exception as pdf_err:
+                console.print(f"  [yellow]Aviso ao extrair texto do PDF {file_path.name}: {pdf_err}[/yellow]")
+
+        # 4. Arquivos de texto puro / código
+        elif ext in [".txt", ".md", ".csv", ".json", ".xml", ".html", ".py", ".c", ".cpp", ".java", ".js", ".ts", ".sql"]:
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="replace").strip()
+            except Exception:
                 try:
-                    from pypdf import PdfReader
-                    reader = PdfReader(str(file_path))
-                    pages_text = []
-                    for p_idx, page in enumerate(reader.pages):
-                        pt = page.extract_text()
-                        if pt and pt.strip():
-                            pages_text.append(f"[Página {p_idx+1}]\n{pt.strip()}")
-                    if pages_text:
-                        content = "\n\n".join(pages_text)
-                except Exception as pdf_err:
-                    console.print(f"  [yellow]Aviso ao extrair texto do PDF {file_path.name}: {pdf_err}[/yellow]")
-            elif ext in [".txt", ".md", ".csv", ".json", ".xml", ".html"]:
-                try:
-                    content = file_path.read_text(encoding="utf-8", errors="replace").strip()
+                    content = file_path.read_text(encoding="latin-1", errors="replace").strip()
                 except Exception:
-                    try:
-                        content = file_path.read_text(encoding="latin-1", errors="replace").strip()
-                    except Exception:
-                        pass
-        except Exception as read_err:
-            console.print(f"  [yellow]Aviso ao ler arquivo de apoio {file_path.name}: {read_err}[/yellow]")
+                    pass
+            if content:
+                file_had_content = True
 
         if content:
-            # Limita tamanho para evitar estourar tokens caso o material seja excessivamente extenso
-            if len(content) > 35000:
-                content = content[:35000] + "\n... [Texto truncado por limite de contexto]"
+            if len(content) > max_text_chars:
+                content = content[:max_text_chars] + "\n... [Texto truncado por limite de contexto]"
             extracted_blocks.append(
                 f"--- INÍCIO DO ARQUIVO: {file_path.name} ---\n"
                 f"{content}\n"
                 f"--- FIM DO ARQUIVO: {file_path.name} ---"
             )
 
-    if extracted_blocks:
-        return "\n\n".join(extracted_blocks)
-    return ""
+        if file_had_content:
+            if file_path.name not in used_filenames:
+                used_filenames.append(file_path.name)
+
+    markdown_result = "\n\n".join(extracted_blocks) if extracted_blocks else ""
+    return markdown_result, extracted_images, used_filenames
+
+
+def extract_text_from_context_files(files: List[Path]) -> str:
+    """Extrai texto legível de arquivos de apoio em formato Markdown (compatibilidade legada)."""
+    text, _, _ = extract_context_materials(files)
+    return text
 
 
 class SolutionDraft(BaseModel):
