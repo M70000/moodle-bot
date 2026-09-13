@@ -382,6 +382,19 @@ class BridgeRunner:
             await done_event.wait()
             return result_box["success"], result_box["message"]
 
+        elif action == "relogin":
+            from src.auth.moodle_auth import MoodleAuth
+            auth = MoodleAuth()
+            console.print("[bold cyan]🔑 [Ponte Nuvem] Comando de login recebido: Abrindo navegador no desktop...[/bold cyan]")
+            success = await auth.interactive_login(headless=False)
+            if success:
+                valid, user = await auth.validate_session()
+                from src.notifier.discord_bot import MoodleDiscordNotifier
+                notifier = MoodleDiscordNotifier()
+                await notifier.send_session_renewed_notification(user_name=user)
+                return True, "Sessão renovada com sucesso via navegador interativo."
+            return False, "Navegador de login foi fechado sem autenticação concluída."
+
         return False, f"Ação desconhecida: {action}"
 
     async def run_loop(self, poll_interval: float = 4.0):

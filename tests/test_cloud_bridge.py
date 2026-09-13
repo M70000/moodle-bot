@@ -119,6 +119,28 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
             _, kwargs = mock_solve.call_args
             self.assertTrue(len(kwargs.get("extra_files", [])) >= 1)
 
+    async def test_bridge_runner_relogin_task(self):
+        """Testa o despacho e execução de relogin pelo BridgeRunner no Desktop."""
+        runner = BridgeRunner(render_url="https://mock-app.onrender.com")
+        task = {
+            "task_id": "bridge_relog1",
+            "action": "relogin",
+            "title": "Renovação Interativa de Login no Moodle",
+            "channel_id": "123"
+        }
+
+        mock_auth = MagicMock()
+        mock_auth.interactive_login = AsyncMock(return_value=True)
+        mock_auth.validate_session = AsyncMock(return_value=(True, "Usuario Logado"))
+
+        with patch("src.auth.moodle_auth.MoodleAuth", return_value=mock_auth), \
+             patch("src.notifier.discord_bot.MoodleDiscordNotifier.send_session_renewed_notification", new_callable=AsyncMock) as mock_notify:
+            success, msg = await runner._execute_task(task)
+            self.assertTrue(success)
+            self.assertIn("renovada com sucesso", msg.lower())
+            mock_auth.interactive_login.assert_called_once_with(headless=False)
+            mock_notify.assert_called_once_with(user_name="Usuario Logado")
+
 
 if __name__ == "__main__":
     unittest.main()

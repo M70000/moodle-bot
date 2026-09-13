@@ -718,6 +718,58 @@ def extract_quiz_answers_payload(
     return ans_payload
 
 
+class SessionExpiredView(ui.View):
+    """View interativa com botão para abrir a janela de login do Moodle no computador."""
+
+    def __init__(self, timeout: Optional[float] = None):
+        super().__init__(timeout=timeout)
+
+    @ui.button(label="Abrir Login no PC", style=discord.ButtonStyle.primary, emoji="🔑", custom_id="btn_open_moodle_login")
+    async def open_login_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            from config.settings import settings
+            cookies_exist = Path(settings.STORAGE_COOKIES_PATH).exists()
+            render_url = (settings.RENDER_URL or "").rstrip("/")
+
+            if not cookies_exist and render_url:
+                from src.notifier.bridge_manager import cloud_bridge
+                task_id = await cloud_bridge.dispatch_action(
+                    action="relogin",
+                    channel_id=str(interaction.channel_id),
+                    message_id=str(interaction.message.id) if interaction.message else "",
+                    requester=interaction.user.name,
+                    title="Renovação de Sessão Moodle",
+                    course="Autenticação"
+                )
+                await interaction.followup.send(
+                    f"🚀 **Solicitação enviada para o seu computador!** (ID: `{task_id}`)\n"
+                    "A janela do navegador para login no MinhaUFMG está sendo aberta no desktop.",
+                    ephemeral=True
+                )
+            else:
+                from src.auth.moodle_auth import MoodleAuth
+                auth = MoodleAuth()
+
+                async def _bg_login():
+                    success = await auth.interactive_login(headless=False)
+                    if success:
+                        notifier = MoodleDiscordNotifier()
+                        valid, user = await auth.validate_session()
+                        await notifier.send_session_renewed_notification(user_name=user)
+
+                asyncio.create_task(_bg_login())
+                await interaction.followup.send(
+                    "🖥️ **Janela de login aberta no seu computador!**\n"
+                    "Basta preencher seu usuário e senha do MinhaUFMG na tela do navegador que acabou de abrir. "
+                    "Assim que entrar, o assistente salvará a nova sessão e confirmará aqui.",
+                    ephemeral=True
+                )
+        except Exception as err:
+            console.print(f"[red]Erro ao disparar login pelo botão do Discord: {err}[/red]")
+            await interaction.followup.send(f"❌ Erro ao abrir janela de login: {err}", ephemeral=True)
+
+
 class ReviewActionView(ui.View):
     """Componente interativo com botões dinâmicos de decisão e persistência imediata em disco."""
 
@@ -1361,6 +1413,10 @@ class MoodleBotClient(commands.Bot):
     async def setup_hook(self):
         if _os.environ.get("BRIDGE_RUNNER") == "1" or getattr(self, "_skip_tree_sync", False):
             return
+        try:
+            self.add_view(SessionExpiredView())
+        except Exception:
+            pass
         console.print("[cyan]Sincronizando Slash Commands...[/cyan]")
         try:
             # Sync global (propagação pode demorar até 1h no Discord)
@@ -4884,32 +4940,75 @@ class MoodleDiscordNotifier:
             console.print(f"[red]Erro ao enviar alerta de contagem: {e}[/red]")
         return False
 
-    async def send_session_expired_alert(self) -> bool:
-        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou."""
+    async def send_session_expired_alert(self, browser_opened: bool = True) -> bool:
+        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou e abrindo o login."""
+        try:
+            channel = await self._resolve_channel(self.channel_id)
+            if not channel:
+                return False
+
+            desc_lines = [
+                "A sua sessão de autenticação no **Moodle UFMG / MinhaUFMG** expirou no servidor.\n"
+            ]
+            if browser_opened:
+                desc_lines.append(
+                    "🖥️ **A janela do navegador já foi aberta automaticamente no seu computador!**\n"
+                    "Basta preencher seu **usuário e senha** na tela do MinhaUFMG. Assim que o Moodle carregar, a nova sessão será salva e o bot voltará a operar normalmente.\n"
+                )
+            desc_lines.append(
+                "👉 **Caso a janela tenha sido fechada ou precise reabri-la:**\n"
+                "• Clique no botão **'🔑 Abrir Login no PC'** abaixo;\n"
+                "• Ou execute no terminal: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
+                "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
+            )
+
+            embed = discord.Embed(
+                title="⚠️ Sessão do Moodle Expirada",
+                description="\n".join(desc_lines),
+                color=discord.Color.red()
+            )
+            embed.set_footer(text=f"Detectado pelo Heartbeat do Moodle Bot às {datetime.now().strftime('%H:%M:%S')}")
+            view = SessionExpiredView()
+            content = (
+                "⚠️ **Atenção:** Sua sessão de login no Moodle expirou! A tela de login foi aberta no seu computador."
+                if browser_opened
+                else "⚠️ **Atenção:** Sua sessão de login no Moodle expirou!"
+            )
+            await channel.send(
+                content=content,
+                embed=embed,
+                view=view
+            )
+            return True
+        except Exception as e:
+            console.print(f"[yellow]Nota ao enviar alerta de sessão expirada no Discord: {e}[/yellow]")
+            return False
+
+    async def send_session_renewed_notification(self, user_name: Optional[str] = None) -> bool:
+        """Envia mensagem no Discord confirmando que a sessão do Moodle foi restabelecida com sucesso."""
         try:
             channel = await self._resolve_channel(self.channel_id)
             if not channel:
                 return False
 
             embed = discord.Embed(
-                title="⚠️ Sessão do Moodle Expirada",
+                title="🎉 Sessão do Moodle Renovada com Sucesso!",
                 description=(
-                    "A sua sessão de autenticação no **Moodle UFMG / MinhaUFMG** expirou no servidor.\n\n"
-                    "👉 **Para renovar a sua sessão:**\n"
-                    "1. No computador, abra o painel executando o arquivo `configurar.bat` e clique em **'Testar Conexão / Fazer Login'**;\n"
-                    "2. Ou no terminal execute: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
-                    "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
+                    f"A sua autenticação no **Moodle UFMG / MinhaUFMG** foi restabelecida com êxito"
+                    f"{' para **' + user_name + '**' if user_name else ''}.\n\n"
+                    "✔ Acesso a disciplinas, questionários e materiais desbloqueado.\n"
+                    "✔ O assistente continuará monitorando e resolvendo tarefas em segundo plano."
                 ),
-                color=discord.Color.red()
+                color=discord.Color.green()
             )
-            embed.set_footer(text=f"Detectado pelo Heartbeat do Moodle Bot às {datetime.now().strftime('%H:%M:%S')}")
+            embed.set_footer(text=f"Renovado às {datetime.now().strftime('%H:%M:%S')}")
             await channel.send(
-                content="⚠️ **Atenção:** Sua sessão de login no Moodle expirou!",
+                content="✅ **Sessão do Moodle Reativada!**",
                 embed=embed
             )
             return True
         except Exception as e:
-            console.print(f"[yellow]Nota ao enviar alerta de sessão expirada no Discord: {e}[/yellow]")
+            console.print(f"[yellow]Nota ao enviar notificação de sessão renovada no Discord: {e}[/yellow]")
             return False
 
 

@@ -120,41 +120,82 @@ class TestSessionHeartbeat(unittest.IsolatedAsyncioTestCase):
                 session_file.unlink()
 
     async def test_daemon_heartbeat_alert_debounced(self):
-        """O daemon deve disparar alerta de expiração no Discord com debounce (apenas uma vez)."""
+        """O daemon deve disparar alerta de expiração no Discord com debounce e auto-relogin."""
         daemon = MoodleDaemon()
         daemon.auth.heartbeat_session = AsyncMock(return_value=(False, "Sessão expirada"))
         daemon.notifier.send_session_expired_alert = AsyncMock(return_value=True)
+        daemon._auto_relogin_flow = AsyncMock()
         daemon.notifier.token = "fake_token"
         daemon.notifier.channel_id = 123456
 
-        # Primeiro ciclo do heartbeat com falha -> deve disparar alerta
+        # Primeiro ciclo do heartbeat com falha -> deve disparar alerta e auto-relogin
         await daemon.session_heartbeat_job()
         self.assertTrue(daemon._session_expired_alerted)
         self.assertEqual(daemon.notifier.send_session_expired_alert.call_count, 1)
+        self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
 
         # Segundo ciclo consecutivo com falha -> NÃO deve disparar novamente (debounce)
         await daemon.session_heartbeat_job()
         self.assertTrue(daemon._session_expired_alerted)
         self.assertEqual(daemon.notifier.send_session_expired_alert.call_count, 1)
+        self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
 
         # Sessão restabelecida -> reseta flag
         daemon.auth.heartbeat_session = AsyncMock(return_value=(True, "Sessão renovada"))
         await daemon.session_heartbeat_job()
         self.assertFalse(daemon._session_expired_alerted)
 
+    async def test_auto_relogin_flow_success(self):
+        """Testa o fluxo automático de abertura do navegador e notificação de renovação."""
+        daemon = MoodleDaemon()
+        daemon.auth.interactive_login = AsyncMock(return_value=True)
+        daemon.auth.validate_session = AsyncMock(return_value=(True, "Aluno UFMG"))
+        daemon.notifier.send_session_renewed_notification = AsyncMock(return_value=True)
+        daemon.notifier.token = "fake_token"
+        daemon.notifier.channel_id = 123456
+        daemon._session_expired_alerted = True
+
+        await daemon._auto_relogin_flow()
+
+        daemon.auth.interactive_login.assert_called_once_with(headless=False)
+        self.assertFalse(daemon._session_expired_alerted)
+        self.assertFalse(daemon._is_reauthenticating)
+        daemon.notifier.send_session_renewed_notification.assert_called_once_with(user_name="Aluno UFMG")
+
     async def test_send_session_expired_alert_discord(self):
-        """Testa montagem e envio da notificação de sessão expirada no Discord."""
+        """Testa montagem e envio da notificação de sessão expirada no Discord com botão interativo."""
         notifier = MoodleDiscordNotifier(token="mock_token", channel_id=987654321)
         mock_channel = AsyncMock()
         mock_channel.send = AsyncMock()
 
         with patch.object(notifier, "_resolve_channel", AsyncMock(return_value=mock_channel)):
-            success = await notifier.send_session_expired_alert()
+            success = await notifier.send_session_expired_alert(browser_opened=True)
 
         self.assertTrue(success)
         self.assertEqual(mock_channel.send.call_count, 1)
         call_kwargs = mock_channel.send.call_args[1]
         self.assertIn("Atenção", call_kwargs.get("content", ""))
+        self.assertIn("tela de login foi aberta", call_kwargs.get("content", ""))
         embed = call_kwargs.get("embed")
         self.assertIsNotNone(embed)
         self.assertIn("Expirada", embed.title)
+        view = call_kwargs.get("view")
+        self.assertIsNotNone(view)
+
+    async def test_send_session_renewed_notification_discord(self):
+        """Testa envio da confirmação de sessão restabelecida com sucesso no Discord."""
+        notifier = MoodleDiscordNotifier(token="mock_token", channel_id=987654321)
+        mock_channel = AsyncMock()
+        mock_channel.send = AsyncMock()
+
+        with patch.object(notifier, "_resolve_channel", AsyncMock(return_value=mock_channel)):
+            success = await notifier.send_session_renewed_notification(user_name="Estudante UFMG")
+
+        self.assertTrue(success)
+        self.assertEqual(mock_channel.send.call_count, 1)
+        call_kwargs = mock_channel.send.call_args[1]
+        self.assertIn("Reativada", call_kwargs.get("content", ""))
+        embed = call_kwargs.get("embed")
+        self.assertIsNotNone(embed)
+        self.assertIn("Renovada com Sucesso", embed.title)
+        self.assertIn("Estudante UFMG", embed.description)
