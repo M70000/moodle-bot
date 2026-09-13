@@ -35,4 +35,9 @@ anthropic>=0.40.0
 # DeepSeek via OpenAI SDK: pip install openai
 openai>=1.54.0
 
+# Bandeja do Sistema (System Tray Icon & Imagens)
+pystray>=0.19.5
+pillow>=10.0.0
+
+
 

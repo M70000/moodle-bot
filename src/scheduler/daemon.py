@@ -38,7 +38,7 @@ console = Console()
 class MoodleDaemon:
     """Daemon principal que orquestra a inteligência em segundo plano."""
 
-    def __init__(self):
+    def __init__(self, enable_tray: bool = True):
         self.auth = MoodleAuth()
         self.scraper = MoodleScraper(auth=self.auth)
         self.solver = AISolver()  # Multi-provider BYOK: Gemini/Claude/DeepSeek
@@ -48,6 +48,9 @@ class MoodleDaemon:
         self._running = False
         self._session_expired_alerted = False
         self._is_reauthenticating = False
+        self.enable_tray = enable_tray
+        self.tray = None
+
 
     async def _auto_relogin_flow(self):
         """Abre automaticamente o navegador na tela do usuário para renovação de sessão."""
@@ -347,6 +350,16 @@ class MoodleDaemon:
         """Inicia o daemon e agenda os jobs em segundo plano."""
         self._running = True
 
+        tray_status = "Inativa"
+        if self.enable_tray and sys.platform == "win32":
+            try:
+                from src.ui.tray_manager import SystemTrayManager
+                self.tray = SystemTrayManager(on_exit_callback=self.stop)
+                if self.tray.start():
+                    tray_status = "[bold green]Ativa (minimizar oculta da barra de tarefas)[/bold green]"
+            except Exception as tray_err:
+                tray_status = f"[yellow]Indisponível ({tray_err})[/yellow]"
+
         heartbeat_minutes = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
         console.print(
             Panel.fit(
@@ -355,6 +368,7 @@ class MoodleDaemon:
                 f"• Intervalo de varredura: [bold]{settings.CHECK_INTERVAL_MINUTES} minutos[/bold]\n"
                 f"• Heartbeat Keep-Alive: [bold cyan]A cada {heartbeat_minutes} minutos[/bold cyan]\n"
                 f"• IA: [bold]{settings.GEMINI_MODEL}[/bold]\n"
+                f"• Bandeja do Sistema: {tray_status}\n"
                 "• Submissão: [bold green]Estritamente sob aprovação humana[/bold green]\n"
                 "• Alertas de prazo: [bold yellow]Contagem regressiva intensiva (15m, 5m, 2m, 1m)[/bold yellow]\n"
                 "• Pressione [bold]Ctrl+C[/bold] para encerrar.",
@@ -362,6 +376,7 @@ class MoodleDaemon:
                 border_style="green"
             )
         )
+
 
         if settings.DISCORD_BOT_TOKEN and settings.DISCORD_BOT_TOKEN != "seu_discord_bot_token_aqui":
             from src.notifier.discord_bot import bot
@@ -431,6 +446,12 @@ class MoodleDaemon:
     def stop(self):
         """Para o daemon com segurança."""
         self._running = False
+        if self.tray:
+            try:
+                self.tray.stop()
+            except Exception:
+                pass
+            self.tray = None
         if self.scheduler.running:
             self.scheduler.shutdown()
         console.print("[bold yellow]Daemon encerrado com segurança.[/bold yellow]")
@@ -439,9 +460,11 @@ class MoodleDaemon:
 async def main():
     parser = argparse.ArgumentParser(description="Moodle AI Assistant Background Daemon")
     parser.add_argument("--once", action="store_true", help="Executa apenas um ciclo e encerra")
+    parser.add_argument("--no-tray", action="store_true", help="Desabilita o ícone da bandeja do sistema")
     args = parser.parse_args()
 
-    daemon = MoodleDaemon()
+    daemon = MoodleDaemon(enable_tray=not args.no_tray and not args.once)
+
 
     if args.once:
         if settings.DISCORD_BOT_TOKEN and settings.DISCORD_BOT_TOKEN != "seu_discord_bot_token_aqui":
