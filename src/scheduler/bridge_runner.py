@@ -532,6 +532,9 @@ class BridgeRunner:
                 return False, "Integração com Notion não está configurada no Desktop Runner (.env local)."
             state = DaemonState()
             assignments = state.get_pending_assignments()
+            if not assignments:
+                return True, "Nenhuma tarefa pendente encontrada no catálogo local para sincronizar com o Notion."
+
             added = 0
             already = 0
             for a in assignments:
@@ -560,6 +563,10 @@ class BridgeRunner:
                         already += 1
                     else:
                         added += 1
+
+            if added == 0 and already == 0:
+                return True, "Nenhuma tarefa pendente com prazo definido foi encontrada para sincronizar com o Notion."
+
             return True, f"Sincronização com Notion concluída: {added} adicionados, {already} já existentes."
 
         elif action == "relogin":

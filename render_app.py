@@ -68,6 +68,18 @@ async def notify_discord_completion(task: dict):
                 )
             return
 
+        # Se for ação de integração com Notion:
+        if action.startswith("notion_"):
+            if success:
+                await channel.send(
+                    f"✔ **Notion & Agenda:**\n{result_msg}"
+                )
+            else:
+                await channel.send(
+                    f"⚠️ **Falha na integração com Notion:**\n{result_msg}"
+                )
+            return
+
         if success:
             await channel.send(
                 f"🎉 **Confirmação de Envio no Moodle:**\n"

@@ -3573,6 +3573,13 @@ async def cmd_notion_sync(interaction: discord.Interaction):
             else:
                 added += 1
 
+    if added == 0 and already == 0:
+        await interaction.followup.send(
+            "ℹ **Nenhuma atividade pendente possui prazo definido no Moodle** para ser adicionada à agenda do Notion.",
+            ephemeral=True
+        )
+        return
+
     await interaction.followup.send(
         f"✔ **Sincronização com o Notion concluída!**\n"
         f"• Novos itens adicionados e anunciados: **{added}**\n"

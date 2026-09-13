@@ -10,11 +10,11 @@ import re
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from rich.console import Console
 from rich.table import Table
 
@@ -53,7 +53,7 @@ class Course(BaseModel):
 
 
 class CourseMaterial(BaseModel):
-    """Representa um material de aula (slide, PDF, lista, etc.)."""
+    """Representa um material de apoio baixado da disciplina (slides, PDFs, listas)."""
     id: str
     course_id: str
     title: str
@@ -63,13 +63,97 @@ class CourseMaterial(BaseModel):
     material_type: str = "resource"
 
 
+MONTHS_PT = {
+    "janeiro": 1, "jan": 1,
+    "fevereiro": 2, "fev": 2,
+    "março": 3, "marco": 3, "mar": 3,
+    "abril": 4, "abr": 4,
+    "maio": 5, "mai": 5,
+    "junho": 6, "jun": 6,
+    "julho": 7, "jul": 7,
+    "agosto": 8, "ago": 8,
+    "setembro": 9, "set": 9,
+    "outubro": 10, "out": 10,
+    "novembro": 11, "nov": 11,
+    "dezembro": 12, "dez": 12,
+}
+
+
+def parse_moodle_date(date_val: Any) -> Optional[datetime]:
+    """Converte strings de datas do Moodle em objetos datetime estruturados."""
+    if not date_val:
+        return None
+    if isinstance(date_val, datetime):
+        return date_val
+    if not isinstance(date_val, str):
+        return None
+
+    s = date_val.strip().lower()
+    if s in ["sem prazo", "não especificado", "nao especificado", "n/a", "none", "sob demanda"]:
+        return None
+
+    # Padrão 1: '7 de janeiro de 2025' ou 'terça-feira, 7 de janeiro de 2025, 23:59' ou '15 de dez. de 2024 às 18:00'
+    m1 = re.search(r'(\d{1,2})\s+de\s+([a-zçã]+)\.?\s+de\s+(\d{4})(?:[,\s]+(?:às\s+)?(\d{1,2}):(\d{2}))?', s)
+    if m1:
+        day = int(m1.group(1))
+        m_name = m1.group(2)
+        year = int(m1.group(3))
+        hour = int(m1.group(4)) if m1.group(4) is not None else 23
+        minute = int(m1.group(5)) if m1.group(5) is not None else 59
+        month = MONTHS_PT.get(m_name)
+        if month:
+            try:
+                return datetime(year, month, day, hour, minute)
+            except ValueError:
+                pass
+
+    # Padrão 2: '10 mar 2025' ou '10 mar. 2025 12:00'
+    m2 = re.search(r'(\d{1,2})\s+([a-zçã]+)\.?\s+(\d{4})(?:[,\s]+(?:às\s+)?(\d{1,2}):(\d{2}))?', s)
+    if m2:
+        day = int(m2.group(1))
+        m_name = m2.group(2)
+        year = int(m2.group(3))
+        hour = int(m2.group(4)) if m2.group(4) is not None else 23
+        minute = int(m2.group(5)) if m2.group(5) is not None else 59
+        month = MONTHS_PT.get(m_name)
+        if month:
+            try:
+                return datetime(year, month, day, hour, minute)
+            except ValueError:
+                pass
+
+    # Padrão 3: '07/01/2025 23:59' ou '07/01/2025'
+    m3 = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})(?:[,\s]+(?:às\s+)?(\d{1,2}):(\d{2}))?', s)
+    if m3:
+        day, month, year = int(m3.group(1)), int(m3.group(2)), int(m3.group(3))
+        hour = int(m3.group(4)) if m3.group(4) is not None else 23
+        minute = int(m3.group(5)) if m3.group(5) is not None else 59
+        try:
+            return datetime(year, month, day, hour, minute)
+        except ValueError:
+            pass
+
+    # Padrão 4: ISO '2025-01-07' ou '2025-01-07T23:59:00'
+    m4 = re.search(r'(\d{4})-(\d{1,2})-(\d{1,2})(?:[t\s]+(\d{1,2}):(\d{2}))?', s)
+    if m4:
+        year, month, day = int(m4.group(1)), int(m4.group(2)), int(m4.group(3))
+        hour = int(m4.group(4)) if m4.group(4) is not None else 23
+        minute = int(m4.group(5)) if m4.group(5) is not None else 59
+        try:
+            return datetime(year, month, day, hour, minute)
+        except ValueError:
+            pass
+
+    return None
+
+
 class Assignment(BaseModel):
     """Representa uma atividade/tarefa acadêmica com prazo de entrega."""
     id: str
-    course_id: str
+    course_id: str = ""
     course_name: str
     title: str
-    url: str
+    url: str = ""
     description: str = ""
     due_date_str: Optional[str] = None
     due_date: Optional[datetime] = None
@@ -84,6 +168,26 @@ class Assignment(BaseModel):
     submitted_files: List[str] = Field(default_factory=list)
     can_submit: bool = True
     attachments: List[CourseMaterial] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _auto_parse_due_date(self) -> "Assignment":
+        if self.due_date is None and self.due_date_str:
+            self.due_date = parse_moodle_date(self.due_date_str)
+        return self
+
+    @property
+    def course(self) -> str:
+        """Compatibilidade para acesso como course ou course_name."""
+        return self.course_name
+
+    @property
+    def status_text(self) -> str:
+        """Texto descritivo do status atual da atividade."""
+        if self.is_submitted:
+            return "Concluído"
+        if self.is_expired:
+            return "Prazo expirado"
+        return self.submission_status or "Pendente"
 
     @property
     def has_grade(self) -> bool:
@@ -118,6 +222,8 @@ class Assignment(BaseModel):
         """Verifica se o prazo da tarefa já expirou no passado."""
         time_lower = (self.time_remaining or "").lower()
         if any(term in time_lower for term in ["atrasad", "expirad", "encerrad", "fechad"]):
+            return True
+        if self.due_date and self.due_date < datetime.now():
             return True
         return False
 

@@ -34,6 +34,85 @@ class DaemonState:
     def get_assignment(self, assign_id: str) -> Optional[Dict[str, Any]]:
         return self.data.get("assignments", {}).get(assign_id)
 
+    def get_pending_assignments(self) -> List[Any]:
+        """Retorna a lista de tarefas pendentes de resolução e entrega no catálogo de estado."""
+        from src.scraper.moodle_scraper import Assignment, parse_moodle_date
+
+        pending = []
+        for assign_id, item in self.data.get("assignments", {}).items():
+            if not isinstance(item, dict):
+                continue
+
+            # 1. Ignora se já estiver submetida ou cancelada
+            if item.get("is_submitted"):
+                continue
+            if item.get("status") in ["submitted", "cancelled"]:
+                continue
+
+            sub_status = str(item.get("submission_status", "")).lower()
+            if any(term in sub_status for term in ["concluído", "concluido", "enviado para avaliação", "submetido", "feito", "finalizada"]):
+                continue
+
+            time_rem = str(item.get("time_remaining", "")).lower()
+            if "enviada" in time_rem and "adiantado" in time_rem:
+                continue
+
+            # 2. Parse da data de entrega
+            due_str = item.get("due_date") or item.get("due_date_str")
+            due_dt = parse_moodle_date(due_str)
+
+            # 3. Ignora se o prazo já expirou no passado
+            if any(term in time_rem for term in ["atrasad", "expirad", "encerrad", "fechad"]):
+                continue
+            if due_dt and due_dt < datetime.now():
+                continue
+
+            # 4. Reconstrói o Assignment para uso no Notion sync e outros fluxos
+            assign = Assignment(
+                id=str(item.get("id", assign_id)),
+                course_id=str(item.get("course_id", "")),
+                course_name=item.get("course") or item.get("course_name") or "Disciplina",
+                title=item.get("title", "Sem título"),
+                url=item.get("url", ""),
+                due_date_str=due_str,
+                due_date=due_dt,
+                time_remaining=item.get("time_remaining"),
+                submission_status=item.get("submission_status", "Não enviado"),
+                activity_type=item.get("activity_type", "assign"),
+                grade_value=item.get("grade_value"),
+                can_submit=bool(item.get("can_submit", True))
+            )
+            pending.append(assign)
+
+        return pending
+
+    def get_all_assignments(self) -> List[Any]:
+        """Retorna todos os registros de tarefas presentes no catálogo de estado como objetos Assignment."""
+        from src.scraper.moodle_scraper import Assignment, parse_moodle_date
+
+        all_items = []
+        for assign_id, item in self.data.get("assignments", {}).items():
+            if not isinstance(item, dict):
+                continue
+            due_str = item.get("due_date") or item.get("due_date_str")
+            due_dt = parse_moodle_date(due_str)
+            assign = Assignment(
+                id=str(item.get("id", assign_id)),
+                course_id=str(item.get("course_id", "")),
+                course_name=item.get("course") or item.get("course_name") or "Disciplina",
+                title=item.get("title", "Sem título"),
+                url=item.get("url", ""),
+                due_date_str=due_str,
+                due_date=due_dt,
+                time_remaining=item.get("time_remaining"),
+                submission_status=item.get("submission_status", "Não enviado"),
+                activity_type=item.get("activity_type", "assign"),
+                grade_value=item.get("grade_value"),
+                can_submit=bool(item.get("can_submit", True))
+            )
+            all_items.append(assign)
+        return all_items
+
     def register_assignment(self, assignment, draft_path: Optional[str] = None):
         if "assignments" not in self.data:
             self.data["assignments"] = {}
