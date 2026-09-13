@@ -199,7 +199,14 @@ def get_current_config() -> Dict[str, Any]:
 
 
 def save_config_to_env(new_values: Dict[str, Any]) -> None:
-    """Salva os valores atualizados formatados e organizados no .env."""
+    """Salva os valores atualizados formatados e organizados no .env com proteção contra perda de chaves."""
+    current = get_current_config().get("config", {})
+
+    def _val(key: str, default: str = "") -> str:
+        if key in new_values:
+            return str(new_values[key]).strip()
+        return str(current.get(key, default)).strip()
+
     lines = [
         "# ===================================================================",
         "# Moodle AI Assistant (UFMG) - Arquivo de Configuração de Ambiente",
@@ -209,73 +216,73 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         "# -------------------------------------------------------------------",
         "# 1. Plataforma Moodle & UFMG Virtual",
         "# -------------------------------------------------------------------",
-        f"MOODLE_BASE_URL={new_values.get('MOODLE_BASE_URL', 'https://virtual.ufmg.br')}",
-        f"HEADLESS_LOGIN={str(new_values.get('HEADLESS_LOGIN', 'false')).lower()}",
-        f"LOGIN_TIMEOUT_SECONDS={new_values.get('LOGIN_TIMEOUT_SECONDS', '300')}",
+        f"MOODLE_BASE_URL={_val('MOODLE_BASE_URL', 'https://virtual.ufmg.br')}",
+        f"HEADLESS_LOGIN={_val('HEADLESS_LOGIN', 'false').lower()}",
+        f"LOGIN_TIMEOUT_SECONDS={_val('LOGIN_TIMEOUT_SECONDS', '300')}",
         "",
         "# -------------------------------------------------------------------",
         "# 2. Discord Bot - Notificações e Revisão",
         "# -------------------------------------------------------------------",
-        f"DISCORD_BOT_TOKEN={new_values.get('DISCORD_BOT_TOKEN', '').strip()}",
-        f"DISCORD_CHANNEL_ID={new_values.get('DISCORD_CHANNEL_ID', '0').strip() or '0'}",
-        f"DISCORD_CONTENT_CHANNEL_ID={new_values.get('DISCORD_CONTENT_CHANNEL_ID', '0').strip() or '0'}",
-        f"DISCORD_ANNOUNCEMENTS_CHANNEL_ID={new_values.get('DISCORD_ANNOUNCEMENTS_CHANNEL_ID', '0').strip() or '0'}",
-        f"DISCORD_QUEUE_CHANNEL_ID={new_values.get('DISCORD_QUEUE_CHANNEL_ID', '0').strip() or '0'}",
-        f"DISCORD_STUDY_CHANNEL_ID={new_values.get('DISCORD_STUDY_CHANNEL_ID', '0').strip() or '0'}",
-        f"RENDER_URL={new_values.get('RENDER_URL', '').strip()}",
+        f"DISCORD_BOT_TOKEN={_val('DISCORD_BOT_TOKEN', '')}",
+        f"DISCORD_CHANNEL_ID={_val('DISCORD_CHANNEL_ID', '0') or '0'}",
+        f"DISCORD_CONTENT_CHANNEL_ID={_val('DISCORD_CONTENT_CHANNEL_ID', '0') or '0'}",
+        f"DISCORD_ANNOUNCEMENTS_CHANNEL_ID={_val('DISCORD_ANNOUNCEMENTS_CHANNEL_ID', '0') or '0'}",
+        f"DISCORD_QUEUE_CHANNEL_ID={_val('DISCORD_QUEUE_CHANNEL_ID', '0') or '0'}",
+        f"DISCORD_STUDY_CHANNEL_ID={_val('DISCORD_STUDY_CHANNEL_ID', '0') or '0'}",
+        f"RENDER_URL={_val('RENDER_URL', '')}",
         "",
         "# -------------------------------------------------------------------",
         "# 3. Provedores de IA (Gemini, Claude, DeepSeek - BYOK)",
         "# -------------------------------------------------------------------",
-        f"AI_PROVIDER={new_values.get('AI_PROVIDER', 'gemini').strip()}",
-        f"AI_FALLBACK_PROVIDER_1={new_values.get('AI_FALLBACK_PROVIDER_1', 'gemini').strip()}",
-        f"AI_FALLBACK_PROVIDER_2={new_values.get('AI_FALLBACK_PROVIDER_2', 'deepseek').strip()}",
-        f"AI_FALLBACK_PROVIDER_3={new_values.get('AI_FALLBACK_PROVIDER_3', 'none').strip()}",
+        f"AI_PROVIDER={_val('AI_PROVIDER', 'gemini')}",
+        f"AI_FALLBACK_PROVIDER_1={_val('AI_FALLBACK_PROVIDER_1', 'gemini')}",
+        f"AI_FALLBACK_PROVIDER_2={_val('AI_FALLBACK_PROVIDER_2', 'deepseek')}",
+        f"AI_FALLBACK_PROVIDER_3={_val('AI_FALLBACK_PROVIDER_3', 'none')}",
         "",
         "# Google Gemini",
-        f"GEMINI_API_KEY={new_values.get('GEMINI_API_KEY', '').strip()}",
-        f"GEMINI_MODEL={new_values.get('GEMINI_MODEL', 'gemini-3.8-flash').strip()}",
-        f"GEMINI_FALLBACK_MODEL_1={new_values.get('GEMINI_FALLBACK_MODEL_1', 'gemini-3.7-flash').strip()}",
-        f"GEMINI_FALLBACK_MODEL_2={new_values.get('GEMINI_FALLBACK_MODEL_2', 'gemini-3.5-flash').strip()}",
-        f"GEMINI_FALLBACK_MODEL_3={new_values.get('GEMINI_FALLBACK_MODEL_3', 'gemini-3.5-flash-lite').strip()}",
-        f"GEMINI_TIMEOUT_SECONDS={new_values.get('GEMINI_TIMEOUT_SECONDS', '90')}",
-        f"GEMINI_FALLBACK_TIMEOUT_SECONDS={new_values.get('GEMINI_FALLBACK_TIMEOUT_SECONDS', '60')}",
-        f"GEMINI_FALLBACK_DELAY_SECONDS={new_values.get('GEMINI_FALLBACK_DELAY_SECONDS', '2.0')}",
+        f"GEMINI_API_KEY={_val('GEMINI_API_KEY', '')}",
+        f"GEMINI_MODEL={_val('GEMINI_MODEL', 'gemini-3.8-flash')}",
+        f"GEMINI_FALLBACK_MODEL_1={_val('GEMINI_FALLBACK_MODEL_1', 'gemini-3.7-flash')}",
+        f"GEMINI_FALLBACK_MODEL_2={_val('GEMINI_FALLBACK_MODEL_2', 'gemini-3.5-flash')}",
+        f"GEMINI_FALLBACK_MODEL_3={_val('GEMINI_FALLBACK_MODEL_3', 'gemini-3.5-flash-lite')}",
+        f"GEMINI_TIMEOUT_SECONDS={_val('GEMINI_TIMEOUT_SECONDS', '90')}",
+        f"GEMINI_FALLBACK_TIMEOUT_SECONDS={_val('GEMINI_FALLBACK_TIMEOUT_SECONDS', '60')}",
+        f"GEMINI_FALLBACK_DELAY_SECONDS={_val('GEMINI_FALLBACK_DELAY_SECONDS', '2.0')}",
         "",
         "# Anthropic Claude (Opcional - BYOK alternativo)",
-        f"ANTHROPIC_API_KEY={new_values.get('ANTHROPIC_API_KEY', '').strip()}",
-        f"ANTHROPIC_MODEL={new_values.get('ANTHROPIC_MODEL', 'claude-haiku-4-5').strip()}",
+        f"ANTHROPIC_API_KEY={_val('ANTHROPIC_API_KEY', '')}",
+        f"ANTHROPIC_MODEL={_val('ANTHROPIC_MODEL', 'claude-haiku-4-5')}",
         "",
         "# DeepSeek (Opcional - BYOK Flash Mode)",
-        f"DEEPSEEK_API_KEY={new_values.get('DEEPSEEK_API_KEY', '').strip()}",
-        f"DEEPSEEK_MODEL={new_values.get('DEEPSEEK_MODEL', 'deepseek-flash').strip()}",
-        f"DEEPSEEK_BASE_URL={new_values.get('DEEPSEEK_BASE_URL', 'https://api.deepseek.com').strip()}",
-        f"DEEPSEEK_THINKING_MODE={str(new_values.get('DEEPSEEK_THINKING_MODE', 'true')).lower()}",
-        f"DEEPSEEK_REASONING_EFFORT={new_values.get('DEEPSEEK_REASONING_EFFORT', 'high').strip()}",
+        f"DEEPSEEK_API_KEY={_val('DEEPSEEK_API_KEY', '')}",
+        f"DEEPSEEK_MODEL={_val('DEEPSEEK_MODEL', 'deepseek-flash')}",
+        f"DEEPSEEK_BASE_URL={_val('DEEPSEEK_BASE_URL', 'https://api.deepseek.com')}",
+        f"DEEPSEEK_THINKING_MODE={_val('DEEPSEEK_THINKING_MODE', 'true').lower()}",
+        f"DEEPSEEK_REASONING_EFFORT={_val('DEEPSEEK_REASONING_EFFORT', 'high')}",
         "",
         "# -------------------------------------------------------------------",
         "# 4. Monitoramento e Agendamento",
         "# -------------------------------------------------------------------",
-        f"CHECK_INTERVAL_MINUTES={new_values.get('CHECK_INTERVAL_MINUTES', '30')}",
-        f"SESSION_HEARTBEAT_INTERVAL_MINUTES={new_values.get('SESSION_HEARTBEAT_INTERVAL_MINUTES', '15')}",
-        f"EMERGENCY_SUBMIT_ENABLED={str(new_values.get('EMERGENCY_SUBMIT_ENABLED', 'false')).lower()}",
+        f"CHECK_INTERVAL_MINUTES={_val('CHECK_INTERVAL_MINUTES', '30')}",
+        f"SESSION_HEARTBEAT_INTERVAL_MINUTES={_val('SESSION_HEARTBEAT_INTERVAL_MINUTES', '15')}",
+        f"EMERGENCY_SUBMIT_ENABLED={_val('EMERGENCY_SUBMIT_ENABLED', 'false').lower()}",
         "",
         "# -------------------------------------------------------------------",
         "# 5. Armazenamento e Diretórios",
         "# -------------------------------------------------------------------",
-        f"STORAGE_COOKIES_PATH={new_values.get('STORAGE_COOKIES_PATH', 'storage/cookies/session.json')}",
-        f"STORAGE_MATERIALS_DIR={new_values.get('STORAGE_MATERIALS_DIR', 'storage/materials')}",
-        f"STORAGE_SUBMISSIONS_DIR={new_values.get('STORAGE_SUBMISSIONS_DIR', 'storage/submissions')}",
+        f"STORAGE_COOKIES_PATH={_val('STORAGE_COOKIES_PATH', 'storage/cookies/session.json')}",
+        f"STORAGE_MATERIALS_DIR={_val('STORAGE_MATERIALS_DIR', 'storage/materials')}",
+        f"STORAGE_SUBMISSIONS_DIR={_val('STORAGE_SUBMISSIONS_DIR', 'storage/submissions')}",
         "",
         "# -------------------------------------------------------------------",
         "# 6. Integração Notion (Central de Estudos e Tarefas)",
         "# -------------------------------------------------------------------",
-        f"NOTION_API_KEY={new_values.get('NOTION_API_KEY', '').strip()}",
-        f"NOTION_PAGE_ID={new_values.get('NOTION_PAGE_ID', '17db4e452b43449a9ca266065840f909').strip()}",
-        f"NOTION_TASKS_DATABASE_ID={new_values.get('NOTION_TASKS_DATABASE_ID', '00e5c698-5139-4b4c-9cac-db04bfc22c4b').strip()}",
-        f"NOTION_COURSES_DATABASE_ID={new_values.get('NOTION_COURSES_DATABASE_ID', '751117de-c4d2-468c-9b46-571c036969b1').strip()}",
-        f"NOTION_DAILY_CHECKLIST_BLOCK_ID={new_values.get('NOTION_DAILY_CHECKLIST_BLOCK_ID', '25cd128a-26fe-49ac-8ab0-a895f1e0858d').strip()}",
-        f"NOTION_WEEKLY_SCHEDULE_TABLE_ID={new_values.get('NOTION_WEEKLY_SCHEDULE_TABLE_ID', '2a9222dd-474a-4c40-9b96-a548f2c9ec11').strip()}",
+        f"NOTION_API_KEY={_val('NOTION_API_KEY', '')}",
+        f"NOTION_PAGE_ID={_val('NOTION_PAGE_ID', '17db4e452b43449a9ca266065840f909')}",
+        f"NOTION_TASKS_DATABASE_ID={_val('NOTION_TASKS_DATABASE_ID', '00e5c698-5139-4b4c-9cac-db04bfc22c4b')}",
+        f"NOTION_COURSES_DATABASE_ID={_val('NOTION_COURSES_DATABASE_ID', '751117de-c4d2-468c-9b46-571c036969b1')}",
+        f"NOTION_DAILY_CHECKLIST_BLOCK_ID={_val('NOTION_DAILY_CHECKLIST_BLOCK_ID', '25cd128a-26fe-49ac-8ab0-a895f1e0858d')}",
+        f"NOTION_WEEKLY_SCHEDULE_TABLE_ID={_val('NOTION_WEEKLY_SCHEDULE_TABLE_ID', '2a9222dd-474a-4c40-9b96-a548f2c9ec11')}",
         "",
     ]
     ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
@@ -543,6 +550,65 @@ def test_discord_connection(bot_token: str, channel_id: Optional[str] = None) ->
         return {"ok": False, "error": f"Falha na conexão com Discord: {str(e)}"}
 
 
+def test_notion_connection(
+    api_key: str,
+    page_id: Optional[str] = None,
+    tasks_db_id: Optional[str] = None,
+    courses_db_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Testa o token de integração do Notion e a acessibilidade das databases configuradas."""
+    token = (api_key or "").strip()
+    if not token:
+        return {"ok": False, "error": "Token de integração do Notion não informado."}
+    if not (token.startswith("ntn_") or token.startswith("secret_")):
+        return {"ok": False, "error": "Token do Notion inválido (deve iniciar com 'ntn_' ou 'secret_')."}
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json"
+    }
+    start_time = time.time()
+    try:
+        req = urllib.request.Request("https://api.notion.com/v1/users/me", headers=headers)
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            bot_name = data.get("name") or "Bot de Integração"
+
+        elapsed = round((time.time() - start_time) * 1000)
+        msg_parts = [f"Token autenticado com sucesso como '{bot_name}' ({elapsed}ms)!"]
+
+        # Opcional: testar acesso à database de tarefas
+        t_id = (tasks_db_id or "").strip()
+        if t_id:
+            try:
+                db_req = urllib.request.Request(f"https://api.notion.com/v1/databases/{t_id}", headers=headers)
+                with urllib.request.urlopen(db_req, timeout=8.0) as db_resp:
+                    if db_resp.status == 200:
+                        msg_parts.append("Database de tarefas acessível.")
+            except urllib.error.HTTPError as db_err:
+                if db_err.code == 404:
+                    msg_parts.append("Aviso: Database de tarefas não encontrada (verifique se compartilhou sua página com a integração).")
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "bot_name": bot_name,
+            "elapsed_ms": elapsed,
+            "message": " ".join(msg_parts)
+        }
+    except urllib.error.HTTPError as e:
+        elapsed = round((time.time() - start_time) * 1000)
+        if e.code == 401:
+            return {"ok": False, "error": "Token do Notion inválido ou revogado (HTTP 401 Unauthorized). Crie uma integração interna em notion.so/my-integrations e copie o token gerado."}
+        if e.code == 404:
+            return {"ok": False, "error": "Recurso não encontrado no Notion (HTTP 404). Verifique se compartilhou sua Central com a integração."}
+        return {"ok": False, "error": f"Erro do Notion HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"ok": False, "error": f"Falha na conexão com Notion: {str(e)}"}
+
+
 
 
 class ConfigAPIHandler(SimpleHTTPRequestHandler):
@@ -658,6 +724,15 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             token = payload.get("token", "")
             channel_id = payload.get("channel_id", "")
             res = test_discord_connection(token, channel_id)
+            self._send_json(res)
+            return
+
+        if url_path == "/api/test-notion":
+            api_key = payload.get("api_key", "")
+            page_id = payload.get("page_id", "")
+            tasks_db_id = payload.get("tasks_db_id", "")
+            courses_db_id = payload.get("courses_db_id", "")
+            res = test_notion_connection(api_key, page_id, tasks_db_id, courses_db_id)
             self._send_json(res)
             return
 

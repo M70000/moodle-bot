@@ -3502,7 +3502,37 @@ async def cmd_notion_sync(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     from src.notifier.notion_client import notion_client
     if not notion_client.is_configured:
-        await interaction.followup.send("❌ Integração com Notion não está configurada no `.env`.", ephemeral=True)
+        if _is_relay_mode():
+            from src.notifier.bridge_manager import cloud_bridge
+            if await cloud_bridge.is_desktop_online():
+                target_ch_id = str(getattr(interaction.channel, "id", None) or settings.DISCORD_CHANNEL_ID or 0)
+                task_id = await cloud_bridge.dispatch_action(
+                    action="notion_sync",
+                    assignment_id="",
+                    assignment_url="",
+                    channel_id=target_ch_id,
+                    message_id="",
+                    requester=interaction.user.display_name,
+                    title="Sincronização de Tarefas no Notion"
+                )
+                await interaction.followup.send(
+                    f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                    f"A sincronização do catálogo Moodle com o Notion está sendo executada pelo seu computador local.\n"
+                    f"Acompanhe o anúncio no canal em instantes!",
+                    ephemeral=True
+                )
+                res = await cloud_bridge.wait_for_task(task_id, timeout=180.0)
+                if res and res.get("success"):
+                    await interaction.followup.send(f"✔ {res.get('result_message')}", ephemeral=True)
+                    return
+                elif res:
+                    await interaction.followup.send(f"❌ {res.get('result_message', 'Falha ao sincronizar Notion')}", ephemeral=True)
+                    return
+        await interaction.followup.send(
+            "❌ **Integração com Notion não está configurada no `.env`.**\n"
+            "Abra o `configurar.bat` no seu computador e configure o Token de Integração na aba **Notion & Agenda**!",
+            ephemeral=True
+        )
         return
 
     state = DaemonState()
@@ -3557,7 +3587,36 @@ async def cmd_atualizar_checklist(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
     from src.notifier.notion_client import notion_client
     if not notion_client.is_configured:
-        await interaction.followup.send("❌ Integração com Notion não está configurada no `.env`.", ephemeral=True)
+        if _is_relay_mode():
+            from src.notifier.bridge_manager import cloud_bridge
+            if await cloud_bridge.is_desktop_online():
+                target_ch_id = str(getattr(interaction.channel, "id", None) or settings.DISCORD_CHANNEL_ID or 0)
+                task_id = await cloud_bridge.dispatch_action(
+                    action="notion_checklist",
+                    assignment_id="",
+                    assignment_url="",
+                    channel_id=target_ch_id,
+                    message_id="",
+                    requester=interaction.user.display_name,
+                    title="Atualização de Checklist Notion"
+                )
+                await interaction.followup.send(
+                    f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                    f"A checklist diária no Notion está sendo atualizada pelo seu computador local.\n"
+                    f"Você verá o anúncio no canal de avisos em instantes!",
+                    ephemeral=True
+                )
+                res = await cloud_bridge.wait_for_task(task_id, timeout=120.0)
+                if res and res.get("success"):
+                    return
+                elif res:
+                    await interaction.followup.send(f"❌ {res.get('result_message', 'Falha ao atualizar checklist no Notion')}", ephemeral=True)
+                    return
+        await interaction.followup.send(
+            "❌ **Integração com Notion não está configurada no `.env`.**\n"
+            "Abra o `configurar.bat` no seu computador e preencha o **Token de Integração do Notion** na aba **Notion & Agenda**!",
+            ephemeral=True
+        )
         return
 
     res = await notion_client.update_daily_checklist(notify_discord=True)
@@ -3916,11 +3975,49 @@ async def cmd_perguntar(
         await interaction.response.defer(ephemeral=False)
 
     if _is_relay_mode() and not _has_ai_key_configured():
-        if redirected:
-            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        from src.notifier.bridge_manager import cloud_bridge
+        if await cloud_bridge.is_desktop_online():
+            effective_ch = target_ch if redirected else (interaction.channel or target_ch)
+            effective_ch_id = str(getattr(effective_ch, "id", None) or settings.DISCORD_CHANNEL_ID or 0)
+            task_id = await cloud_bridge.dispatch_action(
+                action="study_question",
+                assignment_id="",
+                assignment_url="",
+                channel_id=effective_ch_id,
+                message_id="",
+                requester=interaction.user.display_name,
+                title=f"Dúvida: {disciplina}",
+                course=disciplina,
+                structured_answers={
+                    "disciplina": disciplina,
+                    "duvida": duvida,
+                    "material": material,
+                    "user_mention": interaction.user.mention,
+                }
+            )
+            relay_info = (
+                f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                f"Sua dúvida sobre **{disciplina}** está sendo respondida pelo seu computador local com seus materiais e IA configurados.\n"
+                f"Aguarde a resposta aqui em instantes!"
+            )
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{relay_info}")
+            else:
+                await interaction.followup.send(content=relay_info)
+            res = await cloud_bridge.wait_for_task(task_id, timeout=180.0)
+            if not res or not res.get("success"):
+                err_msg = res.get("result_message", "Tempo limite de resposta do Desktop Runner esgotado.") if res else "Tempo limite esgotado."
+                if redirected:
+                    await target_ch.send(content=f"⚠️ {interaction.user.mention} Erro ao processar dúvida pelo Desktop Runner: {err_msg}")
+                else:
+                    await interaction.followup.send(content=f"⚠️ Erro ao processar dúvida pelo Desktop Runner: {err_msg}")
+            return
         else:
-            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
-        return
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+            else:
+                await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+            return
 
     tutor = StudyTutor()
     res = await tutor.answer_question(discipline=disciplina, question=duvida, specific_material=material)
@@ -3979,11 +4076,52 @@ async def cmd_flashcards(
         await interaction.response.defer(ephemeral=False)
 
     if _is_relay_mode() and not _has_ai_key_configured():
-        if redirected:
-            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        from src.notifier.bridge_manager import cloud_bridge
+        if await cloud_bridge.is_desktop_online():
+            effective_ch = target_ch if redirected else (interaction.channel or target_ch)
+            effective_ch_id = str(getattr(effective_ch, "id", None) or settings.DISCORD_CHANNEL_ID or 0)
+            count = max(3, min(qtd or 8, 15))
+            task_id = await cloud_bridge.dispatch_action(
+                action="study_flashcards",
+                assignment_id="",
+                assignment_url="",
+                channel_id=effective_ch_id,
+                message_id="",
+                requester=interaction.user.display_name,
+                title=f"Flashcards: {disciplina}",
+                course=disciplina,
+                structured_answers={
+                    "disciplina": disciplina,
+                    "topico": topico,
+                    "qtd": count,
+                    "material": material,
+                    "user_mention": interaction.user.mention,
+                    "user_display_name": interaction.user.display_name,
+                }
+            )
+            relay_info = (
+                f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                f"Seu baralho de flashcards para **{disciplina}** está sendo gerado pelo seu computador local com seus materiais e IA configurados.\n"
+                f"O baralho interativo e o arquivo Anki (.apkg) serão enviados aqui em instantes!"
+            )
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{relay_info}")
+            else:
+                await interaction.followup.send(content=relay_info)
+            res = await cloud_bridge.wait_for_task(task_id, timeout=240.0)
+            if not res or not res.get("success"):
+                err_msg = res.get("result_message", "Tempo limite de resposta do Desktop Runner esgotado.") if res else "Tempo limite esgotado."
+                if redirected:
+                    await target_ch.send(content=f"⚠️ {interaction.user.mention} Erro ao gerar flashcards pelo Desktop Runner: {err_msg}")
+                else:
+                    await interaction.followup.send(content=f"⚠️ Erro ao gerar flashcards pelo Desktop Runner: {err_msg}")
+            return
         else:
-            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
-        return
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+            else:
+                await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+            return
 
     tutor = StudyTutor()
     count = max(3, min(qtd or 8, 15))
@@ -4051,11 +4189,53 @@ async def cmd_quiz(
         await interaction.response.defer(ephemeral=False)
 
     if _is_relay_mode() and not _has_ai_key_configured():
-        if redirected:
-            await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+        from src.notifier.bridge_manager import cloud_bridge
+        if await cloud_bridge.is_desktop_online():
+            effective_ch = target_ch if redirected else (interaction.channel or target_ch)
+            effective_ch_id = str(getattr(effective_ch, "id", None) or settings.DISCORD_CHANNEL_ID or 0)
+            num_q = max(3, min(qtd_questoes or 5, 10))
+            task_id = await cloud_bridge.dispatch_action(
+                action="study_quiz",
+                assignment_id="",
+                assignment_url="",
+                channel_id=effective_ch_id,
+                message_id="",
+                requester=interaction.user.display_name,
+                title=f"Simulado: {disciplina}",
+                course=disciplina,
+                structured_answers={
+                    "disciplina": disciplina,
+                    "topico": topico,
+                    "qtd": num_q,
+                    "material": material,
+                    "user_mention": interaction.user.mention,
+                    "user_id": interaction.user.id,
+                    "user_display_name": interaction.user.display_name,
+                }
+            )
+            relay_info = (
+                f"🚀 **Encaminhado para o seu Desktop Runner!** (ID: `{task_id}`)\n"
+                f"Seu simulado para **{disciplina}** está sendo gerado pelo seu computador local com seus materiais e IA configurados.\n"
+                f"O simulado interativo começará aqui em instantes!"
+            )
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{relay_info}")
+            else:
+                await interaction.followup.send(content=relay_info)
+            res = await cloud_bridge.wait_for_task(task_id, timeout=240.0)
+            if not res or not res.get("success"):
+                err_msg = res.get("result_message", "Tempo limite de resposta do Desktop Runner esgotado.") if res else "Tempo limite esgotado."
+                if redirected:
+                    await target_ch.send(content=f"⚠️ {interaction.user.mention} Erro ao gerar simulado pelo Desktop Runner: {err_msg}")
+                else:
+                    await interaction.followup.send(content=f"⚠️ Erro ao gerar simulado pelo Desktop Runner: {err_msg}")
+            return
         else:
-            await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
-        return
+            if redirected:
+                await target_ch.send(content=f"{interaction.user.mention}\n{BYOK_RELAY_MESSAGE}")
+            else:
+                await interaction.followup.send(content=BYOK_RELAY_MESSAGE)
+            return
 
     tutor = StudyTutor()
     num_q = max(3, min(qtd_questoes or 5, 10))

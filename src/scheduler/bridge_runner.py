@@ -399,6 +399,169 @@ class BridgeRunner:
             await done_event.wait()
             return result_box["success"], result_box["message"]
 
+        elif action == "study_question":
+            import discord
+            from src.solver.study_tutor import StudyTutor
+            from src.notifier.discord_bot import clean_display_course, MoodleDiscordNotifier
+            answers = task.get("structured_answers") or {}
+            disciplina = answers.get("disciplina") or task.get("course", "")
+            duvida = answers.get("duvida", "")
+            material = answers.get("material")
+            user_mention = answers.get("user_mention", "")
+
+            notifier = MoodleDiscordNotifier()
+            target_ch_id = int(task.get("channel_id") or settings.DISCORD_CHANNEL_ID or 0)
+            target_ch = await notifier._resolve_channel(target_ch_id) if target_ch_id else None
+
+            tutor = StudyTutor()
+            res = await tutor.answer_question(discipline=disciplina, question=duvida, specific_material=material)
+
+            disc_clean = clean_display_course(disciplina)
+            embed = discord.Embed(
+                title=f"💡 Tutor Acadêmico: {disc_clean}",
+                color=discord.Color.blue()
+            )
+            embed.add_field(name="❓ Dúvida do Aluno", value=f"*{duvida[:500]}*", inline=False)
+
+            ans_text = res.get("answer", "")
+            if len(ans_text) <= 4000:
+                embed.description = f"### 📖 Resposta do Tutor\n\n{ans_text}"
+            else:
+                embed.description = f"### 📖 Resposta do Tutor\n\n{ans_text[:3900]}\n\n*(continua no próximo campo...)*"
+                embed.add_field(name="📖 Continuação", value=ans_text[3900:4900], inline=False)
+
+            mats = res.get("materials_used", [])
+            if mats:
+                embed.add_field(name="📚 Materiais & Slides Consultados", value="\n".join(f"• `{m}`" for m in mats[:4]), inline=False)
+
+            requester = task.get("requester") or "Estudante"
+            embed.set_footer(text=f"Solicitado por {requester} • Modelo: {res.get('model_used')}")
+
+            msg_content = f"{user_mention} aqui está a resposta para a sua dúvida:" if user_mention else ""
+            if target_ch and hasattr(target_ch, "send"):
+                await target_ch.send(content=msg_content, embed=embed)
+            return True, f"Dúvida sobre '{disciplina}' respondida com sucesso pelo Desktop Runner."
+
+        elif action == "study_flashcards":
+            import discord
+            from src.solver.study_tutor import StudyTutor
+            from src.notifier.discord_bot import FlashcardsCarouselView, MoodleDiscordNotifier
+            answers = task.get("structured_answers") or {}
+            disciplina = answers.get("disciplina") or task.get("course", "")
+            topico = answers.get("topico")
+            qtd = int(answers.get("qtd") or 8)
+            material = answers.get("material")
+            user_mention = answers.get("user_mention", "")
+            requester = task.get("requester") or "Estudante"
+
+            notifier = MoodleDiscordNotifier()
+            target_ch_id = int(task.get("channel_id") or settings.DISCORD_CHANNEL_ID or 0)
+            target_ch = await notifier._resolve_channel(target_ch_id) if target_ch_id else None
+
+            tutor = StudyTutor()
+            res = await tutor.generate_flashcards(discipline=disciplina, topic=topico, count=qtd, specific_material=material)
+
+            view = FlashcardsCarouselView(
+                cards=res.get("cards", []),
+                discipline=disciplina,
+                topic=res.get("topic", "Geral"),
+                requester=requester
+            )
+            embed = view.build_embed()
+
+            anki_path = res.get("anki_file_path")
+            file_to_send = None
+            if anki_path and Path(anki_path).exists():
+                file_to_send = discord.File(str(anki_path), filename=Path(anki_path).name)
+
+            msg_content = f"{user_mention} aqui está o seu baralho de flashcards interativo e o arquivo Anki!" if user_mention else ""
+            if target_ch and hasattr(target_ch, "send"):
+                if file_to_send:
+                    await target_ch.send(content=msg_content, embed=embed, view=view, file=file_to_send)
+                else:
+                    await target_ch.send(content=msg_content, embed=embed, view=view)
+            return True, f"Baralho de flashcards para '{disciplina}' gerado com sucesso pelo Desktop Runner."
+
+        elif action == "study_quiz":
+            import discord
+            from src.solver.study_tutor import StudyTutor
+            from src.notifier.discord_bot import InteractiveQuizSessionView, MoodleDiscordNotifier
+            answers = task.get("structured_answers") or {}
+            disciplina = answers.get("disciplina") or task.get("course", "")
+            topico = answers.get("topico")
+            qtd = int(answers.get("qtd") or 5)
+            material = answers.get("material")
+            user_mention = answers.get("user_mention", "")
+            requester = task.get("requester") or "Estudante"
+            user_id = int(answers.get("user_id") or 0)
+
+            notifier = MoodleDiscordNotifier()
+            target_ch_id = int(task.get("channel_id") or settings.DISCORD_CHANNEL_ID or 0)
+            target_ch = await notifier._resolve_channel(target_ch_id) if target_ch_id else None
+
+            tutor = StudyTutor()
+            res = await tutor.generate_quiz(discipline=disciplina, num_questions=qtd, topic=topico, specific_material=material)
+
+            view = InteractiveQuizSessionView(
+                questions=res.get("questions", []),
+                discipline=disciplina,
+                topic=res.get("topic", "Geral"),
+                requester=requester,
+                requester_id=user_id
+            )
+            embed = view.build_question_embed()
+
+            msg_content = f"{user_mention} seu simulado interativo começou! Responda nos botões abaixo:" if user_mention else ""
+            if target_ch and hasattr(target_ch, "send"):
+                await target_ch.send(content=msg_content, embed=embed, view=view)
+            return True, f"Simulado de '{disciplina}' gerado com sucesso pelo Desktop Runner."
+
+        elif action == "notion_checklist":
+            from src.notifier.notion_client import notion_client
+            if not notion_client.is_configured:
+                return False, "Integração com Notion não está configurada no Desktop Runner (.env local)."
+            res = await notion_client.update_daily_checklist(notify_discord=True)
+            if res.get("success"):
+                return True, f"Checklist do dia atualizada no Notion ({res.get('tasks_count')} tarefas)."
+            return False, f"Erro ao atualizar checklist no Notion: {res.get('error')}"
+
+        elif action == "notion_sync":
+            from src.notifier.notion_client import notion_client
+            from src.scheduler.state import DaemonState
+            if not notion_client.is_configured:
+                return False, "Integração com Notion não está configurada no Desktop Runner (.env local)."
+            state = DaemonState()
+            assignments = state.get_pending_assignments()
+            added = 0
+            already = 0
+            for a in assignments:
+                if not a.due_date:
+                    continue
+                tid = f"moodle_{a.id}"
+                date_iso = a.due_date.strftime("%Y-%m-%d")
+                r = await notion_client.create_task(
+                    title=a.title,
+                    date_str=date_iso,
+                    category="TAREFA✅" if getattr(a, "activity_type", "assign") != "quiz" else "TRABALHO🟡",
+                    course_name=a.course_name,
+                    task_id_val=tid,
+                    notes_val=f"Atividade Moodle: {a.title} ({a.course_name})",
+                    details=f"Atividade do Moodle com vencimento em {a.due_date_str or 'Data não informada'}.\nStatus no Moodle: {a.status_text or 'Pendente'}",
+                    moodle_url=a.url,
+                    steps=[
+                        f"Revisar conceitos e anotações de {a.course_name}",
+                        f"Resolver '{a.title}'",
+                        "Conferir envio no Moodle"
+                    ],
+                    notify_discord=True
+                )
+                if r.get("success"):
+                    if r.get("already_exists"):
+                        already += 1
+                    else:
+                        added += 1
+            return True, f"Sincronização com Notion concluída: {added} adicionados, {already} já existentes."
+
         elif action == "relogin":
             from src.auth.moodle_auth import MoodleAuth
             auth = MoodleAuth()

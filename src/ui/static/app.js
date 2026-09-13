@@ -22,6 +22,10 @@ const tabMetadata = {
   'tab-storage': {
     title: 'Armazenamento & Diretórios',
     subtitle: 'Pastas locais de cookies, materiais didáticos e rascunhos em PDF.'
+  },
+  'tab-notion': {
+    title: 'Notion & Central de Estudos',
+    subtitle: 'Sincronize tarefas, lista de exercícios e checklist diário com o Notion.'
   }
 };
 
@@ -46,6 +50,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const btnTestDeepSeek = document.getElementById('btn-test-deepseek');
   if (btnTestDeepSeek) btnTestDeepSeek.addEventListener('click', testDeepSeek);
+
+  const btnTestNotion = document.getElementById('btn-test-notion');
+  if (btnTestNotion) btnTestNotion.addEventListener('click', testNotion);
 
   document.getElementById('btn-trigger-login').addEventListener('click', triggerLogin);
   document.getElementById('btn-login-quick').addEventListener('click', triggerLogin);
@@ -149,6 +156,13 @@ async function loadConfig() {
     setInputValue('STORAGE_MATERIALS_DIR', config.STORAGE_MATERIALS_DIR || 'storage/materials');
     setInputValue('STORAGE_SUBMISSIONS_DIR', config.STORAGE_SUBMISSIONS_DIR || 'storage/submissions');
 
+    setInputValue('NOTION_API_KEY', config.NOTION_API_KEY || '');
+    setInputValue('NOTION_PAGE_ID', config.NOTION_PAGE_ID || '17db4e452b43449a9ca266065840f909');
+    setInputValue('NOTION_TASKS_DATABASE_ID', config.NOTION_TASKS_DATABASE_ID || '00e5c698-5139-4b4c-9cac-db04bfc22c4b');
+    setInputValue('NOTION_COURSES_DATABASE_ID', config.NOTION_COURSES_DATABASE_ID || '751117de-c4d2-468c-9b46-571c036969b1');
+    setInputValue('NOTION_DAILY_CHECKLIST_BLOCK_ID', config.NOTION_DAILY_CHECKLIST_BLOCK_ID || '25cd128a-26fe-49ac-8ab0-a895f1e0858d');
+    setInputValue('NOTION_WEEKLY_SCHEDULE_TABLE_ID', config.NOTION_WEEKLY_SCHEDULE_TABLE_ID || '2a9222dd-474a-4c40-9b96-a548f2c9ec11');
+
   } catch (err) {
     showToast('Falha ao carregar configurações: ' + err.message, 'error');
   }
@@ -233,6 +247,13 @@ async function saveConfig() {
 
     STORAGE_MATERIALS_DIR: getInputValue('STORAGE_MATERIALS_DIR'),
     STORAGE_SUBMISSIONS_DIR: getInputValue('STORAGE_SUBMISSIONS_DIR'),
+
+    NOTION_API_KEY: getInputValue('NOTION_API_KEY'),
+    NOTION_PAGE_ID: getInputValue('NOTION_PAGE_ID'),
+    NOTION_TASKS_DATABASE_ID: getInputValue('NOTION_TASKS_DATABASE_ID'),
+    NOTION_COURSES_DATABASE_ID: getInputValue('NOTION_COURSES_DATABASE_ID'),
+    NOTION_DAILY_CHECKLIST_BLOCK_ID: getInputValue('NOTION_DAILY_CHECKLIST_BLOCK_ID'),
+    NOTION_WEEKLY_SCHEDULE_TABLE_ID: getInputValue('NOTION_WEEKLY_SCHEDULE_TABLE_ID'),
   };
 
   try {
@@ -378,6 +399,34 @@ async function testDeepSeek() {
     }
   } catch (err) {
     setFeedback(resultDiv, `✖ Erro no teste: ${err.message}`, 'error');
+  }
+}
+
+async function testNotion() {
+  const api_key = getInputValue('NOTION_API_KEY');
+  const page_id = getInputValue('NOTION_PAGE_ID');
+  const tasks_db_id = getInputValue('NOTION_TASKS_DATABASE_ID');
+  const courses_db_id = getInputValue('NOTION_COURSES_DATABASE_ID');
+  const resultDiv = document.getElementById('notion-test-result');
+  setFeedback(resultDiv, 'Verificando token de integração e databases no Notion...', 'loading');
+
+  try {
+    const res = await fetch('/api/test-notion', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ api_key, page_id, tasks_db_id, courses_db_id })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(resultDiv, `✔ ${data.message}`, 'success');
+      showToast('Conexão com o Notion confirmada!', 'success');
+    } else {
+      setFeedback(resultDiv, `✖ ${data.error}`, 'error');
+      showToast('Falha na validação do Notion', 'error');
+    }
+  } catch (err) {
+    setFeedback(resultDiv, `✖ Erro no teste: ${err.message}`, 'error');
+    showToast('Erro ao testar Notion: ' + err.message, 'error');
   }
 }
 
