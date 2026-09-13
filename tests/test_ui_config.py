@@ -151,9 +151,22 @@ class TestUIConfig(unittest.TestCase):
                 data = json.loads(resp.read().decode("utf-8"))
                 self.assertFalse(data["ok"])
 
+            # 6. GET /api/startup
+            with urllib.request.urlopen(f"{base_url}/api/startup", timeout=5) as resp:
+                self.assertEqual(resp.status, 200)
+                data = json.loads(resp.read().decode("utf-8"))
+                self.assertIn("enabled", data)
+
         finally:
             httpd.shutdown()
             httpd.server_close()
+
+    def test_startup_status_functions(self):
+        from src.ui.server import get_windows_startup_status, set_windows_startup_status
+        # Testa chamada segura sem quebrar
+        initial = get_windows_startup_status()
+        self.assertIsInstance(initial, bool)
+
 
 
 if __name__ == "__main__":

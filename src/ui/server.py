@@ -49,6 +49,91 @@ def parse_env_file(path: Path) -> Dict[str, str]:
     return config
 
 
+def get_windows_startup_status() -> bool:
+    """Verifica se o iniciar.bat está configurado para inicializar com o Windows."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\CurrentVersion\Run",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            val, _ = winreg.QueryValueEx(key, "MoodleAIAssistant")
+            if val:
+                return True
+    except Exception:
+        pass
+
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        lnk = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Moodle AI Assistant.lnk"
+        if lnk.exists():
+            return True
+    return False
+
+
+def set_windows_startup_status(enabled: bool) -> bool:
+    """Habilita ou desabilita o início automático do Moodle Bot com o Windows."""
+    if sys.platform != "win32":
+        return False
+
+    import winreg
+    key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    val_name = "MoodleAIAssistant"
+    iniciar_bat = PROJECT_ROOT / "iniciar.bat"
+    appdata = os.environ.get("APPDATA", "")
+    startup_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" if appdata else None
+    lnk_path = startup_dir / "Moodle AI Assistant.lnk" if startup_dir else None
+
+    if not enabled:
+        # 1. Remove do Registry Run
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.DeleteValue(key, val_name)
+        except Exception:
+            pass
+
+        # 2. Remove da pasta Startup se existir
+        try:
+            if lnk_path and lnk_path.exists():
+                lnk_path.unlink()
+        except Exception:
+            pass
+        return False
+    else:
+        # 1. Registra no Registry Run
+        cmd_str = f'"{iniciar_bat}"'
+        try:
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+                winreg.SetValueEx(key, val_name, 0, winreg.REG_SZ, cmd_str)
+        except Exception as e:
+            print(f"[UI Server] Erro ao gravar chave Run no registro: {e}")
+
+        # 2. Cria atalho oficial com o ícone na pasta Startup
+        if startup_dir and startup_dir.exists():
+            try:
+                ico_path = PROJECT_ROOT / "assets" / "app.ico"
+                ps = (
+                    f"$ws = New-Object -ComObject WScript.Shell; "
+                    f"$s = $ws.CreateShortcut('{lnk_path}'); "
+                    f"$s.TargetPath = '{iniciar_bat}'; "
+                    f"$s.WorkingDirectory = '{PROJECT_ROOT}'; "
+                    f"$s.IconLocation = '{ico_path}'; "
+                    f"$s.Description = 'Moodle AI Assistant UFMG'; "
+                    f"$s.Save();"
+                )
+                import base64
+                encoded = base64.b64encode(ps.encode("utf-16le")).decode("ascii")
+                subprocess.run(["powershell", "-NoProfile", "-EncodedCommand", encoded], capture_output=True, timeout=8)
+            except Exception as e:
+                print(f"[UI Server] Erro ao criar atalho no Startup: {e}")
+
+        return get_windows_startup_status()
+
+
 def get_current_config() -> Dict[str, Any]:
     """Obtém as configurações atuais combinando defaults do .env.example com o .env real."""
     defaults = parse_env_file(ENV_EXAMPLE_PATH)
@@ -86,6 +171,7 @@ def get_current_config() -> Dict[str, Any]:
         "CHECK_INTERVAL_MINUTES": "30",
         "SESSION_HEARTBEAT_INTERVAL_MINUTES": "15",
         "EMERGENCY_SUBMIT_ENABLED": "false",
+        "AUTO_START_WINDOWS": "false",
         "STORAGE_COOKIES_PATH": "storage/cookies/session.json",
         "STORAGE_MATERIALS_DIR": "storage/materials",
         "STORAGE_SUBMISSIONS_DIR": "storage/submissions",
@@ -102,12 +188,14 @@ def get_current_config() -> Dict[str, Any]:
     merged = dict(base_defaults)
     merged.update(defaults)
     merged.update(current)
+    merged["AUTO_START_WINDOWS"] = "true" if get_windows_startup_status() else "false"
 
     return {
         "config": merged,
         "env_exists": ENV_PATH.exists(),
         "env_path": str(ENV_PATH),
     }
+
 
 
 def save_config_to_env(new_values: Dict[str, Any]) -> None:
@@ -493,6 +581,10 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             self._send_json(get_system_status())
             return
 
+        if url_path == "/api/startup":
+            self._send_json({"enabled": get_windows_startup_status()})
+            return
+
         # Rota padrão para SPA
         if url_path in ["", "/"]:
             self.path = "/index.html"
@@ -511,10 +603,20 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
         if url_path == "/api/config":
             try:
                 save_config_to_env(payload)
+                if "AUTO_START_WINDOWS" in payload:
+                    auto_start = str(payload["AUTO_START_WINDOWS"]).lower() in ["true", "1", "yes"]
+                    set_windows_startup_status(auto_start)
                 self._send_json({"ok": True, "message": "Configurações salvas no arquivo .env com sucesso!"})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"Erro ao salvar arquivo .env: {str(e)}"}, status=500)
             return
+
+        if url_path == "/api/startup":
+            enabled = bool(payload.get("enabled", False))
+            status = set_windows_startup_status(enabled)
+            self._send_json({"ok": True, "enabled": status, "message": "Inicialização com o Windows atualizada com sucesso!"})
+            return
+
 
         if url_path == "/api/test-moodle":
             url = payload.get("url", "")

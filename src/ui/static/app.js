@@ -49,7 +49,30 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btn-trigger-login').addEventListener('click', triggerLogin);
   document.getElementById('btn-login-quick').addEventListener('click', triggerLogin);
+
+  const autoStartCheckbox = document.getElementById('AUTO_START_WINDOWS');
+  if (autoStartCheckbox) {
+    autoStartCheckbox.addEventListener('change', async () => {
+      const enabled = autoStartCheckbox.checked;
+      try {
+        const res = await fetch('/api/startup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled })
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showToast(enabled ? 'Adicionado à inicialização do Windows!' : 'Removido da inicialização do Windows!', 'success');
+        } else {
+          showToast('Erro ao atualizar inicialização: ' + data.error, 'error');
+        }
+      } catch (err) {
+        showToast('Erro de conexão: ' + err.message, 'error');
+      }
+    });
+  }
 });
+
 
 // Navegação entre Abas
 function setupNavigation() {
@@ -120,10 +143,12 @@ async function loadConfig() {
     setInputValue('CHECK_INTERVAL_MINUTES', checkInterval);
     setInputValue('CHECK_INTERVAL_MINUTES_SLIDER', checkInterval);
     setCheckboxValue('EMERGENCY_SUBMIT_ENABLED', config.EMERGENCY_SUBMIT_ENABLED === 'true');
+    setCheckboxValue('AUTO_START_WINDOWS', config.AUTO_START_WINDOWS === 'true' || config.AUTO_START_WINDOWS === true);
 
     setInputValue('STORAGE_COOKIES_PATH', config.STORAGE_COOKIES_PATH || 'storage/cookies/session.json');
     setInputValue('STORAGE_MATERIALS_DIR', config.STORAGE_MATERIALS_DIR || 'storage/materials');
     setInputValue('STORAGE_SUBMISSIONS_DIR', config.STORAGE_SUBMISSIONS_DIR || 'storage/submissions');
+
   } catch (err) {
     showToast('Falha ao carregar configurações: ' + err.message, 'error');
   }
@@ -201,9 +226,11 @@ async function saveConfig() {
     DEEPSEEK_THINKING_MODE: document.getElementById('DEEPSEEK_THINKING_MODE')?.checked ? 'true' : 'false',
 
     CHECK_INTERVAL_MINUTES: getInputValue('CHECK_INTERVAL_MINUTES'),
-    EMERGENCY_SUBMIT_ENABLED: document.getElementById('EMERGENCY_SUBMIT_ENABLED').checked ? 'true' : 'false',
+    EMERGENCY_SUBMIT_ENABLED: document.getElementById('EMERGENCY_SUBMIT_ENABLED')?.checked ? 'true' : 'false',
+    AUTO_START_WINDOWS: document.getElementById('AUTO_START_WINDOWS')?.checked ? 'true' : 'false',
 
     STORAGE_COOKIES_PATH: getInputValue('STORAGE_COOKIES_PATH'),
+
     STORAGE_MATERIALS_DIR: getInputValue('STORAGE_MATERIALS_DIR'),
     STORAGE_SUBMISSIONS_DIR: getInputValue('STORAGE_SUBMISSIONS_DIR'),
   };
