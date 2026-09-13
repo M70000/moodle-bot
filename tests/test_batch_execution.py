@@ -228,16 +228,62 @@ Enunciado da questão 2.
             self.assertEqual(first_call_kwargs["modo"], "finalizar")
             self.assertEqual(first_call_kwargs["instrucoes"], "Priorize respostas completas")
             self.assertEqual(first_call_kwargs["extra_files"], [sample_mat])
+            self.assertTrue(first_call_kwargs.get("silent_enqueue"))
 
             self.assertEqual(second_call_kwargs["tarefa"], "402")
             self.assertEqual(second_call_kwargs["modo"], "finalizar")
             self.assertEqual(second_call_kwargs["instrucoes"], "Priorize respostas completas")
             self.assertEqual(second_call_kwargs["extra_files"], [sample_mat])
+            self.assertTrue(second_call_kwargs.get("silent_enqueue"))
 
             # Verifica envio do embed de confirmação do lote
             self.assertTrue(mock_interaction.followup.send.called)
             sent_embed = mock_interaction.followup.send.call_args.kwargs.get("embed")
             self.assertIn("Lote de Atividades Enfileirado com Sucesso!", sent_embed.title)
+
+    def test_enqueue_solve_flow_silent_enqueue(self):
+        """Verifica que silent_enqueue=True não dispara mensagem individual de fila quando pos > 1."""
+        mock_assignments = {
+            "201": {
+                "id": "201",
+                "title": "Quiz de Teste",
+                "course": "Física 3",
+                "url": "https://moodle.ufmg.br/mod/quiz/view.php?id=201",
+                "activity_type": "quiz"
+            }
+        }
+        with patch("src.notifier.discord_bot.DaemonState") as MockState, \
+             patch.object(queue_manager, "enqueue", new_callable=AsyncMock) as mock_enqueue:
+            mock_state_inst = MagicMock()
+            mock_state_inst.data = {"assignments": mock_assignments}
+            MockState.return_value = mock_state_inst
+            mock_enqueue.return_value = 2
+
+            send_mock = AsyncMock()
+
+            # 1. Com silent_enqueue=True -> send_mock não deve ser chamado para alertar a fila
+            pos = asyncio.run(enqueue_solve_flow(send_mock, tarefa="201", modo="resolver", silent_enqueue=True))
+            self.assertEqual(pos, 2)
+            self.assertFalse(send_mock.called)
+
+            # 2. Com silent_enqueue=False (padrão) -> send_mock deve ser chamado
+            pos = asyncio.run(enqueue_solve_flow(send_mock, tarefa="201", modo="resolver", silent_enqueue=False))
+            self.assertEqual(pos, 2)
+            self.assertTrue(send_mock.called)
+
+    def test_resolve_channel_fallback_http(self):
+        """Verifica que _resolve_channel tenta fetch_channel mesmo quando bot.is_ready() é False."""
+        from src.notifier.discord_bot import MoodleDiscordNotifier
+        notifier = MoodleDiscordNotifier(token="mock_token", channel_id=987654)
+
+        with patch.object(bot, "is_ready", return_value=False), \
+             patch.object(bot, "fetch_channel", new_callable=AsyncMock) as mock_fetch:
+            mock_channel = MagicMock()
+            mock_fetch.return_value = mock_channel
+
+            res = asyncio.run(notifier._resolve_channel(987654))
+            self.assertEqual(res, mock_channel)
+            mock_fetch.assert_called_once_with(987654)
 
     def test_commands_registered(self):
         cmd_names = [cmd.name for cmd in bot.tree.get_commands()]

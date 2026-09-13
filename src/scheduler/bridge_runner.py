@@ -265,20 +265,14 @@ class BridgeRunner:
 
         elif action in ("solve_task", "redo_task"):
             import discord
-            from src.notifier.discord_bot import _execute_solve_flow, bot
-            target_ch_id = int(task.get("channel_id") or 0)
+            from src.notifier.discord_bot import _execute_solve_flow, bot, MoodleDiscordNotifier
+            setattr(bot, "_skip_tree_sync", True)
+            notifier = MoodleDiscordNotifier()
+            target_ch_id = int(task.get("channel_id") or settings.DISCORD_CHANNEL_ID or 0)
             target_ch = None
             if target_ch_id:
                 try:
-                    if settings.DISCORD_BOT_TOKEN and not getattr(bot.http, "token", None):
-                        await bot.login(settings.DISCORD_BOT_TOKEN)
-                    if getattr(bot._connection, "_ready", None) is discord.utils.MISSING:
-                        bot._connection._ready = asyncio.Event()
-                        bot._connection._ready.set()
-                    if bot.is_ready():
-                        target_ch = bot.get_channel(target_ch_id)
-                    if not target_ch and getattr(bot.http, "token", None):
-                        target_ch = await asyncio.wait_for(bot.fetch_channel(target_ch_id), timeout=5.0)
+                    target_ch = await notifier._resolve_channel(target_ch_id)
                 except Exception as ch_err:
                     console.print(f"[yellow]Nota ao obter canal do Discord {target_ch_id}: {ch_err}[/yellow]")
 
@@ -291,11 +285,9 @@ class BridgeRunner:
 
                 if settings.DISCORD_CHANNEL_ID:
                     try:
-                        ch = bot.get_channel(settings.DISCORD_CHANNEL_ID)
-                        if not ch and getattr(bot.http, "token", None):
-                            ch = await asyncio.wait_for(bot.fetch_channel(settings.DISCORD_CHANNEL_ID), timeout=5.0)
-                        if ch and hasattr(ch, "send"):
-                            return await ch.send(*args, **kwargs)
+                        fallback_ch = await notifier._resolve_channel(settings.DISCORD_CHANNEL_ID)
+                        if fallback_ch and hasattr(fallback_ch, "send"):
+                            return await fallback_ch.send(*args, **kwargs)
                     except Exception:
                         pass
                 return None

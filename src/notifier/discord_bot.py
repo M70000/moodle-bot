@@ -1359,6 +1359,8 @@ class MoodleBotClient(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        if _os.environ.get("BRIDGE_RUNNER") == "1" or getattr(self, "_skip_tree_sync", False):
+            return
         console.print("[cyan]Sincronizando Slash Commands...[/cyan]")
         try:
             # Sync global (propagação pode demorar até 1h no Discord)
@@ -1936,11 +1938,17 @@ async def _execute_solve_flow(
     if _is_relay_mode() and not _has_ai_key_configured():
         from src.notifier.bridge_manager import cloud_bridge
         if await cloud_bridge.is_desktop_online():
+            effective_ch_id = str(
+                getattr(channel, "id", None)
+                or getattr(channel, "channel_id", None)
+                or settings.DISCORD_CHANNEL_ID
+                or 0
+            )
             task_id = await cloud_bridge.dispatch_action(
                 action="redo_task" if is_refazer else "solve_task",
                 assignment_id=str(target_item.get("id", tarefa)),
                 assignment_url=str(target_item.get("url", "")),
-                channel_id=str(getattr(channel, "id", 0)),
+                channel_id=effective_ch_id,
                 message_id="",
                 requester="Discord (Relay)",
                 title=title,
@@ -1992,6 +2000,18 @@ async def _execute_solve_flow(
 
         initial_header = f"{action_verb} **{assign_obj.title}**...\n{ref_msg}"
         status_msg = await send_func(initial_header)
+        if not status_msg and channel and hasattr(channel, "send"):
+            try:
+                status_msg = await channel.send(initial_header)
+            except Exception:
+                pass
+        if not status_msg:
+            try:
+                fallback_ch = await MoodleDiscordNotifier()._resolve_channel()
+                if fallback_ch and hasattr(fallback_ch, "send"):
+                    status_msg = await fallback_ch.send(initial_header)
+            except Exception:
+                pass
         reporter = DiscordLiveReporter(status_msg, initial_header)
 
         has_local_session = Path(settings.STORAGE_COOKIES_PATH).exists() and not _is_relay_mode()
@@ -2129,7 +2149,8 @@ async def enqueue_solve_flow(
     is_refazer: bool = False,
     modo: str = "resolver",
     requester: str = "Usuário",
-    channel: Optional[Any] = None
+    channel: Optional[Any] = None,
+    silent_enqueue: bool = False
 ) -> int:
     """Enfileira a resolução de uma tarefa ou questionário no TaskQueueManager."""
     assignments = await _get_current_assignments()
@@ -2200,7 +2221,7 @@ async def enqueue_solve_flow(
     )
 
     pos = await queue_manager.enqueue(item)
-    if pos > 1 or queue_manager.is_busy_except(item):
+    if (pos > 1 or queue_manager.is_busy_except(item)) and not silent_enqueue:
         queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
         if is_refazer:
             verb = "Refazer atividade"
@@ -2712,18 +2733,36 @@ class BatchSelectView(ui.View):
 
         summary_lines = []
         channel = interaction.channel
+        ch_id = getattr(interaction, "channel_id", None) or getattr(channel, "id", None)
+        if not channel and ch_id:
+            channel = bot.get_channel(ch_id)
+        if not channel and ch_id and getattr(bot.http, "token", None):
+            try:
+                channel = await bot.fetch_channel(ch_id)
+            except Exception:
+                pass
+        if not channel and settings.DISCORD_CHANNEL_ID:
+            channel = bot.get_channel(settings.DISCORD_CHANNEL_ID)
+            if not channel and getattr(bot.http, "token", None):
+                try:
+                    channel = await bot.fetch_channel(settings.DISCORD_CHANNEL_ID)
+                except Exception:
+                    pass
+
+        batch_send = channel.send if (channel and hasattr(channel, "send")) else interaction.followup.send
 
         for item in chosen_items:
             aid = str(item.get("id", ""))
             pos = await enqueue_solve_flow(
-                send_func=channel.send,
+                send_func=batch_send,
                 tarefa=aid,
                 instrucoes=self.instrucoes,
                 extra_files=combined_files,
                 is_refazer=False,
                 modo=modo,
                 requester=interaction.user.display_name if interaction.user else self.requester,
-                channel=channel
+                channel=channel,
+                silent_enqueue=True
             )
             summary_lines.append(f"• **#{pos}** na fila: `{item.get('title', aid)}` ({clean_display_course(item.get('course', 'Geral'))})")
 
@@ -4086,21 +4125,36 @@ class MoodleDiscordNotifier:
         self.token = token or settings.DISCORD_BOT_TOKEN
         self.channel_id = channel_id or settings.DISCORD_CHANNEL_ID
 
-    async def _resolve_channel(self) -> Optional[discord.abc.Messageable]:
-        """Obtém o canal do Discord com fallback seguro para fetch_channel."""
-        if not bot.is_ready():
-            if self.token:
-                try:
-                    await asyncio.wait_for(bot.wait_until_ready(), timeout=5.0)
-                except Exception:
-                    pass
-        channel = bot.get_channel(self.channel_id)
-        if not channel and bot.is_ready():
+    async def _resolve_channel(self, channel_id: Optional[Any] = None) -> Optional[discord.abc.Messageable]:
+        """Obtém o canal do Discord com fallback seguro para fetch_channel mesmo em background/runner."""
+        raw_id = channel_id or self.channel_id or settings.DISCORD_CHANNEL_ID
+        if not raw_id:
+            return None
+        try:
+            target_id = int(raw_id)
+        except (ValueError, TypeError):
+            return None
+
+        if bot.is_ready():
+            channel = bot.get_channel(target_id)
+            if channel:
+                return channel
+
+        token = self.token or settings.DISCORD_BOT_TOKEN
+        if token and getattr(bot.http, "token", None) != token:
             try:
-                channel = await bot.fetch_channel(self.channel_id)
+                await bot.login(token)
             except Exception:
                 pass
-        return channel
+
+        if getattr(bot._connection, "_ready", None) is discord.utils.MISSING:
+            bot._connection._ready = asyncio.Event()
+            bot._connection._ready.set()
+
+        try:
+            return await asyncio.wait_for(bot.fetch_channel(target_id), timeout=6.0)
+        except Exception:
+            return None
 
     async def send_assignment_review(
         self,
