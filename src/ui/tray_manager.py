@@ -6,6 +6,7 @@ permanece em execução contínua em segundo plano.
 """
 
 import ctypes
+from ctypes import wintypes
 import os
 import sys
 import threading
@@ -20,7 +21,9 @@ from rich.console import Console
 console = Console()
 
 SW_HIDE = 0
+SW_SHOWNORMAL = 1
 SW_SHOW = 5
+SW_MINIMIZE = 6
 SW_RESTORE = 9
 GA_ROOT = 2
 WM_SETICON = 0x0080
@@ -30,9 +33,41 @@ IMAGE_ICON = 1
 LR_LOADFROMFILE = 0x00000010
 LR_DEFAULTSIZE = 0x00000040
 
+# Configuração de protótipos Win32 64-bit seguros
+if sys.platform == "win32":
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+
+    kernel32.GetConsoleWindow.restype = wintypes.HWND
+    kernel32.SetConsoleTitleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.SetConsoleTitleW.restype = wintypes.BOOL
+
+    user32.IsWindow.argtypes = [wintypes.HWND]
+    user32.IsWindow.restype = wintypes.BOOL
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.ShowWindow.restype = wintypes.BOOL
+    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
+    user32.SetForegroundWindow.restype = wintypes.BOOL
+    user32.BringWindowToTop.argtypes = [wintypes.HWND]
+    user32.BringWindowToTop.restype = wintypes.BOOL
+    user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.GetAncestor.restype = wintypes.HWND
+    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.FindWindowW.restype = wintypes.HWND
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextLengthW.restype = ctypes.c_int
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+    user32.GetWindowTextW.restype = ctypes.c_int
+
 
 class SystemTrayManager:
     """Gerencia o ícone na bandeja do sistema e o comportamento de minimizar."""
+
+    WINDOW_TITLE = "Moodle AI Assistant - Assistente em Execucao"
 
     def __init__(
         self,
@@ -45,63 +80,67 @@ class SystemTrayManager:
         self._running = False
         self._is_hidden = False
         self._monitor_thread: Optional[threading.Thread] = None
-        self._target_hwnd = 0
+        self._target_hwnd: Optional[int] = None
 
         self.root_dir = Path(__file__).resolve().parent.parent.parent
         self.logo_path = self.root_dir / "assets" / "logo.png"
         self.ico_path = self.root_dir / "assets" / "app.ico"
 
     def _find_window_hwnd(self) -> int:
-        """Localiza o identificador de janela (HWND) do console ou terminal."""
+        """Localiza com precisão o identificador da janela visível (Windows Terminal ou Conhost)."""
         if sys.platform != "win32":
             return 0
 
-        user32 = ctypes.windll.user32
-        kernel32 = ctypes.windll.kernel32
+        # Garante que o console possua o título padrão do assistente
+        try:
+            kernel32.SetConsoleTitleW(self.WINDOW_TITLE)
+        except Exception:
+            pass
 
-        # 1. Tenta obter diretamente o HWND do console
-        hwnd = kernel32.GetConsoleWindow()
-        if hwnd:
-            root = user32.GetAncestor(hwnd, GA_ROOT)
-            return root if root else hwnd
+        # 1. Busca direta pelo título exato configurado no iniciar.bat
+        exact_h = user32.FindWindowW(None, self.WINDOW_TITLE)
+        if exact_h and user32.IsWindow(exact_h):
+            root = user32.GetAncestor(exact_h, GA_ROOT)
+            return root if (root and user32.IsWindow(root)) else exact_h
 
-        # 2. Tenta buscar por título de janela conhecido
-        known_titles = [
-            "Moodle AI Assistant - Assistente em Execucao",
-            "Moodle AI Assistant",
-        ]
-        for title in known_titles:
-            h = user32.FindWindowW(None, title)
-            if h:
-                root = user32.GetAncestor(h, GA_ROOT)
-                return root if root else h
-
-        # 3. Busca por enumeração de janelas pertencentes ao processo atual
-        pid = os.getpid()
-        found = []
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_int, ctypes.c_int)
+        # 2. Busca por enumeração de janelas visíveis que contenham "Moodle AI Assistant"
+        found_h = 0
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def enum_cb(h, _):
-            if user32.IsWindowVisible(h):
-                proc_id = ctypes.c_ulong()
-                user32.GetWindowThreadProcessId(h, ctypes.byref(proc_id))
-                if proc_id.value == pid:
-                    found.append(h)
+            nonlocal found_h
+            if user32.IsWindow(h) and user32.IsWindowVisible(h):
+                length = user32.GetWindowTextLengthW(h)
+                if length > 0:
+                    buf = ctypes.create_unicode_buffer(length + 1)
+                    user32.GetWindowTextW(h, buf, length + 1)
+                    title_str = buf.value.lower()
+                    if "moodle ai assistant" in title_str:
+                        found_h = h
+                        return False
             return True
 
         try:
             user32.EnumWindows(WNDENUMPROC(enum_cb), 0)
+            if found_h and user32.IsWindow(found_h):
+                root = user32.GetAncestor(found_h, GA_ROOT)
+                return root if (root and user32.IsWindow(root)) else found_h
         except Exception:
             pass
 
-        return found[0] if found else 0
+        # 3. Fallback: GetConsoleWindow (conhost clássico)
+        con_h = kernel32.GetConsoleWindow()
+        if con_h and user32.IsWindow(con_h):
+            root = user32.GetAncestor(con_h, GA_ROOT)
+            return root if (root and user32.IsWindow(root)) else con_h
+
+        return 0
 
     def _apply_window_icon(self, hwnd: int):
         """Aplica o Brasão de Minas Gerais como ícone da janela do Windows."""
-        if sys.platform != "win32" or not hwnd or not self.ico_path.exists():
+        if sys.platform != "win32" or not hwnd or not user32.IsWindow(hwnd) or not self.ico_path.exists():
             return
         try:
-            user32 = ctypes.windll.user32
             hicon = user32.LoadImageW(
                 0,
                 str(self.ico_path.resolve()),
@@ -123,9 +162,14 @@ class SystemTrayManager:
 
         hwnd = self._target_hwnd or self._find_window_hwnd()
         if hwnd:
-            user32 = ctypes.windll.user32
+            self._target_hwnd = hwnd
             user32.ShowWindow(hwnd, SW_RESTORE)
-            user32.SetForegroundWindow(hwnd)
+            user32.ShowWindow(hwnd, SW_SHOW)
+            try:
+                user32.BringWindowToTop(hwnd)
+                user32.SetForegroundWindow(hwnd)
+            except Exception:
+                pass
             self._is_hidden = False
 
     def hide_window(self, icon=None, item=None):
@@ -135,9 +179,25 @@ class SystemTrayManager:
 
         hwnd = self._target_hwnd or self._find_window_hwnd()
         if hwnd:
-            user32 = ctypes.windll.user32
+            self._target_hwnd = hwnd
             user32.ShowWindow(hwnd, SW_HIDE)
             self._is_hidden = True
+
+    def toggle_window(self, icon=None, item=None):
+        """Alterna o estado da janela ao clicar no ícone da bandeja."""
+        if sys.platform != "win32":
+            return
+
+        hwnd = self._target_hwnd or self._find_window_hwnd()
+        if not hwnd:
+            return
+
+        self._target_hwnd = hwnd
+        if self._is_hidden:
+            self.restore_window(icon, item)
+        else:
+            self.hide_window(icon, item)
+
 
     def open_config_panel(self, icon=None, item=None):
         """Abre o painel de controle e configurações no navegador."""
@@ -155,7 +215,6 @@ class SystemTrayManager:
             except Exception:
                 pass
         else:
-            # Encerra o processo de forma limpa
             os._exit(0)
 
     def _monitor_window_loop(self):
@@ -163,22 +222,22 @@ class SystemTrayManager:
         if sys.platform != "win32":
             return
 
-        user32 = ctypes.windll.user32
-
         while self._running:
-            time.sleep(0.3)
+            time.sleep(0.2)
             try:
-                if not self._target_hwnd:
+                # Se ainda não encontramos o HWND ou a janela foi alterada
+                if not self._target_hwnd or not user32.IsWindow(self._target_hwnd):
                     self._target_hwnd = self._find_window_hwnd()
-                    if self._target_hwnd:
+                    if self._target_hwnd and user32.IsWindow(self._target_hwnd):
                         self._apply_window_icon(self._target_hwnd)
 
-                if self._target_hwnd and not self._is_hidden:
-                    # Verifica se o usuário clicou em minimizar ('_')
-                    if user32.IsIconic(self._target_hwnd):
-                        # Janela foi minimizada -> oculta da barra de tarefas
-                        user32.ShowWindow(self._target_hwnd, SW_HIDE)
-                        self._is_hidden = True
+                if self._target_hwnd and user32.IsWindow(self._target_hwnd):
+                    if not self._is_hidden:
+                        # Se o usuário clicou no botão de minimizar ('_')
+                        if user32.IsIconic(self._target_hwnd):
+                            # Oculta da barra de tarefas e da tela
+                            user32.ShowWindow(self._target_hwnd, SW_HIDE)
+                            self._is_hidden = True
             except Exception:
                 pass
 
@@ -224,7 +283,7 @@ class SystemTrayManager:
             # Inicia o ícone da bandeja em thread desacoplada
             self.icon.run_detached()
 
-            # Inicia o monitor de minimização
+            # Localiza a janela e define o ícone
             self._target_hwnd = self._find_window_hwnd()
             if self._target_hwnd:
                 self._apply_window_icon(self._target_hwnd)
@@ -244,9 +303,10 @@ class SystemTrayManager:
     def stop(self):
         """Encerra o ícone da bandeja e restaura a janela caso estivesse oculta."""
         self._running = False
-        if sys.platform == "win32" and self._is_hidden and self._target_hwnd:
+        if sys.platform == "win32" and self._is_hidden and self._target_hwnd and user32.IsWindow(self._target_hwnd):
             try:
-                ctypes.windll.user32.ShowWindow(self._target_hwnd, SW_RESTORE)
+                user32.ShowWindow(self._target_hwnd, SW_RESTORE)
+                user32.ShowWindow(self._target_hwnd, SW_SHOW)
             except Exception:
                 pass
 
