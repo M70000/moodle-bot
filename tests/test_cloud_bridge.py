@@ -100,6 +100,7 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
             "action": "solve_task",
             "assignment_id": "999",
             "title": "Trabalho 1",
+            "course": "2026_2 - INGLÊS INSTRUMENTAL I - METATURMA",
             "channel_id": "123",
             "structured_answers": {
                 "instrucoes": "resolver com calma",

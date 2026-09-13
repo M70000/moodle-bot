@@ -241,6 +241,16 @@ class Settings(BaseSettings):
             p = PROJECT_ROOT / p
         return p
 
+    @property
+    def STORAGE_MATERIALS_PATH(self) -> Path:
+        """Alias para STORAGE_MATERIALS_DIR para garantir compatibilidade retroativa."""
+        return self.STORAGE_MATERIALS_DIR
+
+    @property
+    def STORAGE_SUBMISSIONS_PATH(self) -> Path:
+        """Alias para STORAGE_SUBMISSIONS_DIR para garantir compatibilidade retroativa."""
+        return self.STORAGE_SUBMISSIONS_DIR
+
     def ensure_storage_dirs(self) -> None:
         """Garante que todos os diretórios de armazenamento necessários existam."""
         self.STORAGE_COOKIES_PATH.parent.mkdir(parents=True, exist_ok=True)

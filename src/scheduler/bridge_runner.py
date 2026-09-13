@@ -307,10 +307,10 @@ class BridgeRunner:
                 from src.scraper.moodle_scraper import sanitize_filename
                 candidates = []
                 if course_name:
-                    candidates.append(Path(settings.STORAGE_MATERIALS_PATH) / sanitize_filename(course_name) / filename)
-                    candidates.append(Path(settings.STORAGE_MATERIALS_PATH) / course_name / filename)
+                    candidates.append(Path(settings.STORAGE_MATERIALS_DIR) / sanitize_filename(course_name) / filename)
+                    candidates.append(Path(settings.STORAGE_MATERIALS_DIR) / course_name / filename)
 
-                mat_root = Path(settings.STORAGE_MATERIALS_PATH)
+                mat_root = Path(settings.STORAGE_MATERIALS_DIR)
                 if mat_root.exists():
                     for found_path in mat_root.rglob(filename):
                         if found_path.is_file():
