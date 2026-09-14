@@ -18,6 +18,7 @@ import discord
 from rich.console import Console
 
 from config.settings import settings
+from src.ui.theme import LumiTheme, apply_lumi_footer
 
 console = Console()
 
@@ -212,18 +213,18 @@ class TaskQueueManager:
         is_active = (running is not None)
 
         if is_active:
-            color = discord.Color.gold()
+            color = LumiTheme.PRIMARY
             status_header = f"🟡 **Executando Tarefa** ({total_pending} na fila de espera)"
         elif waiting:
-            color = discord.Color.blue()
+            color = LumiTheme.SECONDARY
             status_header = f"🔵 **Preparando** ({total_pending} na fila)"
         else:
-            color = discord.Color.green()
+            color = LumiTheme.SUCCESS
             status_header = "🟢 **Fila Ociosa / Pronta para Novas Tarefas**"
 
         embed = discord.Embed(
-            title="🔄 Painel da Fila de Execução (Moodle Bot)",
-            description=f"Status da Fila: {status_header}\n*Execução estritamente sequencial para segurança do Moodle e IA.*",
+            title="🔄 Painel da Fila de Execução (LumiBot)",
+            description=f"Status da Fila: {status_header}\n*Execução estritamente sequencial para estabilidade e segurança acadêmica.*",
             color=color,
             timestamp=datetime.now()
         )
@@ -292,7 +293,7 @@ class TaskQueueManager:
                 inline=False
             )
 
-        embed.set_footer(text="Moodle Bot UFMG • Fila Centralizada")
+        apply_lumi_footer(embed, extra_info="Fila Centralizada")
         return embed
 
     async def _resolve_target_channel(self) -> Optional[Any]:

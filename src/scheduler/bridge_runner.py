@@ -413,13 +413,14 @@ class BridgeRunner:
             target_ch_id = int(task.get("channel_id") or settings.DISCORD_CHANNEL_ID or 0)
             target_ch = await notifier._resolve_channel(target_ch_id) if target_ch_id else None
 
+            from src.ui.theme import LumiTheme, apply_lumi_footer
             tutor = StudyTutor()
             res = await tutor.answer_question(discipline=disciplina, question=duvida, specific_material=material)
 
             disc_clean = clean_display_course(disciplina)
             embed = discord.Embed(
                 title=f"💡 Tutor Acadêmico: {disc_clean}",
-                color=discord.Color.blue()
+                color=LumiTheme.PRIMARY
             )
             embed.add_field(name="❓ Dúvida do Aluno", value=f"*{duvida[:500]}*", inline=False)
 
@@ -435,7 +436,7 @@ class BridgeRunner:
                 embed.add_field(name="📚 Materiais & Slides Consultados", value="\n".join(f"• `{m}`" for m in mats[:4]), inline=False)
 
             requester = task.get("requester") or "Estudante"
-            embed.set_footer(text=f"Solicitado por {requester} • Modelo: {res.get('model_used')}")
+            apply_lumi_footer(embed, extra_info=f"Solicitado por {requester} • Modelo: {res.get('model_used')}")
 
             msg_content = f"{user_mention} aqui está a resposta para a sua dúvida:" if user_mention else ""
             if target_ch and hasattr(target_ch, "send"):

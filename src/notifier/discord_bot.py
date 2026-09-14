@@ -27,6 +27,7 @@ from discord.ext import commands
 from rich.console import Console
 
 from config.settings import settings
+from src.ui.theme import LumiTheme, create_lumi_embed, apply_lumi_footer
 from src.auth.moodle_auth import MoodleAuth
 from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus
 from src.scheduler.state import DaemonState
@@ -1521,15 +1522,15 @@ class ReviewActionView(ui.View):
             await self.on_action(self.assignment_id, "cancelled", interaction)
 
 
-class MoodleBotClient(commands.Bot):
-    """Bot do Discord com sincronização instantânea de Slash Commands por servidor e prefixos."""
+class LumiBotClient(commands.Bot):
+    """Bot do Discord (LumiBot) com sincronização instantânea de Slash Commands por servidor e prefixos."""
 
     def __init__(self):
         # Slash Commands e notificações operam 100% com Intents.default().
         # Evita a exceção PrivilegedIntentsRequired caso os toggles de Privileged Gateway Intents
         # (Message Content / Server Members) não estejam ativados no Discord Developer Portal.
         intents = discord.Intents.default()
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix="!", intents=intents, help_command=None)
 
     async def setup_hook(self):
         if _os.environ.get("BRIDGE_RUNNER") == "1" or getattr(self, "_skip_tree_sync", False):
@@ -1547,7 +1548,19 @@ class MoodleBotClient(commands.Bot):
             console.print(f"[yellow]Nota na sincronização global: {sync_err}[/yellow]")
 
     async def on_ready(self):
-        console.print(f"[bold green]✔ Bot conectado ao Discord como {self.user} (ID: {self.user.id})![/bold green]")
+        console.print(f"[bold green]✔ LumiBot conectado ao Discord como {self.user} (ID: {self.user.id})![/bold green]")
+        try:
+            await self.change_presence(
+                status=discord.Status.online,
+                activity=discord.Activity(
+                    type=discord.ActivityType.watching,
+                    name="seus prazos acadêmicos | /ajuda"
+                )
+            )
+            console.print("[green]✔ Status de presença do LumiBot configurado: 'seus prazos acadêmicos | /ajuda'[/green]")
+        except Exception as pres_err:
+            console.print(f"[yellow]Aviso ao configurar presença do bot: {pres_err}[/yellow]")
+
         for guild in self.guilds:
             try:
                 # Copia os comandos globais para o escopo do servidor (propagação INSTANTÂNEA)
@@ -1580,28 +1593,29 @@ class MoodleBotClient(commands.Bot):
             console.print(f"[yellow]Aviso ao provisionar salas no on_member_join para {member.display_name}: {err}[/yellow]")
 
 
-# Instância global do Bot
-bot = MoodleBotClient()
+# Instância global do Bot e alias retrocompatível
+MoodleBotClient = LumiBotClient
+bot = LumiBotClient()
 
 
 async def provision_user_channels(guild: discord.Guild, member: discord.Member) -> Dict[str, Any]:
-    """Cria ou recupera categoria privada e os 5 canais do Moodle Bot para um membro específico."""
+    """Cria ou recupera categoria privada e os 5 canais do LumiBot para um membro específico."""
     # Garante que temos o objeto Member completo via REST HTTP (não depende do cache/members intent)
     try:
         member = await guild.fetch_member(member.id)
     except (discord.NotFound, discord.HTTPException):
         pass  # usa o objeto recebido como fallback
 
-    category_name = f"🔒 Moodle • {member.display_name}"[:100]
+    category_name = f"🔒 Lumi • {member.display_name}"[:100]
 
-    # 1. Procura categoria existente para o membro
+    # 1. Procura categoria existente para o membro (suporta tanto Lumi quanto legados Moodle)
     category = None
     clean_member_name = normalize_text(member.name)
     clean_display = normalize_text(member.display_name)
 
     for cat in guild.categories:
         cat_norm = normalize_text(cat.name)
-        if "moodle" in cat_norm:
+        if "lumi" in cat_norm or "moodle" in cat_norm:
             if clean_member_name in cat_norm or clean_display in cat_norm or str(member.id) in cat_norm:
                 category = cat
                 break
@@ -1631,7 +1645,7 @@ async def provision_user_channels(guild: discord.Guild, member: discord.Member) 
     channel_specs = [
         ("alertas-revisoes", "Alertas de prazos, aprovação/adiamento de tarefas e rascunhos"),
         ("conteudos", "Materiais didáticos e uploads do /adicionarconteudo"),
-        ("avisos-turma", "Comunicados dos professores capturados do Moodle"),
+        ("avisos-turma", "Comunicados dos professores capturados do portal acadêmico"),
         ("fila-tarefas", "Acompanhamento em tempo real da fila de execução"),
         ("estudos-simulados", "Tutor tira-dúvidas /perguntar, simulados /quiz e flashcards")
     ]
@@ -1663,7 +1677,7 @@ async def provision_user_channels(guild: discord.Guild, member: discord.Member) 
             embed = discord.Embed(
                 title=f"📦 Salas Pessoais Prontas, {member.display_name}!",
                 description=(
-                    f"Suas 5 salas privadas exclusivas do **Moodle AI Assistant** foram provisionadas com sucesso!\n"
+                    f"Suas 5 salas privadas exclusivas do **LumiBot** foram provisionadas com sucesso!\n"
                     f"Apenas você e o bot têm acesso a esta categoria (`{category.name}`).\n\n"
                     "### 🚀 Como Conectar seu Bot Desktop à Sua Máquina:\n"
                     "1. Na sua máquina, dê duplo clique em `configurar.bat` (ou execute `instalar.bat` na primeira vez);\n"
@@ -1676,11 +1690,11 @@ async def provision_user_channels(guild: discord.Guild, member: discord.Member) 
                     f"DISCORD_QUEUE_CHANNEL_ID={env_mapping['DISCORD_QUEUE_CHANNEL_ID']}\n"
                     f"DISCORD_STUDY_CHANNEL_ID={env_mapping['DISCORD_STUDY_CHANNEL_ID']}\n"
                     f"```\n\n"
-                    "Dica: Pegue sua chave gratuita do Gemini no Google AI Studio e inicie o login MinhaUFMG com 1 clique!"
+                    "Dica: Pegue sua chave gratuita do Gemini no Google AI Studio e inicie o login acadêmico com 1 clique!"
                 ),
-                color=discord.Color.green()
+                color=LumiTheme.SUCCESS
             )
-            embed.set_footer(text="Moodle AI Assistant (UFMG) • Multi-User Desktop Edition")
+            apply_lumi_footer(embed, extra_info="Salas Pessoais Prontas")
             await channels_map["alertas-revisoes"].send(content=member.mention, embed=embed)
         except Exception:
             pass
@@ -1845,18 +1859,19 @@ def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
 
 
 def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
-    """Gera o painel visual das atividades e questionários cadastrados no Moodle."""
+    """Gera o painel visual das atividades e questionários cadastrados no portal acadêmico."""
     assignments = _get_sync_assignments()
 
     if not assignments:
         desc = "📋 Nenhuma atividade cadastrada no momento."
         if _is_relay_mode():
             desc += "\n\n⚡ **Dica:** O bot está operando em nuvem no Render. Inicie o `iniciar.bat` no seu computador para sincronizar suas tarefas locais."
-        return discord.Embed(
-            title="📚 Painel de Atividades - Moodle UFMG",
+        embed = discord.Embed(
+            title="📚 Painel de Tarefas e Prazos Acadêmicos",
             description=desc,
-            color=discord.Color.blue()
+            color=LumiTheme.PRIMARY
         )
+        return apply_lumi_footer(embed)
 
     filtered_items = []
     norm_disc = normalize_text(disciplina) if disciplina else None
@@ -1870,9 +1885,9 @@ def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
 
     title_suffix = f" ({disciplina})" if disciplina else ""
     embed = discord.Embed(
-        title=f"📚 Painel de Atividades - Moodle UFMG{title_suffix}",
+        title=f"📚 Painel de Tarefas Acadêmicas{title_suffix}",
         description=f"Total de itens monitorados: **{len(filtered_items)}**",
-        color=discord.Color.blue()
+        color=LumiTheme.PRIMARY
     )
 
     trabalhos_pendentes = []
@@ -1934,7 +1949,7 @@ def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
             inline=False
         )
 
-    embed.set_footer(text=f"Moodle AI Assistant • UFMG Virtual • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    apply_lumi_footer(embed)
     return embed
 
 
@@ -1952,8 +1967,8 @@ async def build_status_embed() -> discord.Embed:
     assigns = [a for a in assignments.values() if a.get("activity_type") != "quiz"]
 
     embed = discord.Embed(
-        title="🛰️ Telemetria & Status - Moodle AI Assistant",
-        color=discord.Color.green() if is_valid else discord.Color.red()
+        title="🛰️ Telemetria & Status - LumiBot",
+        color=LumiTheme.SUCCESS if is_valid else LumiTheme.WARNING
     )
 
     hb_min = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
@@ -1980,7 +1995,7 @@ async def build_status_embed() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📋 Atividades Moodle",
+        name="📋 Atividades & Prazos",
         value=f"• Trabalhos de envio: **{len(assigns)}**\n• Quizzes avaliativos: **{len(quizzes)}**",
         inline=True
     )
@@ -2003,8 +2018,7 @@ async def build_status_embed() -> discord.Embed:
         inline=False
     )
 
-
-    embed.set_footer(text=f"Daemon a cada {settings.CHECK_INTERVAL_MINUTES} min • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    apply_lumi_footer(embed, extra_info=f"Daemon a cada {settings.CHECK_INTERVAL_MINUTES} min")
     return embed
 
 
@@ -2030,9 +2044,9 @@ def get_materiais_payload(disciplina: str):
         return None, f"📚 Nenhum material baixado encontrado para `{disciplina}`.", []
 
     embed = discord.Embed(
-        title=f"📖 Materiais de Estudo: {disciplina}",
+        title=f"📚 Materiais de Estudo: {disciplina}",
         description=f"Total de arquivos disponíveis: **{len(files)}**\nEnviando os principais materiais abaixo:",
-        color=discord.Color.green()
+        color=LumiTheme.PRIMARY
     )
 
     discord_files = []
@@ -2044,6 +2058,7 @@ def get_materiais_payload(disciplina: str):
             discord_files.append(discord.File(str(f), filename=f.name))
 
     embed.add_field(name="Arquivos Anexados", value="\n".join(file_lines), inline=False)
+    apply_lumi_footer(embed)
     return embed, None, discord_files
 
 
@@ -2051,7 +2066,7 @@ def get_materiais_payload(disciplina: str):
 # 1. Comandos de Barra (Slash Commands)
 # ----------------------------------------------------
 
-@bot.tree.command(name="tarefas", description="Lista as atividades do Moodle (pendentes e já entregues)")
+@bot.tree.command(name="tarefas", description="Lista suas tarefas e prazos acadêmicos (pendentes e entregues)")
 @app_commands.describe(disciplina="Filtrar por disciplina (opcional)")
 @app_commands.autocomplete(disciplina=course_autocomplete)
 async def cmd_tarefas(interaction: discord.Interaction, disciplina: Optional[str] = None):
@@ -2549,8 +2564,9 @@ async def cmd_resolver(
                 "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
                 "*(Ou clique diretamente em 'Resolver sem materiais extras')*"
             ),
-            color=discord.Color.blue()
+            color=LumiTheme.SECONDARY
         )
+        apply_lumi_footer(embed, extra_info="Seleção de Materiais")
         if extra_files:
             embed.add_field(
                 name="📎 Arquivo Anexado por Você",
@@ -2653,8 +2669,9 @@ async def cmd_refazer(
                 "👉 **Selecione no menu abaixo até 3 arquivos** que a IA deve utilizar como referência:\n"
                 "*(Ou clique diretamente em 'Refazer sem materiais extras')*"
             ),
-            color=discord.Color.blue()
+            color=LumiTheme.SECONDARY
         )
+        apply_lumi_footer(embed, extra_info="Seleção de Materiais")
         if extra_files:
             embed.add_field(
                 name="📎 Arquivo Anexado por Você",
@@ -2852,8 +2869,9 @@ async def _coordinate_batch_followup(
                     f"Identificamos que **{len(failed_aids)} de {len(chosen_items)} atividade(s)** falharam na primeira tentativa (ex: sobrecarga 503 / instabilidade de conexão).\n\n"
                     f"⏳ *Aguardando 10 segundos para resfriamento da API antes de retentar automaticamente apenas as atividades com falha...*"
                 ),
-                color=discord.Color.gold()
+                color=LumiTheme.PRIMARY
             )
+            apply_lumi_footer(retry_embed, extra_info="Repescagem Automática")
             await batch_send(embed=retry_embed)
         except Exception:
             pass
@@ -2904,13 +2922,13 @@ async def _coordinate_batch_followup(
 
     if not remaining_failures:
         final_title = "🎉 Lote de Atividades Concluído com Sucesso Total!"
-        color = discord.Color.green()
+        color = LumiTheme.SUCCESS
     elif len(succeeded) > 0:
         final_title = "⚠️ Lote de Atividades Concluído com Algumas Pendências"
-        color = discord.Color.orange()
+        color = LumiTheme.PRIMARY
     else:
         final_title = "❌ Falha no Processamento do Lote de Atividades"
-        color = discord.Color.red()
+        color = LumiTheme.WARNING
 
     report_desc = [
         f"O processamento do lote solicitado por {user_mention} foi finalizado.\n",
@@ -2960,7 +2978,7 @@ async def _coordinate_batch_followup(
             inline=False
         )
 
-    report_embed.set_footer(text="Moodle Bot UFMG • Relatório de Lote Consolidado")
+    apply_lumi_footer(report_embed, extra_info="Relatório de Lote Consolidado")
 
     try:
         await batch_send(embed=report_embed)
@@ -3057,14 +3075,14 @@ class BatchSelectView(ui.View):
     def build_panel_embed(self) -> discord.Embed:
         disc_info = f" da disciplina **{self.disciplina_filter}**" if self.disciplina_filter else ""
         embed = discord.Embed(
-            title="📦 Resolução de Atividades em Lote",
+            title="📦 Processamento de Atividades em Lote",
             description=(
                 f"Encontradas **{len(self.all_pending)} atividade(s) pendente(s)**{disc_info}.\n\n"
                 "1. Marque no **menu de atividades** as que deseja incluir no lote;\n"
                 "2. (Opcional) Escolha **materiais de apoio** ou clique em **[✏️ Instruções]**;\n"
                 "3. Escolha o nível de autonomia nos botões para disparar a execução."
             ),
-            color=discord.Color.blue()
+            color=LumiTheme.SECONDARY
         )
 
         if self.selected_ids:
@@ -3091,7 +3109,7 @@ class BatchSelectView(ui.View):
         if self.instrucoes:
             embed.add_field(name="📝 Instruções da IA para o Lote", value=f"```\n{self.instrucoes[:400]}\n```", inline=False)
 
-        embed.set_footer(text="A execução em lote é estritamente sequencial (FIFO) para segurança do Moodle.")
+        apply_lumi_footer(embed, extra_info="Execução Sequencial FIFO")
         return embed
 
     async def on_select_tasks(self, interaction: discord.Interaction):
@@ -3218,7 +3236,7 @@ class BatchSelectView(ui.View):
                 f"📍 **Acompanhamento:** Verifique a ordem e o andamento em tempo real no {queue_mention}.\n\n"
                 "**Ordem de Execução na Fila:**\n" + "\n".join(summary_lines[:15])
             ),
-            color=discord.Color.green()
+            color=LumiTheme.SUCCESS
         )
         if combined_files:
             embed.add_field(
@@ -3233,7 +3251,9 @@ class BatchSelectView(ui.View):
                 inline=False
             )
         if len(summary_lines) > 15:
-            embed.set_footer(text=f"... e mais {len(summary_lines) - 15} atividades enfileiradas.")
+            apply_lumi_footer(embed, extra_info=f"... e mais {len(summary_lines) - 15} tarefas na fila")
+        else:
+            apply_lumi_footer(embed, extra_info="Lote Enfileirado")
 
         try:
             if hasattr(interaction, "message") and interaction.message:
@@ -3500,11 +3520,11 @@ async def cmd_adicionarconteudo(
     embed = discord.Embed(
         title="📥 Conteúdo Adicionado à Base de Conhecimento!",
         description=f"O arquivo **`{arquivo.filename}`** foi salvo com sucesso.",
-        color=discord.Color.green()
+        color=LumiTheme.SUCCESS
     )
     embed.add_field(name="🏫 Disciplina", value=dest_dir.name, inline=True)
     embed.add_field(name="📦 Tamanho", value=f"{arquivo.size // 1024} KB", inline=True)
-    embed.set_footer(text="A IA passará a considerar este documento nas próximas resoluções.")
+    apply_lumi_footer(embed, extra_info="Base de Conhecimento Atualizada")
 
     # Anexa o arquivo na confirmação para persistência permanente no CDN do Discord
     discord_file = discord.File(str(dest_file), filename=dest_file.name)
@@ -3806,11 +3826,12 @@ class FlashcardsCarouselView(ui.View):
 
     def build_embed(self) -> discord.Embed:
         if not self.cards:
-            return discord.Embed(
+            embed = discord.Embed(
                 title="🗂️ Baralho de Flashcards Vazio",
                 description="Nenhum card foi gerado para este tópico.",
-                color=discord.Color.red()
+                color=LumiTheme.WARNING
             )
+            return apply_lumi_footer(embed)
 
         total = len(self.cards)
         card = self.cards[self.current_idx]
@@ -3819,7 +3840,7 @@ class FlashcardsCarouselView(ui.View):
         embed = discord.Embed(
             title=f"🗂️ Flashcards: {disc_clean}",
             description=f"**Tópico:** `{self.topic}` • **Card:** `{self.current_idx + 1}/{total}`",
-            color=discord.Color.purple() if not self.is_flipped else discord.Color.green()
+            color=LumiTheme.SECONDARY if not self.is_flipped else LumiTheme.SUCCESS
         )
 
         embed.add_field(name="❓ Pergunta / Conceito", value=f"**{card['front']}**", inline=False)
@@ -3833,7 +3854,7 @@ class FlashcardsCarouselView(ui.View):
         else:
             embed.add_field(name="🔒 Resposta Oculta", value="*Pense na resposta e clique em `[👁️ Revelar Resposta]` abaixo.*", inline=False)
 
-        embed.set_footer(text=f"Solicitado por {self.requester} • Arquivo Anki pronto para importação em anexo!")
+        apply_lumi_footer(embed, extra_info=f"Solicitado por {self.requester} • Anki pronto")
         return embed
 
     @ui.button(label="Anterior", style=discord.ButtonStyle.secondary, emoji="⬅️", row=0)
@@ -3923,7 +3944,7 @@ class InteractiveQuizSessionView(ui.View):
 
     def build_question_embed(self) -> discord.Embed:
         if not self.questions:
-            return discord.Embed(title="Simulado Vazio", description="Nenhuma questão gerada.", color=discord.Color.red())
+            return create_lumi_embed(title="Simulado Vazio", description="Nenhuma questão gerada.", color=LumiTheme.WARNING)
 
         q = self.questions[self.current_idx]
         total = len(self.questions)
@@ -3939,21 +3960,21 @@ class InteractiveQuizSessionView(ui.View):
                 f"**[C]** {q['options'].get('C', '')}\n"
                 f"**[D]** {q['options'].get('D', '')}\n"
             ),
-            color=discord.Color.blue()
+            color=LumiTheme.PRIMARY
         )
 
         if self.is_answered:
             chosen = self.user_answers[self.current_idx]
             correct = q.get("correct_option", "A")
             if chosen == correct:
-                embed.color = discord.Color.green()
+                embed.color = LumiTheme.SUCCESS
                 embed.add_field(
                     name="🎉 Parabéns! Você Acertou!",
                     value=f"Alternativa correta: **[{correct}]**",
                     inline=False
                 )
             else:
-                embed.color = discord.Color.red()
+                embed.color = LumiTheme.WARNING
                 embed.add_field(
                     name="❌ Atenção à Pegadinha!",
                     value=f"Você marcou **[{chosen}]**, mas a alternativa correta é **[{correct}]**.",
@@ -3963,8 +3984,9 @@ class InteractiveQuizSessionView(ui.View):
             embed.add_field(name="💡 Explicação Pedagógica", value=q.get("explanation", "Sem explicação"), inline=False)
             if q.get("reference"):
                 embed.add_field(name="📚 Referência nos Slides", value=f"`{q['reference']}`", inline=False)
+            apply_lumi_footer(embed, extra_info=f"Questão {self.current_idx + 1}/{total}")
         else:
-            embed.set_footer(text=f"Pontuação atual: {self.score}/{self.current_idx} acertos • Escolha uma opção abaixo")
+            apply_lumi_footer(embed, extra_info=f"Questão {self.current_idx + 1}/{total} • Pontuação: {self.score}")
 
         return embed
 
@@ -3973,15 +3995,15 @@ class InteractiveQuizSessionView(ui.View):
         pct = (self.score / total * 100) if total > 0 else 0
         disc_clean = clean_display_course(self.discipline)
 
-        if pct >= 80:
+        if pct >= 70:
             status_text = "🏆 **Desempenho Excepcional!** Você dominou os conceitos e superou as pegadinhas!"
-            color = discord.Color.green()
+            color = LumiTheme.SUCCESS
         elif pct >= 50:
             status_text = "📚 **Bom Desempenho!** Você está no caminho certo, mas vale revisar as pegadinhas das aulas."
-            color = discord.Color.gold()
+            color = LumiTheme.PRIMARY
         else:
             status_text = "⚠️ **Atenção aos Conceitos!** Recomendamos reler os slides indicados e usar `/flashcards` para fixar."
-            color = discord.Color.orange()
+            color = LumiTheme.WARNING
 
         embed = discord.Embed(
             title=f"🏁 Simulado Concluído: {disc_clean}",
@@ -3993,7 +4015,7 @@ class InteractiveQuizSessionView(ui.View):
             ),
             color=color
         )
-        embed.set_footer(text="Quer treinar novamente? Clique no botão abaixo!")
+        apply_lumi_footer(embed, extra_info=f"Resultado: {pct:.0f}% de acertos")
         return embed
 
     async def _handle_option_click(self, interaction: discord.Interaction, chosen: str):
@@ -4143,7 +4165,7 @@ async def cmd_perguntar(
     disc_clean = clean_display_course(disciplina)
     embed = discord.Embed(
         title=f"💡 Tutor Acadêmico: {disc_clean}",
-        color=discord.Color.blue()
+        color=LumiTheme.PRIMARY
     )
     embed.add_field(name="❓ Dúvida do Aluno", value=f"*{duvida[:500]}*", inline=False)
 
@@ -4158,7 +4180,7 @@ async def cmd_perguntar(
     if mats:
         embed.add_field(name="📚 Materiais & Slides Consultados", value="\n".join(f"• `{m}`" for m in mats[:4]), inline=False)
 
-    embed.set_footer(text=f"Solicitado por {interaction.user.display_name} • Modelo: {res.get('model_used')}")
+    apply_lumi_footer(embed, extra_info=f"Solicitado por {interaction.user.display_name} • Modelo: {res.get('model_used')}")
 
     if redirected:
         await target_ch.send(content=f"{interaction.user.mention} aqui está a resposta para a sua dúvida:", embed=embed)
@@ -4378,7 +4400,7 @@ async def cmd_quiz(
         await interaction.followup.send(embed=embed, view=view)
 
 
-@bot.tree.command(name="meuscanais", description="Cria ou localiza sua categoria e as 5 salas privadas do Moodle neste servidor")
+@bot.tree.command(name="meuscanais", description="Cria ou localiza sua categoria e as 5 salas privadas do LumiBot neste servidor")
 async def cmd_meuscanais(interaction: discord.Interaction):
     """Cria ou recupera as salas privadas do usuário neste servidor."""
     if not interaction.guild:
@@ -4408,7 +4430,7 @@ async def cmd_meuscanais(interaction: discord.Interaction):
     ch_ids = res["channels"]
 
     embed = discord.Embed(
-        title="🔒 Suas Salas Pessoais do Moodle Bot",
+        title="🔒 Suas Salas Pessoais do LumiBot",
         description=(
             f"Categoria: **{res['category_name']}**\n\n"
             f"• 📋 **Alertas & Revisões:** <#{ch_ids['DISCORD_CHANNEL_ID']}>\n"
@@ -4425,10 +4447,90 @@ async def cmd_meuscanais(interaction: discord.Interaction):
             f"DISCORD_STUDY_CHANNEL_ID={ch_ids['DISCORD_STUDY_CHANNEL_ID']}\n"
             f"```"
         ),
-        color=discord.Color.green()
+        color=LumiTheme.SUCCESS
     )
-    embed.set_footer(text="Dica: Na interface gráfica (configurar.bat), basta clicar em 'Auto-Detectar Meus Canais'!")
+    apply_lumi_footer(embed, extra_info="Dica: Em configurar.bat clique em 'Auto-Detectar Meus Canais'!")
     await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+def build_ajuda_embed() -> discord.Embed:
+    """Gera o painel moderno e categorizado de comandos e recursos do LumiBot."""
+    embed = discord.Embed(
+        title="💡 LumiBot • Seu Copiloto Acadêmico",
+        description=(
+            "Olá! Eu sou o **Lumi**, seu copiloto acadêmico universal e multiplataforma ✨\n"
+            "Organizo seus prazos, monitoro tarefas e resolvo atividades com suporte a múltiplos provedores de IA.\n\n"
+            "Você pode utilizar comandos de barra (`/`) ou prefixo (`!`):\n"
+        ),
+        color=LumiTheme.PRIMARY
+    )
+
+    embed.add_field(
+        name="📅 Gestão de Tarefas & Prazos",
+        value=(
+            "• `/tarefas [disciplina]` - Consulta prazos e status de entrega de todas as atividades.\n"
+            "• `/status` - Diagnóstico em tempo real da sessão do LMS, materiais e modelos de IA."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🧠 Resolução & Automação Inteligente",
+        value=(
+            "• `/resolver [tarefa] [modo]` - Resolve questionário ou atividade sob demanda com IA.\n"
+            "• `/resolver_lote` - Menu interativo para selecionar e resolver múltiplas tarefas em lote.\n"
+            "• `/refazer [tarefa]` - Refaz uma atividade já enviada com novas instruções e referências."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📚 Central de Estudos & IA",
+        value=(
+            "• `/materiais <disciplina>` - Envia no canal slides e PDFs de uma disciplina cadastrada.\n"
+            "• `/perguntar <disciplina> <dúvida>` - Tutor acadêmico que tira dúvidas citando seus materiais.\n"
+            "• `/flashcards <disciplina>` - Gera baralho de estudo ativo com exportação direta para o Anki.\n"
+            "• `/quiz <disciplina>` - Simulado interativo pré-prova com botões e pegadinhas reais.\n"
+            "• `/adicionarconteudo <disciplina>` - Salva resumos e apostilas na base de conhecimento da matéria."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📓 Integração com Notion",
+        value=(
+            "• `/notion_sync` - Sincroniza tarefas pendentes diretamente com seu calendário do Notion.\n"
+            "• `/atualizar_checklist` - Atualiza a rotina e pendências do dia na checklist do Notion.\n"
+            "• `/notion_adicionar` - Adiciona anotação, tarefa ou estudo ao Notion."
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="⚙️ Configuração & Salas Pessoais",
+        value=(
+            "• `/meuscanais` - Cria ou localiza suas 5 salas privadas exclusivas neste servidor.\n"
+            "• `/login` - Realiza login ou renova sua sessão com segurança no navegador ou automático."
+        ),
+        inline=False
+    )
+
+    apply_lumi_footer(embed)
+    return embed
+
+
+@bot.tree.command(name="ajuda", description="Exibe o guia completo de comandos e recursos do LumiBot")
+async def cmd_ajuda(interaction: discord.Interaction):
+    """Exibe o painel de ajuda e comandos do LumiBot via Slash Command."""
+    embed = build_ajuda_embed()
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="help", description="Exibe o guia completo de comandos e recursos do LumiBot")
+async def cmd_help(interaction: discord.Interaction):
+    """Exibe o painel de ajuda e comandos do LumiBot via Slash Command."""
+    embed = build_ajuda_embed()
+    await interaction.response.send_message(embed=embed)
 
 
 # ----------------------------------------------------
@@ -4848,7 +4950,7 @@ async def prefix_meuscanais(ctx: commands.Context):
 
     ch_ids = res["channels"]
     embed = discord.Embed(
-        title="🔒 Suas Salas Pessoais do Moodle Bot",
+        title="🔒 Suas Salas Pessoais do LumiBot",
         description=(
             f"Categoria: **{res['category_name']}**\n\n"
             f"• 📋 Alertas: <#{ch_ids['DISCORD_CHANNEL_ID']}>\n"
@@ -4857,31 +4959,17 @@ async def prefix_meuscanais(ctx: commands.Context):
             f"• ⚡ Fila: <#{ch_ids['DISCORD_QUEUE_CHANNEL_ID']}>\n"
             f"• 🎯 Estudos: <#{ch_ids['DISCORD_STUDY_CHANNEL_ID']}>\n"
         ),
-        color=discord.Color.green()
+        color=LumiTheme.SUCCESS
     )
+    apply_lumi_footer(embed, extra_info="Salas Pessoais")
     await processing_msg.delete()
     await ctx.send(embed=embed)
 
 
-@bot.command(name="ajuda")
+@bot.command(name="ajuda", aliases=["help"])
 async def prefix_ajuda(ctx: commands.Context):
-    """Exibe o guia de comandos do robô."""
-    embed = discord.Embed(
-        title="🤖 Moodle AI Assistant - Comandos Disponíveis",
-        description="Você pode interagir usando comandos de barra (`/`) ou prefixo (`!`):",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="🔒 `!meuscanais` ou `/meuscanais`", value="Cria ou localiza suas 5 salas privadas exclusivas neste servidor.", inline=False)
-    embed.add_field(name="📋 `!tarefas` ou `/tarefas [disciplina]`", value="Lista tarefas e questionários pendentes e concluídos.", inline=False)
-    embed.add_field(name="📖 `!materiais <disciplina>` ou `/materiais`", value="Envia slides e materiais de estudo no chat.", inline=False)
-    embed.add_field(name="🧠 `!resolver <id_ou_nome>` ou `/resolver`", value="Resolve atividade ou questionário sob demanda com IA.", inline=False)
-    embed.add_field(name="📦 `!resolver_lote` ou `/resolver_lote`", value="Menu interativo para selecionar e resolver múltiplas tarefas em lote.", inline=False)
-    embed.add_field(name="🔄 `!refazer <id_ou_nome>` ou `/refazer`", value="Refaz atividade ou questionário já concluído com IA.", inline=False)
-    embed.add_field(name="💡 `!perguntar <disciplina> <dúvida>` ou `/perguntar`", value="Tutor acadêmico que tira dúvidas citando slides do professor.", inline=False)
-    embed.add_field(name="🗂️ `!flashcards <disciplina> [tópico]` ou `/flashcards`", value="Gera baralho de flashcards com exportação direta para o Anki.", inline=False)
-    embed.add_field(name="📝 `!quiz <disciplina> [qtd]` ou `/quiz`", value="Simulado interativo pré-prova com pegadinhas e botões A, B, C, D.", inline=False)
-    embed.add_field(name="🛰️ `!status` ou `/status`", value="Exibe a sessão do Moodle, materiais e IA.", inline=False)
-    embed.add_field(name="📥 `!adicionarconteudo <disciplina>` (com anexo)", value="Salva resumos e materiais na memória da IA.", inline=False)
+    """Exibe o guia de comandos do LumiBot."""
+    embed = build_ajuda_embed()
     await ctx.send(embed=embed)
 
 
@@ -4958,31 +5046,31 @@ class MoodleDiscordNotifier:
             if target_ch:
                 if is_finalized:
                     embed_desc = (
-                        "⚡ **Atividade resolvida e enviada em definitivo no Moodle (End-to-End)!**\n\n"
+                        "⚡ **Atividade resolvida e enviada em definitivo no LMS (End-to-End)!**\n\n"
                         f"{final_status_message or 'Envio concluído com sucesso.'}\n\n"
-                        "Você pode abrir o Moodle a qualquer momento para verificar o comprovante."
+                        "Você pode abrir o portal acadêmico a qualquer momento para verificar o comprovante."
                     )
-                    embed_color = discord.Color.green()
+                    embed_color = LumiTheme.SUCCESS
                     embed_title = f"✅ Submetido com Sucesso: {assignment.title}"
-                    footer_text = f"Finalizado no Moodle em modo autônomo às {datetime.now().strftime('%H:%M:%S')}"
-                    msg_header = f"⚡ **Atividade resolvida e enviada com sucesso no Moodle:** `{assignment.title}`"
+                    footer_text = f"Finalizado em modo autônomo às {datetime.now().strftime('%H:%M:%S')}"
+                    msg_header = f"⚡ **Atividade resolvida e enviada com sucesso:** `{assignment.title}`"
                 elif draft_saved:
                     embed_desc = (
-                        "📝 **Respostas resolvidas pela IA e preenchidas no Moodle!**\n\n"
+                        "📝 **Respostas resolvidas pela IA e preenchidas no portal acadêmico!**\n\n"
                         f"{final_status_message or 'As respostas foram salvas na tentativa sem submeter.'}\n\n"
-                        "👉 Verifique no Moodle ou clique no botão **[🚀 Enviar Tudo e Terminar]** abaixo quando desejar finalizar."
+                        "👉 Verifique no portal ou clique no botão **[🚀 Enviar Tudo e Terminar]** abaixo quando desejar finalizar."
                     )
-                    embed_color = discord.Color.blue()
+                    embed_color = LumiTheme.PRIMARY
                     embed_title = f"📝 Rascunho Salvo: {assignment.title}"
-                    footer_text = f"Respostas salvas na tentativa do Moodle às {datetime.now().strftime('%H:%M:%S')}. Aguardando envio definitivo."
-                    msg_header = f"📝 **Respostas resolvidas e salvas na tentativa do Moodle:** `{assignment.title}`"
+                    footer_text = f"Respostas salvas na tentativa às {datetime.now().strftime('%H:%M:%S')}. Aguardando envio definitivo."
+                    msg_header = f"📝 **Respostas resolvidas e salvas na tentativa:** `{assignment.title}`"
                 elif act_type == "quiz":
                     embed_desc = (
                         "As respostas para o questionário online foram preparadas pela IA.\n\n"
-                        "• **[📝 Apenas Preencher Quiz]**: Digita as respostas no Moodle e salva na tentativa sem submeter. Você poderá abrir o Moodle e conferir!\n"
-                        "• **[🚀 Enviar Tudo e Terminar]**: Finaliza a tentativa e confirma o envio no Moodle."
+                        "• **[📝 Apenas Preencher Quiz]**: Digita as respostas no questionário e salva na tentativa sem submeter. Você poderá conferir no portal!\n"
+                        "• **[🚀 Enviar Tudo e Terminar]**: Finaliza a tentativa e confirma o envio."
                     )
-                    embed_color = discord.Color.blue()
+                    embed_color = LumiTheme.SECONDARY
                     embed_title = f"📋 Revisão: {assignment.title}"
                     footer_text = "Ação humana obrigatória • Clique abaixo para submeter"
                     msg_header = f"🔔 **Nova resolução pronta para revisão:** `{assignment.title}`"
@@ -4991,7 +5079,7 @@ class MoodleDiscordNotifier:
                         f"As respostas foram preparadas para sua conferência ({type_str}).\n"
                         "Leia o documento anexado abaixo e confirme o envio usando os botões."
                     )
-                    embed_color = discord.Color.blue()
+                    embed_color = LumiTheme.SECONDARY
                     embed_title = f"📋 Revisão: {assignment.title}"
                     footer_text = "Ação humana obrigatória • Clique abaixo para submeter"
                     msg_header = f"🔔 **Nova resolução pronta para revisão:** `{assignment.title}`"
@@ -5022,7 +5110,7 @@ class MoodleDiscordNotifier:
                     summary_raw = "\n".join(items)
 
                 if not summary_raw:
-                    summary_raw = "Respostas resolvidas pela IA e salvas na tentativa do Moodle."
+                    summary_raw = "Respostas resolvidas pela IA e salvas na tentativa."
 
                 summary_text = summary_raw[:800] + ("..." if len(summary_raw) > 800 else "")
                 embed.add_field(name="📝 Respostas Preparadas", value=f"```markdown\n{summary_text}\n```", inline=False)
@@ -5036,18 +5124,18 @@ class MoodleDiscordNotifier:
                 else:
                     embed.add_field(
                         name="📚 Fontes & Materiais de Referência",
-                        value="ℹ️ Nenhum arquivo externo utilizado. A resolução foi baseada exclusivamente no enunciado e questões extraídos diretamente do Moodle.",
+                        value="ℹ️ Nenhum arquivo externo utilizado. A resolução foi baseada exclusivamente no enunciado e questões extraídos diretamente do portal acadêmico.",
                         inline=False
                     )
 
                 if assignment.url:
                     embed.add_field(
                         name="🔗 Acesso Direto",
-                        value=f"[Abrir Atividade no Moodle UFMG]({assignment.url})",
+                        value=f"[Abrir Atividade no LMS]({assignment.url})",
                         inline=False
                     )
 
-                embed.set_footer(text=footer_text)
+                apply_lumi_footer(embed, extra_info=footer_text)
 
                 discord_file = discord.File(str(file_to_send), filename=file_to_send.name)
                 view = ReviewActionView(
@@ -5090,7 +5178,7 @@ class MoodleDiscordNotifier:
                 embed = discord.Embed(
                     title=f"🎉 Nota Publicada: {assignment_title}",
                     description=f"O professor avaliou sua atividade na disciplina **{course_name}**!",
-                    color=discord.Color.green()
+                    color=LumiTheme.SUCCESS
                 )
                 embed.add_field(name="📊 Nota Atribuída", value=f"**{grade}**", inline=True)
                 if graded_by:
@@ -5098,7 +5186,7 @@ class MoodleDiscordNotifier:
                 if feedback:
                     embed.add_field(name="💬 Feedback / Comentários do Professor", value=f"```\n{feedback}\n```", inline=False)
 
-                embed.set_footer(text=f"UFMG Virtual • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                apply_lumi_footer(embed, extra_info="Resultado de Avaliação")
                 await channel.send(content="🔔 **Resultado de Avaliação Disponível!**", embed=embed)
                 return True
         except Exception as e:
@@ -5136,7 +5224,7 @@ class MoodleDiscordNotifier:
                 embed = discord.Embed(
                     title=f"📢 Novo Aviso: {announcement.title}",
                     url=announcement.url,
-                    color=discord.Color.gold()
+                    color=LumiTheme.PRIMARY
                 )
                 embed.add_field(name="🏫 Disciplina", value=announcement.course_name, inline=False)
                 if announcement.author:
@@ -5144,16 +5232,16 @@ class MoodleDiscordNotifier:
                 if announcement.date:
                     embed.add_field(name="📅 Data / Hora", value=announcement.date, inline=True)
 
-                msg_content = announcement.message.strip() if announcement.message else "Clique no link abaixo para ler o comunicado completo no Moodle."
+                msg_content = announcement.message.strip() if announcement.message else "Clique no link abaixo para ler o comunicado completo no portal acadêmico."
                 if len(msg_content) > 1800:
-                    msg_content = msg_content[:1800] + "\n\n*(Mensagem longa truncada - abra no Moodle para ler na íntegra)*"
+                    msg_content = msg_content[:1800] + "\n\n*(Mensagem longa truncada - abra no portal para ler na íntegra)*"
 
                 embed.description = msg_content
-                embed.set_footer(text=f"Moodle UFMG • {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+                apply_lumi_footer(embed, extra_info="Aviso da Turma")
 
                 view = ui.View(timeout=None)
                 view.add_item(ui.Button(
-                    label="Abrir Aviso no Moodle",
+                    label="Abrir Aviso no Portal",
                     style=discord.ButtonStyle.link,
                     url=announcement.url,
                     emoji="🔗"
@@ -5402,15 +5490,15 @@ class MoodleDiscordNotifier:
             if channel:
                 if minutes_remaining <= 1:
                     content = "@everyone 🚨🚨 **ÚLTIMO MINUTO! PRAZO ENCERRANDO!** 🚨🚨"
-                    color = discord.Color.dark_red()
+                    color = LumiTheme.WARNING
                     title_text = f"🔥 MENOS DE 60 SEGUNDOS: {title}"
                     desc = (
                         f"O prazo da atividade **{title}** ({course_name}) encerra em **menos de 1 minuto**!\n"
-                        f"Abra o card acima e clique em **[✅ Aprovar e Enviar]** IMEDIATAMENTE ou envie você mesmo no Moodle!"
+                        f"Abra o card acima e clique em **[✅ Aprovar e Enviar]** IMEDIATAMENTE ou envie você mesmo no portal acadêmico!"
                     )
                 elif minutes_remaining <= 5:
                     content = "@everyone ⏰ **ALERTA DE URGÊNCIA (5 MINUTOS)!**"
-                    color = discord.Color.red()
+                    color = LumiTheme.WARNING
                     title_text = f"🚨 FALTAM 5 MINUTOS: {title}"
                     desc = (
                         f"Faltam apenas **5 minutos** para o vencimento de **{title}** ({course_name})!\n"
@@ -5418,11 +5506,12 @@ class MoodleDiscordNotifier:
                     )
                 else:
                     content = f"⚠️ **Atenção:** Prazo de entrega se aproximando ({minutes_remaining} min)!"
-                    color = discord.Color.orange()
+                    color = LumiTheme.PRIMARY
                     title_text = f"⚠️ Faltam {minutes_remaining} minutos: {title}"
                     desc = f"A atividade **{title}** ({course_name}) encerra em {minutes_remaining} minutos."
 
                 embed = discord.Embed(title=title_text, description=desc, color=color)
+                apply_lumi_footer(embed, extra_info="Alerta de Prazo")
                 await channel.send(content=content, embed=embed)
                 return True
         except Exception as e:
@@ -5434,14 +5523,14 @@ class MoodleDiscordNotifier:
         browser_opened: bool = False,
         custom_details: Optional[str] = None
     ) -> bool:
-        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou."""
+        """Envia alerta no canal de alertas informando que a sessão acadêmica expirou."""
         try:
             channel = await self._resolve_channel(self.channel_id)
             if not channel:
                 return False
 
             desc_lines = [
-                "A sua sessão de autenticação no **Moodle UFMG / MinhaUFMG** expirou no servidor.\n"
+                "A sua sessão de autenticação no **Portal Acadêmico / Moodle UFMG** expirou no servidor.\n"
             ]
             if custom_details:
                 desc_lines.append(f"ℹ️ **Detalhes:** {custom_details}\n")
@@ -5449,7 +5538,7 @@ class MoodleDiscordNotifier:
             if browser_opened:
                 desc_lines.append(
                     "🖥️ **A janela do navegador já foi aberta no seu computador!**\n"
-                    "Basta preencher seu **usuário e senha** na tela do MinhaUFMG. Assim que o Moodle carregar, a nova sessão será salva e o bot voltará a operar normalmente.\n"
+                    "Basta preencher seu **usuário e senha** na tela de login. Assim que o ambiente carregar, a nova sessão será salva e o Lumi voltará a operar normalmente.\n"
                 )
             else:
                 desc_lines.append(
@@ -5457,20 +5546,20 @@ class MoodleDiscordNotifier:
                     "• Clique no botão **'🔑 Abrir Login no PC'** abaixo para abrir o navegador;\n"
                     "• Ou clique em **'🔄 Tentar Login Automático'** se você possui credenciais configuradas;\n"
                     "• Ou execute no terminal: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
-                    "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
+                    "*(O Lumi continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
                 )
 
             embed = discord.Embed(
-                title="⚠️ Sessão do Moodle Expirada",
+                title="⚠️ Sessão de Autenticação Expirada",
                 description="\n".join(desc_lines),
-                color=discord.Color.red()
+                color=LumiTheme.WARNING
             )
-            embed.set_footer(text=f"Detectado pelo Heartbeat do Moodle Bot às {datetime.now().strftime('%H:%M:%S')}")
+            apply_lumi_footer(embed, extra_info="Sessão Expirada")
             view = SessionExpiredView()
             content = (
-                "⚠️ **Atenção:** Sua sessão de login no Moodle expirou! A tela de login foi aberta no seu computador."
+                "⚠️ **Atenção:** Sua sessão de login no portal acadêmico expirou! A tela de login foi aberta no seu computador."
                 if browser_opened
-                else "⚠️ **Atenção:** Sua sessão de login no Moodle expirou! Clique no botão abaixo para renovar."
+                else "⚠️ **Atenção:** Sua sessão de login no portal acadêmico expirou! Clique no botão abaixo para renovar."
             )
             await channel.send(
                 content=content,
@@ -5483,25 +5572,25 @@ class MoodleDiscordNotifier:
             return False
 
     async def send_session_renewed_notification(self, user_name: Optional[str] = None) -> bool:
-        """Envia mensagem no Discord confirmando que a sessão do Moodle foi restabelecida com sucesso."""
+        """Envia mensagem no Discord confirmando que a sessão acadêmica foi restabelecida com sucesso."""
         try:
             channel = await self._resolve_channel(self.channel_id)
             if not channel:
                 return False
 
             embed = discord.Embed(
-                title="🎉 Sessão do Moodle Renovada com Sucesso!",
+                title="🎉 Sessão Renovada com Sucesso!",
                 description=(
-                    f"A sua autenticação no **Moodle UFMG / MinhaUFMG** foi restabelecida com êxito"
-                    f"{' para **' + user_name + '**' if user_name else ''}.\n\n"
+                    f"A sua autenticação acadêmica"
+                    f"{' para **' + user_name + '**' if user_name else ''} foi restabelecida com êxito.\n\n"
                     "✔ Acesso a disciplinas, questionários e materiais desbloqueado.\n"
-                    "✔ O assistente continuará monitorando e resolvendo tarefas em segundo plano."
+                    "✔ O Lumi continuará monitorando e resolvendo tarefas em segundo plano."
                 ),
-                color=discord.Color.green()
+                color=LumiTheme.SUCCESS
             )
-            embed.set_footer(text=f"Renovado às {datetime.now().strftime('%H:%M:%S')}")
+            apply_lumi_footer(embed, extra_info="Sessão Reativada")
             await channel.send(
-                content="✅ **Sessão do Moodle Reativada!**",
+                content="✅ **Sessão Acadêmica Reativada!**",
                 embed=embed
             )
             return True
@@ -5519,7 +5608,7 @@ async def run_bot():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Moodle Discord Bot (Slash Commands)")
+    parser = argparse.ArgumentParser(description="LumiBot Discord Bot (Slash Commands)")
     parser.add_argument("--run", action="store_true", help="Inicia o bot e registra os Slash Commands")
     args = parser.parse_args()
 
