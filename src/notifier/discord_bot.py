@@ -158,6 +158,8 @@ def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[st
     # 1. Match direto pelo ID exato da atividade
     if raw_query in assignments:
         return assignments[raw_query]
+    if f"canvas_{raw_query}" in assignments:
+        return assignments[f"canvas_{raw_query}"]
 
     # 2. Se for URL de atividade do Moodle com parâmetro id=
     if "id=" in raw_query and ("mod/assign" in raw_query or "mod/quiz" in raw_query or "view.php" in raw_query):
@@ -170,15 +172,27 @@ def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[st
                 if extracted_id == str(it.get("id")):
                     return it
 
-    # 3. Se for URL exata de atividade (/mod/)
-    if raw_query.startswith("http") and ("/mod/" in raw_query):
+    # 3. Se for URL de atividade do Canvas (/assignments/ ou /quizzes/)
+    if "/assignments/" in raw_query or "/quizzes/" in raw_query:
+        m_c = re.search(r"/(?:assignments|quizzes)/(\d+)", raw_query)
+        if m_c:
+            extracted_c_id = m_c.group(1)
+            for cid in [extracted_c_id, f"canvas_{extracted_c_id}"]:
+                if cid in assignments:
+                    return assignments[cid]
+            for aid, it in assignments.items():
+                if extracted_c_id == str(it.get("id", "")):
+                    return it
+
+    # 4. Se for URL exata de atividade (/mod/ ou Canvas)
+    if raw_query.startswith("http") and ("/mod/" in raw_query or "/assignments/" in raw_query or "/quizzes/" in raw_query):
         clean_url = raw_query.split("#")[0].rstrip("/")
         for aid, it in assignments.items():
             if it.get("url", "").split("#")[0].rstrip("/") == clean_url:
                 return it
 
-    # SEGURANÇA CRÍTICA: Se for uma URL base ou genérica (sem /mod/), NUNCA tente casar como atividade!
-    if raw_query.startswith("http") and "/mod/" not in raw_query:
+    # SEGURANÇA CRÍTICA: Se for uma URL base ou genérica (sem /mod/, /assignments/ ou /quizzes/), NUNCA tente casar como atividade!
+    if raw_query.startswith("http") and not any(p in raw_query for p in ["/mod/", "/assignments/", "/quizzes/"]):
         return None
 
     # 4. Limpeza da query de títulos (remove sufixos de autocomplete)
@@ -237,7 +251,7 @@ def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[st
 
 def get_available_courses() -> List[str]:
     """Retorna os nomes das disciplinas que possuem pasta em storage/materials/
-    OU que aparecem nas atividades catalogadas no state.json."""
+    OU que aparecem nas atividades catalogadas no state.json ou Canvas LMS."""
     courses_set: set = set()
 
     # 1. Disciplinas com pasta de material
@@ -254,6 +268,16 @@ def get_available_courses() -> List[str]:
             course = item.get("course", "").strip()
             if course:
                 courses_set.add(course)
+    except Exception:
+        pass
+
+    # 3. Disciplinas do Canvas LMS (Mock ou configuradas)
+    try:
+        from src.providers.canvas import CanvasAdapter
+        canvas = CanvasAdapter()
+        if canvas.mock_mode:
+            for mc in canvas._get_mock_courses():
+                courses_set.add(mc.name)
     except Exception:
         pass
 
@@ -308,48 +332,88 @@ BYOK_RELAY_MESSAGE = (
 
 
 async def _get_current_assignments() -> Dict[str, Any]:
-    """Retorna o dicionário de tarefas ativas, adaptado para execução local ou relay no Render."""
+    """Retorna o dicionário de tarefas ativas unificadas (Moodle + Canvas)."""
+    assignments: Dict[str, Any] = {}
+
     if _is_relay_mode():
         try:
             from src.notifier.bridge_manager import cloud_bridge
-            assignments = await cloud_bridge.get_published_assignments()
-            if assignments:
-                return assignments
+            rel_assign = await cloud_bridge.get_published_assignments()
+            if rel_assign:
+                assignments.update(rel_assign)
         except Exception:
             pass
 
-    # Tenta leitura local do state.json
+    # Tenta leitura local do state.json (Moodle e tarefas gravadas)
     try:
         state = DaemonState()
         local_assignments = state.data.get("assignments", {})
         if local_assignments:
-            return local_assignments
+            assignments.update(local_assignments)
     except Exception:
         pass
 
     # Se local vazio (ex: Render sem flag explícita), tenta bridge como fallback
+    if not assignments:
+        try:
+            from src.notifier.bridge_manager import cloud_bridge
+            pub_assign = await cloud_bridge.get_published_assignments()
+            if pub_assign:
+                assignments.update(pub_assign)
+        except Exception:
+            pass
+
+    # Unifica tarefas do Canvas LMS (Mock ou Live API)
     try:
-        from src.notifier.bridge_manager import cloud_bridge
-        return await cloud_bridge.get_published_assignments()
+        from src.providers.canvas import CanvasAdapter
+        canvas = CanvasAdapter()
+        if canvas.mock_mode or canvas.api_token:
+            canvas_tasks = await canvas.get_upcoming_assignments(days=15)
+            for ct in canvas_tasks:
+                cid = f"canvas_{ct.id}"
+                if ct.id not in assignments and cid not in assignments:
+                    assignments[cid] = ct.to_dict()
+                elif ct.id in assignments:
+                    assignments[ct.id].setdefault("platform", "canvas")
+                    assignments[ct.id].setdefault("course_id", ct.course_id)
     except Exception:
-        return {}
+        pass
+
+    return assignments
 
 
 def _get_sync_assignments() -> Dict[str, Any]:
-    """Retorna o catálogo de atividades para contextos síncronos."""
+    """Retorna o catálogo de atividades para contextos síncronos (Moodle + Canvas)."""
+    assignments: Dict[str, Any] = {}
     try:
         state = DaemonState()
         local_assignments = state.data.get("assignments", {})
         if local_assignments:
-            return local_assignments
+            assignments.update(local_assignments)
     except Exception:
         pass
 
     try:
         from src.notifier.bridge_manager import cloud_bridge
-        return cloud_bridge._published_assignments or {}
+        if cloud_bridge._published_assignments:
+            assignments.update(cloud_bridge._published_assignments)
     except Exception:
-        return {}
+        pass
+
+    # Unifica tarefas síncronas do Canvas (Mock ou registradas)
+    try:
+        from src.providers.canvas import CanvasAdapter
+        canvas = CanvasAdapter()
+        if canvas.mock_mode:
+            mock_tasks = canvas._get_mock_assignments(days=15)
+            for ct in mock_tasks:
+                cid = f"canvas_{ct.id}"
+                if ct.id not in assignments and cid not in assignments:
+                    assignments[cid] = ct.to_dict()
+    except Exception:
+        pass
+
+    return assignments
 
 
 async def course_autocomplete(
@@ -449,12 +513,12 @@ async def pending_task_autocomplete(
             course_raw = str(item.get("course") or "").strip()
             course_clean = clean_display_course(course_raw)
             due_str = str(item.get("due_date") or "").strip()
-            due = f" (Prazo: {due_str})" if due_str else ""
-
-            label = f"{title} - {course_clean}{due}" if course_clean else f"{title}{due}"
+            platform = item.get("platform")
+            plat_badge = "[Canvas] " if platform == "canvas" else ""
+            label = f"{plat_badge}{title} - {course_clean}{due}" if course_clean else f"{plat_badge}{title}{due}"
             label = label[:100].strip() or f"Tarefa {aid}"
 
-            search_target = f"{normalize_text(title)} {normalize_text(course_raw)} {normalize_text(course_clean)} {normalize_text(aid)}"
+            search_target = f"{normalize_text(title)} {normalize_text(course_raw)} {normalize_text(course_clean)} {normalize_text(aid)} {normalize_text(platform or '')}"
             if not norm_curr or norm_curr in search_target:
                 candidates.append((label, str(aid)))
 
@@ -907,6 +971,7 @@ class ReviewActionView(ui.View):
         is_finalized: bool = False,
         timeout: Optional[float] = None,
         draft: Optional[Any] = None,  # SolutionDraft para suporte a revisão
+        platform: str = "moodle",
     ):
         super().__init__(timeout=timeout)
         self.assignment_id = assignment_id
@@ -918,11 +983,20 @@ class ReviewActionView(ui.View):
         self._is_draft_saved = draft_saved
         self._is_finalized = is_finalized
         self._draft = draft  # SolutionDraft associado (para revisão)
+        self.platform = (platform or "moodle").lower()
+        if self.platform != "canvas":
+            if self.assignment_url and "instructure.com" in self.assignment_url:
+                self.platform = "canvas"
+            elif self.assignment_id and str(self.assignment_id).startswith(("canvas_", "c_")):
+                self.platform = "canvas"
 
         self._build_buttons(draft_saved=draft_saved, is_finalized=is_finalized)
 
     def _build_buttons(self, draft_saved: bool = False, is_finalized: bool = False):
         self.clear_items()
+
+        lms_name = "Canvas" if self.platform == "canvas" else "Moodle"
+        lms_emoji = "🎓" if self.platform == "canvas" else "🔗"
 
         if is_finalized:
             btn_done = ui.Button(
@@ -934,10 +1008,10 @@ class ReviewActionView(ui.View):
             self.add_item(btn_done)
             if self.assignment_url:
                 btn_moodle = ui.Button(
-                    label="Abrir no Moodle",
+                    label=f"Abrir no {lms_name}",
                     style=discord.ButtonStyle.link,
                     url=self.assignment_url,
-                    emoji="🔗"
+                    emoji=lms_emoji
                 )
                 self.add_item(btn_moodle)
             return
@@ -982,7 +1056,7 @@ class ReviewActionView(ui.View):
             btn_approve = ui.Button(
                 label="Aprovar e Enviar" if not draft_saved else "✔ Enviado (Rascunho)",
                 style=discord.ButtonStyle.success if not draft_saved else discord.ButtonStyle.secondary,
-                emoji="📄",
+                emoji="✅" if self.platform == "canvas" else "📄",
                 custom_id=f"btn_approve_{self.assignment_id}",
                 disabled=draft_saved,
                 row=0
@@ -1024,10 +1098,10 @@ class ReviewActionView(ui.View):
 
         if self.assignment_url:
             btn_moodle = ui.Button(
-                label="Abrir no Moodle",
+                label=f"Abrir no {lms_name}",
                 style=discord.ButtonStyle.link,
                 url=self.assignment_url,
-                emoji="🔗",
+                emoji=lms_emoji,
                 row=1
             )
             self.add_item(btn_moodle)
@@ -1366,10 +1440,11 @@ class ReviewActionView(ui.View):
             child.disabled = True
 
         embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        lms_label = "Canvas" if self.platform == "canvas" else "Moodle"
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: ⏳ Na fila para envio no Moodle por {interaction.user.name}..."
+                text=f"Status: ⏳ Na fila para envio no {lms_label} por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -1383,6 +1458,81 @@ class ReviewActionView(ui.View):
         title_raw = item_data.get("title") or (embed.title if embed else f"Tarefa {self.assignment_id}")
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
+
+        # ROTEAMENTO CANVAS LMS (REST API)
+        if self.platform == "canvas":
+            async def _do_canvas_approve():
+                from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                console.print(
+                    f"[bold cyan]Submissão Canvas executada para {self.assignment_id}![/bold cyan] "
+                    f"Disparando envio de {self.file_to_submit.name}..."
+                )
+                status_msg = await interaction.followup.send(
+                    content=f"🎓 **Enviando resolução para o Canvas da sua faculdade...** `{self.file_to_submit.name}`...",
+                    ephemeral=False
+                )
+                reporter = DiscordLiveReporter(
+                    status_msg,
+                    f"🎓 **Enviando resolução para o Canvas da sua faculdade...** `{self.file_to_submit.name}`..."
+                )
+
+                course_id, assignment_id = extract_canvas_ids(self.assignment_url or self.assignment_id)
+                if not course_id:
+                    course_id = item_data.get("course_id") or "101"
+
+                submitter = CanvasSubmitter()
+                current_time = datetime.now().strftime("%H:%M:%S")
+
+                success, message = await submitter.submit_assignment(
+                    course_id=str(course_id),
+                    assignment_id=str(assignment_id),
+                    file_path=self.file_to_submit,
+                    on_log=reporter.log
+                )
+
+                if success:
+                    st = DaemonState()
+                    st.mark_submitted(self.assignment_id)
+
+                    if embed:
+                        embed.color = discord.Color.green()
+                        embed.title = f"✅ Submetido com Sucesso no Canvas: {clean_title}"
+                        embed.set_footer(
+                            text=f"Enviado no Canvas às {current_time} por {interaction.user.name}"
+                        )
+                    await interaction.message.edit(embed=embed, view=self)
+                    await reporter.finish(f"🎉 **✅ Tarefa entregue com sucesso no Canvas! Protocolo registrado.**\n{message}")
+                    if self.on_action:
+                        await self.on_action(self.assignment_id, "approved", interaction)
+                else:
+                    self._build_buttons(draft_saved=False)
+                    if embed:
+                        embed.color = discord.Color.red()
+                        embed.set_footer(
+                            text=f"Falha no envio Canvas às {current_time}: {message[:100]}"
+                        )
+                    await interaction.message.edit(embed=embed, view=self)
+                    await reporter.finish(f"⚠️ **Falha no envio ao Canvas:** {message}")
+
+                return success, message
+
+            item = QueueItem(
+                task_type=QueueTaskType.SUBMIT_ASSIGNMENT,
+                title=clean_title,
+                course=course_name,
+                requester=interaction.user.display_name,
+                coro_func=_do_canvas_approve
+            )
+            pos = await queue_manager.enqueue(item)
+            if pos > 1 or queue_manager.is_busy_except(item):
+                queue_mention = f"<#{settings.DISCORD_QUEUE_CHANNEL_ID}>" if settings.DISCORD_QUEUE_CHANNEL_ID else "canal da fila"
+                await interaction.followup.send(
+                    f"📥 **Submissão Canvas adicionada à fila!** (Posição: **#{pos}**)\n"
+                    f"• Atividade: **{clean_title}**\n"
+                    f"• Acompanhe a ordem e o andamento no {queue_mention}.",
+                    ephemeral=True
+                )
+            return
 
         # Verificação de Ponte Nuvem (Render sem cookies locais)
         if not Path(settings.STORAGE_COOKIES_PATH).exists():
@@ -1902,7 +2052,9 @@ def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
         act_type = item.get("activity_type", "assign")
         is_sub = item.get("is_submitted", False)
 
-        line = f"• **[{title}]({item.get('url', '')})**\n  🏫 {course} | ⏰ {due}"
+        platform = item.get("platform")
+        plat_str = f" `[{platform.upper()}]`" if platform else ""
+        line = f"• **[{title}]({item.get('url', '')})**{plat_str}\n  🏫 {course} | ⏰ {due}"
 
         if is_sub or status == "submitted":
             concluidas.append(line)
@@ -2018,6 +2170,24 @@ async def build_status_embed() -> discord.Embed:
         inline=False
     )
 
+    # Integração Canvas LMS (Multi-LMS)
+    try:
+        from src.providers.canvas import CanvasAdapter
+        canvas = CanvasAdapter()
+        if canvas.mock_mode:
+            c_status = "🧪 Modo Mock Ativo (PUC-Rio)"
+        elif canvas.api_token:
+            c_status = "🟢 Conectado (Token Bearer)"
+        else:
+            c_status = "⚪ Não configurado"
+        embed.add_field(
+            name="🎓 Integração Canvas LMS",
+            value=f"Status: **{c_status}**\nURL Base: `{canvas.base_url}`",
+            inline=False
+        )
+    except Exception:
+        pass
+
     apply_lumi_footer(embed, extra_info=f"Daemon a cada {settings.CHECK_INTERVAL_MINUTES} min")
     return embed
 
@@ -2087,6 +2257,110 @@ async def cmd_materiais(interaction: discord.Interaction, disciplina: str):
         await interaction.followup.send(embed=embed, files=discord_files)
 
 
+async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discord.Embed:
+    """Constrói embeds temáticos para as consultas do Canvas LMS (Tarefas, Cursos, Avisos, Status)."""
+    from src.providers.canvas import CanvasAdapter
+    adapter = CanvasAdapter()
+
+    mode_badge = "🧪 **Modo Mock (PUC-Rio)**" if adapter.mock_mode else "🌐 **API Oficial Canvas**"
+
+    if consulta == "cursos":
+        courses = await adapter.get_courses()
+        embed = discord.Embed(
+            title="📚 Canvas LMS — Disciplinas Ativas",
+            description=f"{mode_badge}\nTotal de disciplinas localizadas: **{len(courses)}**",
+            color=LumiTheme.PRIMARY
+        )
+        if not courses:
+            embed.add_field(name="Cursos", value="Nenhuma disciplina encontrada.", inline=False)
+        else:
+            lines = [f"• **[{c.name}]({c.url})** (`{c.code}`)" + (f" - *{c.term}*" if c.term else "") for c in courses]
+            embed.add_field(name="Disciplinas Matriculadas", value="\n".join(lines), inline=False)
+        return apply_lumi_footer(embed)
+
+    elif consulta == "avisos":
+        announcements = await adapter.get_announcements(limit=5)
+        embed = discord.Embed(
+            title="📢 Canvas LMS — Comunicados & Avisos",
+            description=f"{mode_badge}\nÚltimos comunicados publicados:",
+            color=LumiTheme.SECONDARY
+        )
+        if not announcements:
+            embed.add_field(name="Avisos", value="Nenhum aviso publicado recentemente.", inline=False)
+        else:
+            for a in announcements:
+                date_str = a.posted_at.strftime("%d/%m/%Y %H:%M") if a.posted_at else "Recente"
+                snippet = a.message[:160] + "..." if len(a.message) > 160 else a.message
+                embed.add_field(
+                    name=f"📌 {a.title} ({a.course_name})",
+                    value=f"👤 **{a.author}** | 📅 {date_str}\n{snippet}\n[Ver no Canvas]({a.url})",
+                    inline=False
+                )
+        return apply_lumi_footer(embed)
+
+    elif consulta == "status":
+        is_conn = await adapter.test_connection()
+        embed = discord.Embed(
+            title="🛰️ Canvas LMS — Diagnóstico e Conectividade",
+            color=LumiTheme.SUCCESS if is_conn else LumiTheme.WARNING
+        )
+        embed.add_field(name="Modo Ativo", value=mode_badge, inline=True)
+        embed.add_field(name="Conexão / Autenticação", value="🟢 Ativa & Válida" if is_conn else "🔴 Falha / Token Inválido", inline=True)
+        embed.add_field(name="URL Institucional", value=f"`{adapter.base_url}`", inline=False)
+        token_preview = f"`{adapter.api_token[:6]}...{adapter.api_token[-4:]}`" if len(adapter.api_token) > 10 else ("`mock_token`" if adapter.mock_mode else "*Não configurado*")
+        embed.add_field(name="Token da API", value=token_preview, inline=True)
+        return apply_lumi_footer(embed)
+
+    else:  # tarefas (default)
+        assignments = await adapter.get_upcoming_assignments(days=dias)
+        embed = discord.Embed(
+            title="📋 Canvas LMS — Tarefas e Prazos Acadêmicos",
+            description=f"{mode_badge}\nTarefas para os próximos **{dias} dias**: **{len(assignments)}** encontrada(s)",
+            color=LumiTheme.PRIMARY
+        )
+        if not assignments:
+            embed.add_field(
+                name="Atividades",
+                value="🎉 Nenhuma atividade pendente para os próximos dias!",
+                inline=False
+            )
+        else:
+            pendentes = []
+            entregues = []
+            for a in assignments:
+                due_str = a.due_date.strftime("%d/%m/%Y às %H:%M") if a.due_date else "Sem prazo"
+                pts = f" ({a.points_possible} pts)" if a.points_possible is not None else ""
+                line = f"• **[{a.title}]({a.url})**{pts}\n  🏫 {a.course_name} | ⏰ {due_str}"
+                if a.is_submitted:
+                    entregues.append(f"{line} *(Entregue)*")
+                else:
+                    pendentes.append(line)
+
+            if pendentes:
+                embed.add_field(name="⏳ Tarefas Pendentes", value="\n".join(pendentes[:10]), inline=False)
+            if entregues:
+                embed.add_field(name="✅ Tarefas Concluídas", value="\n".join(entregues[:5]), inline=False)
+
+        return apply_lumi_footer(embed)
+
+
+@bot.tree.command(name="canvas", description="Consulta tarefas, matérias e avisos do Canvas LMS (PUC-Rio)")
+@app_commands.describe(
+    consulta="Tipo de consulta a realizar no Canvas LMS",
+    dias="Janela em dias para exibição de tarefas (padrão: 7)"
+)
+@app_commands.choices(consulta=[
+    app_commands.Choice(name="📋 Tarefas & Prazos", value="tarefas"),
+    app_commands.Choice(name="📚 Disciplinas Ativas", value="cursos"),
+    app_commands.Choice(name="📢 Comunicados & Avisos", value="avisos"),
+    app_commands.Choice(name="🛰️ Status & Diagnóstico", value="status"),
+])
+async def cmd_canvas(interaction: discord.Interaction, consulta: str = "tarefas", dias: int = 7):
+    await interaction.response.defer(ephemeral=False)
+    embed = await build_canvas_embed(consulta=consulta, dias=dias)
+    await interaction.followup.send(embed=embed)
+
+
 def format_reference_materials_msg(course_name: str, extra_files: List[Path]) -> str:
     """Gera texto informativo claro sobre os arquivos que a IA utilizará como referência."""
     lines = []
@@ -2127,16 +2401,31 @@ async def _execute_solve_flow(
                 "url": tarefa,
                 "due_date": "Sob demanda",
                 "time_remaining": "N/A",
-                "activity_type": "quiz" if "mod/quiz" in tarefa else "assign"
+                "activity_type": "quiz" if "mod/quiz" in tarefa else "assign",
+                "platform": "moodle"
+            }
+        elif tarefa.startswith("http") and ("/assignments/" in tarefa or "/quizzes/" in tarefa):
+            from src.providers.canvas import extract_canvas_ids
+            c_id, a_id = extract_canvas_ids(tarefa)
+            target_item = {
+                "id": f"canvas_{c_id}_{a_id}",
+                "title": tarefa,
+                "course": expected_course or "Canvas / Sob Demanda",
+                "url": tarefa,
+                "due_date": "Sob demanda",
+                "time_remaining": "N/A",
+                "activity_type": "quiz" if "/quizzes/" in tarefa else "assign",
+                "platform": "canvas",
+                "course_id": c_id
             }
         else:
             err_msg = (
                 f"❌ **Atividade não encontrada:** `{tarefa}`.\n"
-                "Não foi possível localizar essa atividade no catálogo do Moodle UFMG.\n"
+                "Não foi possível localizar essa atividade no catálogo do LumiBot (Moodle ou Canvas).\n"
                 "💡 *Dica:* Digite `/tarefas` para consultar as atividades disponíveis ou use a seleção do `/resolver`."
             )
             await send_func(err_msg)
-            return False, f"Atividade '{tarefa}' não encontrada no catálogo do Moodle."
+            return False, f"Atividade '{tarefa}' não encontrada no catálogo."
 
     title = target_item.get("title", tarefa)
     course = target_item.get("course", "Geral")
@@ -2201,15 +2490,42 @@ async def _execute_solve_flow(
     # AISolver usa o provedor ativo (Gemini/Claude/DeepSeek) — BYOK
     # Não é necessário checar client aqui: AISolver levanta RuntimeError se sem chave
 
+    platform = target_item.get("platform")
+    if not platform:
+        if "instructure.com" in str(target_item.get("url", "")) or str(target_item.get("id", "")).startswith(("canvas_", "c_")):
+            platform = "canvas"
+        else:
+            platform = "moodle"
+
     assign_obj = Assignment(
         id=target_item.get("id", "1"),
-        course_id="",
+        course_id=target_item.get("course_id", ""),
         course_name=target_item.get("course", "Geral"),
         title=target_item.get("title", tarefa),
         url=target_item.get("url", ""),
         description=target_item.get("description", ""),
-        activity_type=target_item.get("activity_type", "quiz" if "mod/quiz" in target_item.get("url", "") else "assign")
+        activity_type=target_item.get("activity_type", "quiz" if ("mod/quiz" in target_item.get("url", "") or "/quizzes/" in target_item.get("url", "")) else "assign")
     )
+    assign_obj.platform = platform
+
+    if platform == "canvas":
+        try:
+            from src.providers.canvas import CanvasAdapter, extract_canvas_ids
+            c_id, a_id = extract_canvas_ids(assign_obj.url or assign_obj.id, assign_obj.course_id)
+            if c_id and a_id:
+                canvas_adapter = CanvasAdapter()
+                c_assign = await canvas_adapter.get_assignment(course_id=c_id, assignment_id=a_id)
+                if c_assign:
+                    if not assign_obj.description and c_assign.description:
+                        assign_obj.description = c_assign.description
+                    if assign_obj.course_name in ("Geral", "Disciplina Canvas") and c_assign.course_name:
+                        assign_obj.course_name = c_assign.course_name
+                    if c_assign.due_date_str:
+                        assign_obj.due_date_str = c_assign.due_date_str
+                    if c_assign.time_remaining:
+                        assign_obj.time_remaining = c_assign.time_remaining
+        except Exception as c_err:
+            console.print(f"[yellow]Aviso ao buscar detalhes do Canvas: {c_err}[/yellow]")
 
     reporter = None
     try:
@@ -2285,79 +2601,123 @@ async def _execute_solve_flow(
         notifier = MoodleDiscordNotifier()
 
         if modo == "preencher":
-            await reporter.log("📝 Preenchendo respostas no Moodle sem submeter...")
-            submitter = MoodleSubmitter()
-            if assign_obj.activity_type == "quiz":
-                ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
-                submit_success, submit_msg = await submitter.submit_quiz(
-                    quiz_url=assign_obj.url,
-                    answers=ans_payload or draft.structured_answers,
-                    auto_submit=False,
-                    on_log=reporter.log
+            if assign_obj.platform == "canvas":
+                await reporter.log("ℹ️ No Canvas LMS, o envio de arquivos é registrado diretamente. Gerando documento para sua conferência...")
+                sent = await notifier.send_assignment_review(
+                    assign_obj, draft, draft_saved=False, is_finalized=False, final_status_message="Pronto para conferência e envio.", channel=channel
                 )
+                if sent:
+                    file_label = "DOCX editável" if (draft.docx_path and draft.docx_path.exists()) else "rascunho"
+                    await reporter.finish(
+                        f"✔ Resolução de **{assign_obj.title}** pronta! Clique em **[✅ Aprovar e Enviar]** no card acima para despachar ao Canvas."
+                    )
+                    return True, f"Resolução gerada e pronta para envio ao Canvas ({assign_obj.title})"
+                else:
+                    await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao enviar o card no Discord.")
+                    return False, "Falha ao enviar o card de revisão no Discord"
             else:
-                # Para DOCX (manual) ou fallback para markdown
-                file_to_submit = (
-                    draft.docx_path if (draft.docx_path and draft.docx_path.exists())
-                    else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
-                    else draft.output_path
+                await reporter.log("📝 Preenchendo respostas no Moodle sem submeter...")
+                submitter = MoodleSubmitter()
+                if assign_obj.activity_type == "quiz":
+                    ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
+                    submit_success, submit_msg = await submitter.submit_quiz(
+                        quiz_url=assign_obj.url,
+                        answers=ans_payload or draft.structured_answers,
+                        auto_submit=False,
+                        on_log=reporter.log
+                    )
+                else:
+                    # Para DOCX (manual) ou fallback para markdown
+                    file_to_submit = (
+                        draft.docx_path if (draft.docx_path and draft.docx_path.exists())
+                        else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
+                        else draft.output_path
+                    )
+                    submit_success, submit_msg = await submitter.submit_assignment(
+                        assignment_url=assign_obj.url,
+                        file_path=file_to_submit,
+                        on_log=reporter.log
+                    )
+                sent = await notifier.send_assignment_review(
+                    assign_obj, draft, draft_saved=submit_success, is_finalized=False, final_status_message=submit_msg, channel=channel
                 )
-                submit_success, submit_msg = await submitter.submit_assignment(
-                    assignment_url=assign_obj.url,
-                    file_path=file_to_submit,
-                    on_log=reporter.log
-                )
-            sent = await notifier.send_assignment_review(
-                assign_obj, draft, draft_saved=submit_success, is_finalized=False, final_status_message=submit_msg, channel=channel
-            )
-            if submit_success:
-                await reporter.finish(f"🎉 **Respostas salvas no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
-                return True, f"Respostas salvas no Moodle ({assign_obj.title})"
-            else:
-                await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao preencher no Moodle: {submit_msg}")
-                return False, f"Falha ao preencher no Moodle: {submit_msg}"
+                if submit_success:
+                    await reporter.finish(f"🎉 **Respostas salvas no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+                    return True, f"Respostas salvas no Moodle ({assign_obj.title})"
+                else:
+                    await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao preencher no Moodle: {submit_msg}")
+                    return False, f"Falha ao preencher no Moodle: {submit_msg}"
 
         elif modo == "finalizar":
-            await reporter.log("🚀 Preenchendo e submetendo em definitivo no Moodle...")
-            submitter = MoodleSubmitter()
-            if assign_obj.activity_type == "quiz":
-                ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
-                submit_success, submit_msg = await submitter.submit_quiz(
-                    quiz_url=assign_obj.url,
-                    answers=ans_payload or draft.structured_answers,
-                    auto_submit=True,
-                    on_log=reporter.log
-                )
-            else:
-                # Para DOCX (manual) ou fallback para markdown
+            if assign_obj.platform == "canvas":
+                await reporter.log("🎓 Enviando resolução para o Canvas da sua faculdade...")
+                from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                submitter = CanvasSubmitter()
                 file_to_submit = (
                     draft.docx_path if (draft.docx_path and draft.docx_path.exists())
                     else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
                     else draft.output_path
                 )
+                c_id, a_id = extract_canvas_ids(assign_obj.url or assign_obj.id, assign_obj.course_id)
                 submit_success, submit_msg = await submitter.submit_assignment(
-                    assignment_url=assign_obj.url,
+                    course_id=c_id or "101",
+                    assignment_id=a_id or assign_obj.id,
                     file_path=file_to_submit,
                     on_log=reporter.log
                 )
-            if submit_success:
-                DaemonState().mark_submitted(assign_obj.id)
-            sent = await notifier.send_assignment_review(
-                assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg, channel=channel
-            )
-            if submit_success:
-                await reporter.finish(f"🎉 **Atividade finalizada e enviada no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
-                return True, f"Atividade finalizada e enviada ({assign_obj.title})"
+                if submit_success:
+                    DaemonState().mark_submitted(assign_obj.id)
+                sent = await notifier.send_assignment_review(
+                    assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg, channel=channel
+                )
+                if submit_success:
+                    await reporter.finish(f"🎉 **✅ Tarefa entregue com sucesso no Canvas! Protocolo registrado.**\n{submit_msg}")
+                    return True, f"Atividade finalizada e enviada ao Canvas ({assign_obj.title})"
+                else:
+                    await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Canvas: {submit_msg}")
+                    return False, f"Falha ao finalizar no Canvas: {submit_msg}"
             else:
-                await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Moodle: {submit_msg}")
-                return False, f"Falha ao finalizar no Moodle: {submit_msg}"
+                await reporter.log("🚀 Preenchendo e submetendo em definitivo no Moodle...")
+                submitter = MoodleSubmitter()
+                if assign_obj.activity_type == "quiz":
+                    ans_payload = extract_quiz_answers_payload(draft.structured_answers, draft.output_path)
+                    submit_success, submit_msg = await submitter.submit_quiz(
+                        quiz_url=assign_obj.url,
+                        answers=ans_payload or draft.structured_answers,
+                        auto_submit=True,
+                        on_log=reporter.log
+                    )
+                else:
+                    # Para DOCX (manual) ou fallback para markdown
+                    file_to_submit = (
+                        draft.docx_path if (draft.docx_path and draft.docx_path.exists())
+                        else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
+                        else draft.output_path
+                    )
+                    submit_success, submit_msg = await submitter.submit_assignment(
+                        assignment_url=assign_obj.url,
+                        file_path=file_to_submit,
+                        on_log=reporter.log
+                    )
+                if submit_success:
+                    DaemonState().mark_submitted(assign_obj.id)
+                sent = await notifier.send_assignment_review(
+                    assign_obj, draft, draft_saved=True, is_finalized=submit_success, final_status_message=submit_msg, channel=channel
+                )
+                if submit_success:
+                    await reporter.finish(f"🎉 **Atividade finalizada e enviada no Moodle com sucesso!** ({assign_obj.title})\n{submit_msg}")
+                    return True, f"Atividade finalizada e enviada ({assign_obj.title})"
+                else:
+                    await reporter.finish(f"⚠️ Resolução gerada, mas falhou ao finalizar no Moodle: {submit_msg}")
+                    return False, f"Falha ao finalizar no Moodle: {submit_msg}"
 
         else:  # modo == "resolver" (manual → envia DOCX editável)
             sent = await notifier.send_assignment_review(assign_obj, draft, channel=channel)
             if sent:
                 file_label = "DOCX editável" if (draft.docx_path and draft.docx_path.exists()) else "rascunho"
+                lms_dest = "Canvas" if assign_obj.platform == "canvas" else "Moodle"
                 await reporter.finish(
-                    f"✔ Resolução de **{assign_obj.title}** enviada como {file_label} com botões de revisão!"
+                    f"✔ Resolução de **{assign_obj.title}** enviada como {file_label} com botões de revisão para o {lms_dest}!"
                 )
                 return True, f"Resolução gerada e enviada como {file_label}"
             else:
@@ -4544,6 +4904,13 @@ async def prefix_tarefas(ctx: commands.Context, *, disciplina: Optional[str] = N
     await ctx.send(embed=embed)
 
 
+@bot.command(name="canvas")
+async def prefix_canvas(ctx: commands.Context, consulta: str = "tarefas", dias: int = 7):
+    """Comando alternativo com prefixo: !canvas [tarefas/cursos/avisos/status] [dias]."""
+    embed = await build_canvas_embed(consulta=consulta, dias=dias)
+    await ctx.send(embed=embed)
+
+
 @bot.command(name="status")
 async def prefix_status(ctx: commands.Context):
     """Comando alternativo com prefixo: !status."""
@@ -5147,6 +5514,7 @@ class MoodleDiscordNotifier:
                     draft_saved=draft_saved,
                     is_finalized=is_finalized,
                     draft=draft,  # para o botão "✏️ Fazer Modificação"
+                    platform=getattr(assignment, "platform", "moodle"),
                 )
 
                 await target_ch.send(

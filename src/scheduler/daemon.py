@@ -96,6 +96,66 @@ class MoodleDaemon:
         finally:
             self._is_reauthenticating = False
 
+    async def _scan_canvas(self):
+        """Executa varredura de disciplinas, tarefas e comunicados do Canvas LMS."""
+        canvas_enabled = (
+            getattr(settings, "LMS_PROVIDER", "moodle").lower() in ("canvas", "multi")
+            or getattr(settings, "CANVAS_MOCK", False)
+            or bool(getattr(settings, "CANVAS_API_TOKEN", ""))
+        )
+        if not canvas_enabled:
+            return
+
+        try:
+            console.rule("[bold magenta]Varredura do Canvas LMS (Multi-LMS)[/bold magenta]")
+            from src.providers.canvas import CanvasAdapter
+            canvas_adapter = CanvasAdapter()
+            c_courses, c_assignments, c_announcements = await canvas_adapter.scan_all(
+                sync_materials=True,
+                sync_announcements=True,
+            )
+
+            # Processa comunicados do Canvas
+            for ann in c_announcements:
+                if not self.state.is_announcement_seen(ann.id):
+                    console.print(f"[bold yellow]📢 NOVO AVISO CANVAS:[/bold yellow] {ann.title} ({ann.course_name})")
+                    from src.scraper.announcements import CourseAnnouncement
+                    moodle_ann = CourseAnnouncement(
+                        id=ann.id,
+                        course_id=ann.course_id,
+                        course_name=ann.course_name,
+                        title=f"[Canvas] {ann.title}",
+                        message=ann.message,
+                        author=ann.author,
+                        date=ann.posted_at.strftime("%d/%m/%Y") if ann.posted_at else "",
+                        url=ann.url
+                    )
+                    await self.notifier.send_course_announcement(moodle_ann)
+                    self.state.mark_announcement_seen(moodle_ann)
+
+            # Processa tarefas do Canvas
+            for assign in c_assignments:
+                from src.scraper.moodle import Assignment
+                m_assign = Assignment(
+                    id=assign.id,
+                    course_id=assign.course_id,
+                    course_name=assign.course_name,
+                    title=assign.title,
+                    url=assign.url,
+                    description=assign.description,
+                    due_date=assign.due_date,
+                    due_date_str=assign.due_date_str,
+                    time_remaining=assign.time_remaining or "",
+                    status="submitted" if assign.is_submitted else "pending",
+                    activity_type=assign.activity_type
+                )
+                m_assign.platform = "canvas"
+                self.state.register_assignment(m_assign)
+
+            console.print(f"[green]✔ Canvas sincronizado: {len(c_courses)} cursos, {len(c_assignments)} tarefas, {len(c_announcements)} avisos.[/green]")
+        except Exception as c_err:
+            console.print(f"[yellow]⚠️ Falha na varredura do Canvas LMS: {c_err}[/yellow]")
+
     async def run_cycle(self):
         """Executa um ciclo completo de verificação, resolução e notificação."""
         console.rule("[bold cyan]Iniciando Ciclo de Varredura do Moodle[/bold cyan]")
@@ -122,6 +182,7 @@ class MoodleDaemon:
                             self._session_expired_alerted = True
                             if self.notifier.token and self.notifier.channel_id:
                                 await self.notifier.send_session_expired_alert(browser_opened=False)
+                        await self._scan_canvas()
                         return
                 else:
                     # Modo Cookies
@@ -135,6 +196,7 @@ class MoodleDaemon:
                                 await self.notifier.send_session_renewed_notification(user_name=user)
                         else:
                             console.print("[red]Primeiro login não foi concluído.[/red]")
+                            await self._scan_canvas()
                             return
                     else:
                         # Sessão expirou no modo cookies: NÃO abre navegador automaticamente!
@@ -143,6 +205,7 @@ class MoodleDaemon:
                             self._session_expired_alerted = True
                             if self.notifier.token and self.notifier.channel_id:
                                 await self.notifier.send_session_expired_alert(browser_opened=False)
+                        await self._scan_canvas()
                         return
 
             known_ann_ids = self.state.get_known_announcement_ids()
@@ -312,6 +375,9 @@ class MoodleDaemon:
                     await bridge_runner.publish_courses_to_hub()
                 except Exception as b_err:
                     console.print(f"[yellow]Aviso ao sincronizar com Render Hub após varredura: {b_err}[/yellow]")
+
+            # 6. Executa varredura de materiais, tarefas e comunicados do Canvas LMS
+            await self._scan_canvas()
 
             console.print("[green]✔ Ciclo de varredura concluído com sucesso.[/green]")
 

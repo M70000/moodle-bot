@@ -41,6 +41,26 @@ class Settings(BaseSettings):
         description="Senha institucional MinhaUFMG para autenticação automática"
     )
 
+    # Provedor Educacional Ativo (Multi-LMS)
+    LMS_PROVIDER: str = Field(
+        default="moodle",
+        description="Provedor educacional ativo: 'moodle', 'canvas' ou 'multi'"
+    )
+
+    # Plataforma Canvas LMS (Instructure / PUC-Rio e outras)
+    CANVAS_BASE_URL: str = Field(
+        default="https://puc-rio.instructure.com",
+        description="URL base da instituição no Canvas LMS (ex: https://puc-rio.instructure.com)"
+    )
+    CANVAS_API_TOKEN: str = Field(
+        default="",
+        description="Token de acesso pessoal da API do Canvas LMS (Bearer token)"
+    )
+    CANVAS_MOCK: bool = Field(
+        default=False,
+        description="Ativa o modo de simulação (Mock) com disciplinas da PUC-Rio"
+    )
+
     # Discord Bot
     DISCORD_BOT_TOKEN: str = Field(
         default="",
@@ -234,7 +254,7 @@ class Settings(BaseSettings):
                 return g_key
         return val
 
-    @field_validator("MOODLE_BASE_URL")
+    @field_validator("MOODLE_BASE_URL", "CANVAS_BASE_URL")
     @classmethod
     def normalize_moodle_url(cls, v: str) -> str:
         """Remove barra final se presente para padronização de URLs."""
