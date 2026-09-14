@@ -4,7 +4,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Moodle AI Assistant · Configurações UFMG</title>
+  <title>LumiBot · Configurações do Copiloto Acadêmico</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -18,20 +18,28 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-icon brand-logo-container">
-          <img src="logo.png" alt="Brasão de Minas Gerais" class="brand-logo-img">
+          <img src="logo.png" alt="LumiBot Mascote" class="brand-logo-img">
         </div>
         <div class="brand-text">
-          <h2>Moodle AI</h2>
-          <span class="badge badge-ufmg">UFMG</span>
+          <h2>LumiBot</h2>
+          <span class="badge badge-gold">MULTI-LMS</span>
         </div>
       </div>
 
       <nav class="nav-menu">
-        <button class="nav-item active" data-tab="tab-moodle">
+        <button class="nav-item active" data-tab="tab-canvas">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"></path>
+            <path d="M6 12v5c0 2 2 3 6 3s6-1 6-3v-5"></path>
+          </svg>
+          <span>Canvas LMS</span>
+        </button>
+
+        <button class="nav-item" data-tab="tab-moodle">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 10h-1.26A8 8 0 1 0 9 20h9a5 5 0 0 0 0-10z"></path>
           </svg>
-          <span>Moodle & Autenticação</span>
+          <span>Moodle UFMG</span>
         </button>
 
         <button class="nav-item" data-tab="tab-discord">
@@ -97,8 +105,8 @@
       <!-- Topbar -->
       <header class="topbar">
         <div class="topbar-left">
-          <h1 id="page-title">Configurações do Moodle</h1>
-          <p id="page-subtitle">Configure a integração com o Moodle UFMG e autenticação SSO.</p>
+          <h1 id="page-title">Canvas LMS & PUC-Rio</h1>
+          <p id="page-subtitle">Configure a URL do Canvas, Token da API ou ative o Modo Mock simulado.</p>
         </div>
         <div class="topbar-actions">
           <button id="btn-reload-status" class="btn btn-secondary" title="Recarregar status">
@@ -119,8 +127,122 @@
         </div>
       </header>
 
+      <!-- Tab 0: Canvas LMS & Multi-LMS -->
+      <section id="tab-canvas" class="tab-pane active">
+        <!-- Seletor de Arquitetura Multi-LMS -->
+        <div class="card card-glow">
+          <div class="card-header">
+            <div>
+              <h3>Arquitetura Multi-LMS do LumiBot</h3>
+              <p>Defina quais plataformas educacionais serão monitoradas e sincronizadas.</p>
+            </div>
+            <span class="badge badge-gold">MULTI-LMS</span>
+          </div>
+          <div class="card-body">
+            <div class="lms-mode-selector">
+              <label class="auth-mode-card" id="card-lms-multi">
+                <input type="radio" name="LMS_PROVIDER" id="lms-multi" value="multi" checked>
+                <div class="auth-mode-content">
+                  <div class="auth-mode-icon">⚡</div>
+                  <div class="auth-mode-info">
+                    <h4>Multi-LMS (Ambas)</h4>
+                    <p>Sincroniza Canvas LMS e Moodle simultaneamente com um clique.</p>
+                  </div>
+                </div>
+              </label>
+
+              <label class="auth-mode-card" id="card-lms-canvas">
+                <input type="radio" name="LMS_PROVIDER" id="lms-canvas" value="canvas">
+                <div class="auth-mode-content">
+                  <div class="auth-mode-icon">🎓</div>
+                  <div class="auth-mode-info">
+                    <h4>Canvas LMS</h4>
+                    <p>Focado exclusivamente no Canvas (PUC-Rio, Instructure e portais compatíveis).</p>
+                  </div>
+                </div>
+              </label>
+
+              <label class="auth-mode-card" id="card-lms-moodle">
+                <input type="radio" name="LMS_PROVIDER" id="lms-moodle" value="moodle">
+                <div class="auth-mode-content">
+                  <div class="auth-mode-icon">🏛️</div>
+                  <div class="auth-mode-info">
+                    <h4>Moodle</h4>
+                    <p>Focado exclusivamente no Moodle da universidade (UFMG Virtual e outros).</p>
+                  </div>
+                </div>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Parâmetros do Canvas LMS -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>Plataforma Canvas LMS (PUC-Rio / Instructure)</h3>
+              <p>Endereço e conexões com o portal acadêmico da instituição.</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label for="CANVAS_BASE_URL">URL Base do Canvas LMS</label>
+              <div class="input-with-action">
+                <input type="url" id="CANVAS_BASE_URL" placeholder="https://puc-rio.instructure.com" required>
+                <button type="button" id="btn-test-canvas" class="btn btn-secondary">
+                  Testar Conexão
+                </button>
+              </div>
+              <div class="preset-links">
+                <span>Presets:</span>
+                <button type="button" class="btn-link" onclick="setPreset('CANVAS_BASE_URL', 'https://puc-rio.instructure.com')">PUC-Rio (Instructure)</button>
+                <button type="button" class="btn-link" onclick="setPreset('CANVAS_BASE_URL', 'https://canvas.instructure.com')">Canvas Geral</button>
+              </div>
+              <div id="canvas-test-result" class="test-feedback"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Autenticação & Modo Mock -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <h3>Autenticação & Modo Mock PUC-Rio</h3>
+              <p>Escolha entre usar a API oficial com token ou a simulação offline do Modo Mock.</p>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="form-group">
+              <label class="switch-container">
+                <input type="checkbox" id="CANVAS_MOCK" checked>
+                <span class="switch-slider"></span>
+                <span class="switch-label" style="font-weight: 600; color: var(--text-primary);">
+                  Ativar Modo Mock PUC-Rio (Simulação Realista sem Token)
+                </span>
+              </label>
+              <small class="form-help" style="margin-top: 6px; display: block;">
+                Permite testar comandos como <code>/tarefas</code>, <code>/resolver</code> e submissões com IA com 4 disciplinas simuladas (INF1005, INF1025, MAT1161, ENG1000) sem necessitar de token de acesso.
+              </small>
+            </div>
+
+            <div id="canvas-token-group" class="form-group" style="display: none;">
+              <label for="CANVAS_API_TOKEN">Token de Acesso da API do Canvas (Bearer Token)</label>
+              <div class="input-with-action">
+                <input type="password" id="CANVAS_API_TOKEN" placeholder="Cole aqui seu token do Canvas">
+                <button type="button" id="btn-toggle-canvas-token" class="btn btn-secondary" title="Exibir/Ocultar Token">
+                  👁️
+                </button>
+              </div>
+              <small class="form-help">
+                Gere seu token no Canvas: Acesse o portal → Perfil / Conta → Configurações → Tokens de Acesso Aprovados → + Novo Token de Acesso.
+              </small>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Tab 1: Moodle & Login -->
-      <section id="tab-moodle" class="tab-pane active">
+      <section id="tab-moodle" class="tab-pane">
         <div class="card">
           <div class="card-header">
             <div>

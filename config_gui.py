@@ -1,4 +1,4 @@
-"""Inicializador da Interface Gráfica de Configuração do Moodle Bot."""
+"""Inicializador da Interface Gráfica de Configuração do LumiBot."""
 
 import argparse
 import os
@@ -57,7 +57,7 @@ def find_browser_app_executable() -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Moodle Bot - Interface Gráfica de Configuração")
+    parser = argparse.ArgumentParser(description="LumiBot - Interface Gráfica de Configuração")
     parser.add_argument("--port", type=int, default=0, help="Porta local do servidor (padrão: 5055 ou livre)")
     parser.add_argument("--browser", action="store_true", help="Forçar abertura no navegador padrão em vez de modo app")
     parser.add_argument("--no-open", action="store_true", help="Não abrir janela automaticamente")
@@ -76,7 +76,7 @@ def main():
     server_thread.start()
 
     print("\n" + "=" * 60)
-    print("  Moodle AI Assistant - Painel de Configuração")
+    print("  LumiBot • Painel de Configuração Multi-LMS")
     print("=" * 60)
     print(f"✔ Servidor rodando em: {url}")
     print("✔ Pressione Ctrl+C para encerrar o painel.")

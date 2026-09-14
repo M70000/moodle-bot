@@ -122,7 +122,7 @@ def set_windows_startup_status(enabled: bool) -> bool:
                     f"$s.TargetPath = '{iniciar_bat}'; "
                     f"$s.WorkingDirectory = '{PROJECT_ROOT}'; "
                     f"$s.IconLocation = '{ico_path}'; "
-                    f"$s.Description = 'Moodle AI Assistant UFMG'; "
+                    f"$s.Description = 'LumiBot - Copiloto Acadêmico Multi-LMS'; "
                     f"$s.Save();"
                 )
                 import base64
@@ -374,6 +374,59 @@ def test_moodle_connection(url: str) -> Dict[str, Any]:
         }
     except Exception as e:
         return {"ok": False, "error": f"Falha ao alcançar o Moodle: {str(e)}"}
+
+
+def test_canvas_connection(
+    base_url: str,
+    api_token: Optional[str] = None,
+    mock_mode: bool = False,
+) -> Dict[str, Any]:
+    """Testa a conectividade com o Canvas LMS (ou valida o Modo Mock da PUC-Rio)."""
+    if mock_mode:
+        return {
+            "ok": True,
+            "mock": True,
+            "message": "Modo Mock PUC-Rio ativado e validado! 4 disciplinas simuladas (INF1005, INF1025, MAT1161, ENG1000) disponíveis para testes offline."
+        }
+
+    target = (base_url or "https://puc-rio.instructure.com").rstrip("/")
+    token = (api_token or "").strip()
+    if not token or token == "mock_token":
+        return {
+            "ok": False,
+            "error": "Token de acesso da API do Canvas não informado. Para usar sem token, ative a opção 'Modo Mock PUC-Rio'."
+        }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "LumiBot-MultiLMS/1.0",
+        "Accept": "application/json",
+    }
+    start_time = time.time()
+    try:
+        req = urllib.request.Request(f"{target}/api/v1/users/self", headers=headers)
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            user_name = data.get("name") or data.get("short_name") or "Aluno"
+            user_id = data.get("id")
+        elapsed = round((time.time() - start_time) * 1000)
+        return {
+            "ok": True,
+            "mock": False,
+            "user_name": user_name,
+            "user_id": user_id,
+            "elapsed_ms": elapsed,
+            "message": f"Conexão com Canvas LMS ({target}) autenticada com sucesso como '{user_name}' ({elapsed}ms)!"
+        }
+    except urllib.error.HTTPError as e:
+        elapsed = round((time.time() - start_time) * 1000)
+        if e.code == 401:
+            return {"ok": False, "error": f"Token do Canvas inválido ou expirado (HTTP 401 Unauthorized) em {target}."}
+        if e.code == 404:
+            return {"ok": False, "error": f"Endpoint não encontrado (HTTP 404). Verifique se a URL '{target}' é a raiz correta do Canvas."}
+        return {"ok": False, "error": f"Erro do Canvas LMS HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"ok": False, "error": f"Falha ao conectar no Canvas LMS ({target}): {str(e)}"}
 
 
 def test_gemini_connection(api_key: str, model_name: str) -> Dict[str, Any]:
@@ -716,6 +769,14 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
         if url_path == "/api/test-moodle":
             url = payload.get("url", "")
             res = test_moodle_connection(url)
+            self._send_json(res)
+            return
+
+        if url_path == "/api/test-canvas":
+            base_url = payload.get("base_url", "")
+            token = payload.get("token", "")
+            mock_mode = bool(payload.get("mock", False))
+            res = test_canvas_connection(base_url, token, mock_mode)
             self._send_json(res)
             return
 

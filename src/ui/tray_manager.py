@@ -67,7 +67,7 @@ if sys.platform == "win32":
 class SystemTrayManager:
     """Gerencia o ícone na bandeja do sistema e o comportamento de minimizar."""
 
-    WINDOW_TITLE = "Moodle AI Assistant - Assistente em Execucao"
+    WINDOW_TITLE = "LumiBot - Executando"
 
     def __init__(
         self,
@@ -115,7 +115,7 @@ class SystemTrayManager:
                     buf = ctypes.create_unicode_buffer(length + 1)
                     user32.GetWindowTextW(h, buf, length + 1)
                     title_str = buf.value.lower()
-                    if "moodle ai assistant" in title_str:
+                    if "lumibot" in title_str or "moodle ai assistant" in title_str:
                         found_h = h
                         return False
             return True
@@ -262,19 +262,19 @@ class SystemTrayManager:
                 tray_img = Image.new("RGBA", (64, 64), (198, 40, 40, 255))
 
             menu = Menu(
-                item("Abrir Janela", self.restore_window, default=True),
+                item("Abrir Janela do LumiBot", self.restore_window, default=True),
                 item("Minimizar para a Bandeja", self.hide_window),
-                item("Abrir Painel de Configurações", self.open_config_panel),
+                item("Abrir Painel de Configurações Web", self.open_config_panel),
                 Menu.SEPARATOR,
-                item("Status: Ativo e Monitorando", lambda i, it: None, enabled=False),
+                item("Status: Ativo e Monitorando (Multi-LMS)", lambda i, it: None, enabled=False),
                 Menu.SEPARATOR,
-                item("Encerrar Assistente", self._on_exit),
+                item("Encerrar LumiBot", self._on_exit),
             )
 
             self.icon = pystray.Icon(
-                "moodle_ai_assistant",
+                "lumibot",
                 tray_img,
-                "Moodle AI Assistant (UFMG) - Ativo",
+                "LumiBot • Copiloto Acadêmico Multi-LMS",
                 menu,
             )
 

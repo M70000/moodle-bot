@@ -3,6 +3,10 @@
 // ===================================================================
 
 const tabMetadata = {
+  'tab-canvas': {
+    title: 'Canvas LMS & PUC-Rio',
+    subtitle: 'Configure a URL do Canvas, Token da API ou ative o Modo Mock simulado.'
+  },
   'tab-moodle': {
     title: 'Moodle & Autenticação UFMG',
     subtitle: 'Configure a URL base do Moodle e a autenticação SSO via MinhaUFMG.'
@@ -41,9 +45,35 @@ document.addEventListener('DOMContentLoaded', () => {
     showToast('Status atualizado!', 'info');
   });
 
+  document.getElementById('btn-test-canvas')?.addEventListener('click', testCanvas);
   document.getElementById('btn-test-moodle').addEventListener('click', testMoodle);
   document.getElementById('btn-test-discord').addEventListener('click', testDiscord);
   document.getElementById('btn-test-gemini').addEventListener('click', testGemini);
+
+  // Toggle do Modo Mock do Canvas
+  const canvasMockCheckbox = document.getElementById('CANVAS_MOCK');
+  if (canvasMockCheckbox) {
+    canvasMockCheckbox.addEventListener('change', (e) => {
+      updateCanvasMockUI(e.target.checked);
+    });
+  }
+
+  // Toggle de visualização do token do Canvas
+  const btnToggleCanvasToken = document.getElementById('btn-toggle-canvas-token');
+  if (btnToggleCanvasToken) {
+    btnToggleCanvasToken.addEventListener('click', () => {
+      const input = document.getElementById('CANVAS_API_TOKEN');
+      if (input) {
+        if (input.type === 'password') {
+          input.type = 'text';
+          btnToggleCanvasToken.textContent = '🔒';
+        } else {
+          input.type = 'password';
+          btnToggleCanvasToken.textContent = '👁️';
+        }
+      }
+    });
+  }
 
   const btnTestClaude = document.getElementById('btn-test-claude');
   if (btnTestClaude) btnTestClaude.addEventListener('click', testClaude);
@@ -157,6 +187,17 @@ async function loadConfig() {
     const data = await res.json();
     const config = data.config || {};
 
+    // Canvas LMS & Multi-LMS
+    const lmsProvider = (config.LMS_PROVIDER || 'multi').toLowerCase();
+    const lmsRadio = document.querySelector(`input[name="LMS_PROVIDER"][value="${lmsProvider}"]`);
+    if (lmsRadio) lmsRadio.checked = true;
+
+    setInputValue('CANVAS_BASE_URL', config.CANVAS_BASE_URL || 'https://puc-rio.instructure.com');
+    setInputValue('CANVAS_API_TOKEN', config.CANVAS_API_TOKEN || '');
+    const isMock = config.CANVAS_MOCK === 'true' || config.CANVAS_MOCK_MODE === 'true' || config.CANVAS_MOCK === true || config.CANVAS_MOCK === undefined;
+    setCheckboxValue('CANVAS_MOCK', isMock);
+    updateCanvasMockUI(isMock);
+
     setInputValue('MOODLE_BASE_URL', config.MOODLE_BASE_URL || 'https://virtual.ufmg.br');
     const authMode = config.AUTH_MODE || 'cookies';
     const modeRadio = document.querySelector(`input[name="AUTH_MODE"][value="${authMode}"]`);
@@ -264,6 +305,12 @@ async function saveConfig() {
   btn.disabled = true;
 
   const payload = {
+    LMS_PROVIDER: document.querySelector('input[name="LMS_PROVIDER"]:checked')?.value || 'multi',
+    CANVAS_BASE_URL: getInputValue('CANVAS_BASE_URL') || 'https://puc-rio.instructure.com',
+    CANVAS_API_TOKEN: getInputValue('CANVAS_API_TOKEN'),
+    CANVAS_MOCK: document.getElementById('CANVAS_MOCK')?.checked ? 'true' : 'false',
+    CANVAS_MOCK_MODE: document.getElementById('CANVAS_MOCK')?.checked ? 'True' : 'False',
+
     MOODLE_BASE_URL: getInputValue('MOODLE_BASE_URL'),
     AUTH_MODE: document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies',
     MOODLE_USERNAME: getInputValue('MOODLE_USERNAME'),
@@ -338,7 +385,39 @@ async function saveConfig() {
   }
 }
 
+// Controle visual do Modo Mock Canvas
+function updateCanvasMockUI(isMock) {
+  const tokenGroup = document.getElementById('canvas-token-group');
+  if (tokenGroup) {
+    tokenGroup.style.display = isMock ? 'none' : 'block';
+  }
+}
+
 // Testes de Conexão
+async function testCanvas() {
+  const base_url = getInputValue('CANVAS_BASE_URL') || 'https://puc-rio.instructure.com';
+  const token = getInputValue('CANVAS_API_TOKEN');
+  const mock = document.getElementById('CANVAS_MOCK')?.checked ?? false;
+  const resultDiv = document.getElementById('canvas-test-result');
+  setFeedback(resultDiv, 'Testando conectividade com o Canvas LMS...', 'loading');
+
+  try {
+    const res = await fetch('/api/test-canvas', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url, token, mock })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(resultDiv, `✔ ${data.message}`, 'success');
+    } else {
+      setFeedback(resultDiv, `✖ ${data.error}`, 'error');
+    }
+  } catch (err) {
+    setFeedback(resultDiv, `✖ Erro ao testar: ${err.message}`, 'error');
+  }
+}
+
 async function testMoodle() {
   const url = getInputValue('MOODLE_BASE_URL');
   const resultDiv = document.getElementById('moodle-test-result');

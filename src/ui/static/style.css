@@ -976,3 +976,28 @@ select option {
   padding: 16px;
   margin-top: 14px;
 }
+
+/* Badge Gold for LumiBot Multi-LMS */
+.badge-gold {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.25), rgba(217, 119, 6, 0.35));
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.5);
+  box-shadow: 0 0 10px rgba(245, 158, 11, 0.2);
+  font-weight: 800;
+  letter-spacing: 0.5px;
+}
+
+/* LMS Provider Selector Grid */
+.lms-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+  margin-top: 8px;
+}
+
+@media (max-width: 900px) {
+  .lms-mode-selector {
+    grid-template-columns: 1fr;
+  }
+}
+
