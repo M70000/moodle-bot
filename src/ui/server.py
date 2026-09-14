@@ -53,6 +53,14 @@ def get_windows_startup_status() -> bool:
     """Verifica se o iniciar.bat está configurado para inicializar com o Windows."""
     if sys.platform != "win32":
         return False
+
+    appdata = os.environ.get("APPDATA", "")
+    if appdata:
+        lnk = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Moodle AI Assistant.lnk"
+        if lnk.exists():
+            return True
+
+    # Verificação de compatibilidade com versões anteriores via Registro
     try:
         import winreg
         with winreg.OpenKey(
@@ -67,20 +75,19 @@ def get_windows_startup_status() -> bool:
     except Exception:
         pass
 
-    appdata = os.environ.get("APPDATA", "")
-    if appdata:
-        lnk = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" / "Moodle AI Assistant.lnk"
-        if lnk.exists():
-            return True
     return False
 
 
 def set_windows_startup_status(enabled: bool) -> bool:
-    """Habilita ou desabilita o início automático do Moodle Bot com o Windows."""
+    """Habilita ou desabilita o início automático do Moodle Bot com o Windows.
+
+    Utiliza exclusivamente a pasta Startup do usuário (shell:startup) através de um atalho oficial
+    com ícone e diretório de trabalho correto. Remove expressamente a chave Run do Registro
+    para evitar a execução duplicada de instâncias na inicialização do Windows.
+    """
     if sys.platform != "win32":
         return False
 
-    import winreg
     key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
     val_name = "MoodleAIAssistant"
     iniciar_bat = PROJECT_ROOT / "iniciar.bat"
@@ -88,15 +95,16 @@ def set_windows_startup_status(enabled: bool) -> bool:
     startup_dir = Path(appdata) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup" if appdata else None
     lnk_path = startup_dir / "Moodle AI Assistant.lnk" if startup_dir else None
 
-    if not enabled:
-        # 1. Remove do Registry Run
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.DeleteValue(key, val_name)
-        except Exception:
-            pass
+    # 1. SEMPRE remove qualquer entrada duplicada antiga no Registro Run (HKCU\...\Run)
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
+            winreg.DeleteValue(key, val_name)
+    except Exception:
+        pass
 
-        # 2. Remove da pasta Startup se existir
+    if not enabled:
+        # 2. Remove o atalho da pasta Startup se existir
         try:
             if lnk_path and lnk_path.exists():
                 lnk_path.unlink()
@@ -104,15 +112,7 @@ def set_windows_startup_status(enabled: bool) -> bool:
             pass
         return False
     else:
-        # 1. Registra no Registry Run
-        cmd_str = f'"{iniciar_bat}"'
-        try:
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE) as key:
-                winreg.SetValueEx(key, val_name, 0, winreg.REG_SZ, cmd_str)
-        except Exception as e:
-            print(f"[UI Server] Erro ao gravar chave Run no registro: {e}")
-
-        # 2. Cria atalho oficial com o ícone na pasta Startup
+        # 2. Cria ou atualiza o atalho oficial na pasta Startup (único ponto de partida no Windows)
         if startup_dir and startup_dir.exists():
             try:
                 ico_path = PROJECT_ROOT / "assets" / "app.ico"

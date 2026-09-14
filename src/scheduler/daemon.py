@@ -513,11 +513,51 @@ class MoodleDaemon:
         console.print("[bold yellow]Daemon encerrado com segurança.[/bold yellow]")
 
 
+_single_instance_mutex = None
+
+
+def acquire_single_instance_lock() -> bool:
+    """Garante que apenas uma instância do Daemon execute no Windows usando um Named Mutex."""
+    global _single_instance_mutex
+    if sys.platform != "win32":
+        return True
+
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        mutex_name = "Global\\MoodleAIAssistant_Daemon_SingleInstance_Mutex"
+        _single_instance_mutex = kernel32.CreateMutexW(None, False, mutex_name)
+        last_error = kernel32.GetLastError()
+        ERROR_ALREADY_EXISTS = 183
+        if last_error == ERROR_ALREADY_EXISTS:
+            return False
+        return True
+    except Exception as e:
+        console.print(f"[yellow]Nota ao verificar trava de instância única: {e}[/yellow]")
+        return True
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Moodle AI Assistant Background Daemon")
     parser.add_argument("--once", action="store_true", help="Executa apenas um ciclo e encerra")
     parser.add_argument("--no-tray", action="store_true", help="Desabilita o ícone da bandeja do sistema")
     args = parser.parse_args()
+
+    # Trava de instância única para impedir que duas instâncias rodem simultaneamente
+    if not args.once:
+        if not acquire_single_instance_lock():
+            console.print(
+                Panel.fit(
+                    "[bold yellow]⚠️ O Moodle AI Assistant já está em execução neste computador![/bold yellow]\n\n"
+                    "Uma instância ativa foi detectada rodando em segundo plano (verifique a bandeja do sistema ao lado do relógio).\n"
+                    "Esta janela adicional será encerrada para evitar duplicações e conflitos de sessão.",
+                    title="[bold red]Instância Duplicada Detectada[/bold red]",
+                    border_style="yellow"
+                )
+            )
+            import time
+            time.sleep(3)
+            sys.exit(0)
 
     daemon = MoodleDaemon(enable_tray=not args.no_tray and not args.once)
 
