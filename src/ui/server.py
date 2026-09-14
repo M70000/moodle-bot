@@ -142,6 +142,9 @@ def get_current_config() -> Dict[str, Any]:
     # Defaults de fallback caso .env.example não tenha algo
     base_defaults = {
         "MOODLE_BASE_URL": "https://virtual.ufmg.br",
+        "AUTH_MODE": "cookies",
+        "MOODLE_USERNAME": "",
+        "MOODLE_PASSWORD": "",
         "DISCORD_BOT_TOKEN": "",
         "DISCORD_CHANNEL_ID": "0",
         "DISCORD_CONTENT_CHANNEL_ID": "0",
@@ -217,6 +220,9 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         "# 1. Plataforma Moodle & UFMG Virtual",
         "# -------------------------------------------------------------------",
         f"MOODLE_BASE_URL={_val('MOODLE_BASE_URL', 'https://virtual.ufmg.br')}",
+        f"AUTH_MODE={_val('AUTH_MODE', 'cookies').lower()}",
+        f"MOODLE_USERNAME={_val('MOODLE_USERNAME', '')}",
+        f"MOODLE_PASSWORD={_val('MOODLE_PASSWORD', '')}",
         f"HEADLESS_LOGIN={_val('HEADLESS_LOGIN', 'false').lower()}",
         f"LOGIN_TIMEOUT_SECONDS={_val('LOGIN_TIMEOUT_SECONDS', '300')}",
         "",
@@ -308,11 +314,19 @@ def get_system_status() -> Dict[str, Any]:
     if submissions_dir.exists():
         submissions_count = len(list(submissions_dir.rglob("*.pdf")))
 
+    cfg = get_current_config().get("config", {})
+    auth_mode = cfg.get("AUTH_MODE", "cookies")
+    moodle_user = cfg.get("MOODLE_USERNAME", "")
+    has_credentials = bool(moodle_user and cfg.get("MOODLE_PASSWORD", ""))
+
     return {
         "session_exists": has_session,
         "session_date": session_date,
         "materials_count": materials_count,
         "submissions_count": submissions_count,
+        "auth_mode": auth_mode,
+        "has_credentials": has_credentials,
+        "moodle_user": moodle_user,
     }
 
 
@@ -736,6 +750,46 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             self._send_json(res)
             return
 
+
+        if url_path == "/api/login-credentials":
+            username = payload.get("username", "")
+            password = payload.get("password", "")
+            save = payload.get("save", True)
+            if not username or not password:
+                self._send_json({"ok": False, "error": "Usuário e senha institucionais são obrigatórios."}, status=400)
+                return
+
+            if save:
+                save_config_to_env({
+                    "AUTH_MODE": "credentials",
+                    "MOODLE_USERNAME": username,
+                    "MOODLE_PASSWORD": password
+                })
+
+            import asyncio
+            from src.auth.moodle_auth import MoodleAuth
+
+            async def _run_cred_login():
+                auth = MoodleAuth()
+                return await auth.login_with_credentials(username=username, password=password, headless=True)
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                success, user_or_err = loop.run_until_complete(_run_cred_login())
+                loop.close()
+
+                if success:
+                    self._send_json({
+                        "ok": True,
+                        "user": user_or_err,
+                        "message": f"Autenticado com sucesso no MinhaUFMG como '{user_or_err}'!"
+                    })
+                else:
+                    self._send_json({"ok": False, "error": user_or_err or "Falha na autenticação."}, status=400)
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"Erro durante login: {str(e)}"}, status=500)
+            return
 
         if url_path == "/api/login-moodle":
 

@@ -52,24 +52,47 @@ class MoodleDaemon:
         self.tray = None
 
 
-    async def _auto_relogin_flow(self):
-        """Abre automaticamente o navegador na tela do usuário para renovação de sessão."""
+    async def _auto_relogin_flow(self, force_interactive: bool = False):
+        """Executa o fluxo de renovação de sessão conforme o modo de autenticação.
+
+        - Se AUTH_MODE == 'credentials' e não forçado: executa login automático em background via credenciais.
+        - Se AUTH_MODE == 'cookies' ou forçado: abre o navegador interativo no desktop.
+        """
         if self._is_reauthenticating:
             return
         self._is_reauthenticating = True
         try:
-            console.print("[bold cyan]🔄 Sessão do Moodle expirada: Abrindo navegador no desktop para renovação de login...[/bold cyan]")
-            success = await self.auth.interactive_login(headless=False)
-            if success:
-                console.print("[bold green]✔ Sessão renovada com sucesso pelo navegador interativo![/bold green]")
-                self._session_expired_alerted = False
-                valid, user = await self.auth.validate_session()
-                if self.notifier.token and self.notifier.channel_id:
-                    await self.notifier.send_session_renewed_notification(user_name=user)
+            auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
+            if auth_mode == "credentials" and not force_interactive:
+                console.print("[bold cyan]🔄 Sessão do Moodle expirada: Tentando login automático com credenciais (headless)...[/bold cyan]")
+                success, user_or_err = await self.auth.login_with_credentials(headless=True)
+                if success:
+                    console.print("[bold green]✔ Sessão renovada automaticamente com sucesso![/bold green]")
+                    self._session_expired_alerted = False
+                    if self.notifier.token and self.notifier.channel_id:
+                        await self.notifier.send_session_renewed_notification(user_name=user_or_err)
+                else:
+                    console.print(f"[bold red]❌ Falha na renovação automática via credenciais: {user_or_err}[/bold red]")
+                    if not self._session_expired_alerted:
+                        self._session_expired_alerted = True
+                        if self.notifier.token and self.notifier.channel_id:
+                            await self.notifier.send_session_expired_alert(
+                                browser_opened=False,
+                                custom_details=f"Falha no login automático com credenciais: {user_or_err}"
+                            )
             else:
-                console.print("[yellow]Aviso: Janela de login interativo fechada sem autenticação confirmada.[/yellow]")
+                console.print("[bold cyan]🔄 Abrindo navegador no desktop para login interativo no MinhaUFMG...[/bold cyan]")
+                success = await self.auth.interactive_login(headless=False)
+                if success:
+                    console.print("[bold green]✔ Sessão renovada com sucesso pelo navegador interativo![/bold green]")
+                    self._session_expired_alerted = False
+                    valid, user = await self.auth.validate_session()
+                    if self.notifier.token and self.notifier.channel_id:
+                        await self.notifier.send_session_renewed_notification(user_name=user)
+                else:
+                    console.print("[yellow]Aviso: Janela de login interativo fechada sem autenticação confirmada.[/yellow]")
         except Exception as err:
-            console.print(f"[red]Erro durante auto re-login interativo: {err}[/red]")
+            console.print(f"[red]Erro durante renovação de login: {err}[/red]")
         finally:
             self._is_reauthenticating = False
 
@@ -80,19 +103,47 @@ class MoodleDaemon:
             # 1. Valida se a sessão continua ativa
             valid, user = await self.auth.validate_session()
             if not valid:
-                console.print("[bold red]Sessão expirada. Tentando re-autenticar...[/bold red]")
-                if not self._session_expired_alerted:
-                    self._session_expired_alerted = True
-                    if self.notifier.token and self.notifier.channel_id:
-                        await self.notifier.send_session_expired_alert(browser_opened=True)
-                auth_success = await self.auth.ensure_authenticated()
-                if not auth_success:
-                    console.print("[red]Não foi possível restabelecer a sessão do Moodle.[/red]")
-                    return
+                auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
+                is_first_login = not self.auth.session_exists
+
+                console.print("[bold red]Sessão do Moodle inativa ou expirada.[/bold red]")
+
+                if auth_mode == "credentials":
+                    console.print("[cyan]Tentando login automático por credenciais...[/cyan]")
+                    auth_success = await self.auth.ensure_authenticated()
+                    if auth_success:
+                        self._session_expired_alerted = False
+                        valid, user = await self.auth.validate_session()
+                        if self.notifier.token and self.notifier.channel_id:
+                            await self.notifier.send_session_renewed_notification(user_name=user)
+                    else:
+                        console.print("[red]Não foi possível autenticar automaticamente via credenciais.[/red]")
+                        if not self._session_expired_alerted:
+                            self._session_expired_alerted = True
+                            if self.notifier.token and self.notifier.channel_id:
+                                await self.notifier.send_session_expired_alert(browser_opened=False)
+                        return
                 else:
-                    self._session_expired_alerted = False
-                    if self.notifier.token and self.notifier.channel_id:
-                        await self.notifier.send_session_renewed_notification(user_name=user)
+                    # Modo Cookies
+                    if is_first_login:
+                        console.print("[bold cyan]Primeiro login: Abrindo navegador no desktop para autenticação inicial...[/bold cyan]")
+                        auth_success = await self.auth.interactive_login(headless=False)
+                        if auth_success:
+                            self._session_expired_alerted = False
+                            valid, user = await self.auth.validate_session()
+                            if self.notifier.token and self.notifier.channel_id:
+                                await self.notifier.send_session_renewed_notification(user_name=user)
+                        else:
+                            console.print("[red]Primeiro login não foi concluído.[/red]")
+                            return
+                    else:
+                        # Sessão expirou no modo cookies: NÃO abre navegador automaticamente!
+                        console.print("[bold yellow]Modo cookies: Sessão expirada. O navegador não será aberto automaticamente.[/bold yellow]")
+                        if not self._session_expired_alerted:
+                            self._session_expired_alerted = True
+                            if self.notifier.token and self.notifier.channel_id:
+                                await self.notifier.send_session_expired_alert(browser_opened=False)
+                        return
 
             known_ann_ids = self.state.get_known_announcement_ids()
             first_ann_run = len(known_ann_ids) == 0
@@ -338,11 +389,16 @@ class MoodleDaemon:
                 self._session_expired_alerted = False
             else:
                 console.print(f"[bold yellow]⚠️ [Heartbeat {now_str}] Sessão do Moodle expirada ou inativa: {info}[/bold yellow]")
+                auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
                 if not self._session_expired_alerted:
                     self._session_expired_alerted = True
-                    if self.notifier.token and self.notifier.channel_id:
-                        await self.notifier.send_session_expired_alert(browser_opened=True)
-                    asyncio.create_task(self._auto_relogin_flow())
+                    if auth_mode == "credentials":
+                        # No modo credenciais: auto-relogin em segundo plano
+                        asyncio.create_task(self._auto_relogin_flow())
+                    else:
+                        # No modo cookies: NÃO abre navegador sozinho; notifica o Discord com o botão interativo
+                        if self.notifier.token and self.notifier.channel_id:
+                            await self.notifier.send_session_expired_alert(browser_opened=False)
         except Exception as e:
             console.print(f"[yellow]Nota no heartbeat da sessão: {e}[/yellow]")
 

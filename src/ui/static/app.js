@@ -55,7 +55,52 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnTestNotion) btnTestNotion.addEventListener('click', testNotion);
 
   document.getElementById('btn-trigger-login').addEventListener('click', triggerLogin);
-  document.getElementById('btn-login-quick').addEventListener('click', triggerLogin);
+  document.getElementById('btn-login-quick').addEventListener('click', () => {
+    const mode = document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies';
+    if (mode === 'credentials') {
+      testCredentialsLogin();
+    } else {
+      triggerLogin();
+    }
+  });
+
+  // Alternância dinâmica de Modo de Autenticação (Cookies vs Credenciais)
+  document.querySelectorAll('input[name="AUTH_MODE"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      updateAuthModeUI(e.target.value);
+    });
+  });
+  document.getElementById('card-mode-cookies')?.addEventListener('click', () => {
+    const r = document.getElementById('mode-cookies');
+    if (r) { r.checked = true; updateAuthModeUI('cookies'); }
+  });
+  document.getElementById('card-mode-credentials')?.addEventListener('click', () => {
+    const r = document.getElementById('mode-credentials');
+    if (r) { r.checked = true; updateAuthModeUI('credentials'); }
+  });
+
+  // Toggle de visualização da senha institucional
+  const btnTogglePwd = document.getElementById('btn-toggle-password');
+  if (btnTogglePwd) {
+    btnTogglePwd.addEventListener('click', () => {
+      const pwdInput = document.getElementById('MOODLE_PASSWORD');
+      if (pwdInput) {
+        if (pwdInput.type === 'password') {
+          pwdInput.type = 'text';
+          btnTogglePwd.textContent = '🔒';
+        } else {
+          pwdInput.type = 'password';
+          btnTogglePwd.textContent = '👁️';
+        }
+      }
+    });
+  }
+
+  // Disparo de teste de login automático por credenciais
+  const btnTriggerCredLogin = document.getElementById('btn-trigger-cred-login');
+  if (btnTriggerCredLogin) {
+    btnTriggerCredLogin.addEventListener('click', testCredentialsLogin);
+  }
 
   const autoStartCheckbox = document.getElementById('AUTO_START_WINDOWS');
   if (autoStartCheckbox) {
@@ -113,6 +158,13 @@ async function loadConfig() {
     const config = data.config || {};
 
     setInputValue('MOODLE_BASE_URL', config.MOODLE_BASE_URL || 'https://virtual.ufmg.br');
+    const authMode = config.AUTH_MODE || 'cookies';
+    const modeRadio = document.querySelector(`input[name="AUTH_MODE"][value="${authMode}"]`);
+    if (modeRadio) modeRadio.checked = true;
+    setInputValue('MOODLE_USERNAME', config.MOODLE_USERNAME || '');
+    setInputValue('MOODLE_PASSWORD', config.MOODLE_PASSWORD || '');
+    updateAuthModeUI(authMode);
+
     setCheckboxValue('HEADLESS_LOGIN', config.HEADLESS_LOGIN === 'true');
     setInputValue('LOGIN_TIMEOUT_SECONDS', config.LOGIN_TIMEOUT_SECONDS || '300');
 
@@ -179,18 +231,25 @@ async function loadStatus() {
     const boxTitle = document.getElementById('session-box-title');
     const boxDesc = document.getElementById('session-box-desc');
 
+    const isCreds = status.auth_mode === 'credentials';
     if (status.session_exists) {
       sessionBadge.textContent = 'Autenticado';
       sessionBadge.className = 'badge badge-success';
-      sessionInfo.innerHTML = `Sessão ativa<br><small class="text-muted">${status.session_date || 'Recente'}</small>`;
-      boxTitle.textContent = 'Sessão Ativa no MinhaUFMG';
-      boxDesc.textContent = `Cookies válidos salvos (${status.session_date}). As próximas varreduras rodarão em segundo plano sem pedir senha.`;
+      sessionInfo.innerHTML = `Sessão ativa (${isCreds ? 'Auto' : 'Cookies'})<br><small class="text-muted">${status.session_date || 'Recente'}</small>`;
+      boxTitle.textContent = isCreds ? 'Sessão Ativa (Modo Automático)' : 'Sessão Ativa no MinhaUFMG';
+      boxDesc.textContent = isCreds
+        ? `Cookies válidos salvos. Se a sessão expirar, o assistente renovará automaticamente com as credenciais cadastradas.`
+        : `Cookies válidos salvos (${status.session_date}). As próximas varreduras rodarão em segundo plano sem pedir senha.`;
     } else {
-      sessionBadge.textContent = 'Pendente';
-      sessionBadge.className = 'badge badge-warning';
-      sessionInfo.textContent = 'Nenhuma sessão encontrada. Clique abaixo para logar.';
-      boxTitle.textContent = 'Autenticação Pendente';
-      boxDesc.textContent = 'O assistente precisa que você faça login no MinhaUFMG uma vez para salvar a sessão.';
+      sessionBadge.textContent = isCreds ? (status.has_credentials ? 'Pronto' : 'Sem Credenciais') : 'Pendente';
+      sessionBadge.className = isCreds && status.has_credentials ? 'badge badge-info' : 'badge badge-warning';
+      sessionInfo.textContent = isCreds
+        ? (status.has_credentials ? 'Auto-login configurado.' : 'Informe usuário e senha.')
+        : 'Nenhuma sessão encontrada. Clique abaixo para logar.';
+      boxTitle.textContent = isCreds ? 'Login Automático Pendente' : 'Autenticação Pendente';
+      boxDesc.textContent = isCreds
+        ? 'O assistente fará login automaticamente usando suas credenciais salvas.'
+        : 'O assistente precisa que você faça login no MinhaUFMG uma vez para salvar a sessão.';
     }
   } catch (err) {
     console.error('Erro ao ler status:', err);
@@ -206,6 +265,9 @@ async function saveConfig() {
 
   const payload = {
     MOODLE_BASE_URL: getInputValue('MOODLE_BASE_URL'),
+    AUTH_MODE: document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies',
+    MOODLE_USERNAME: getInputValue('MOODLE_USERNAME'),
+    MOODLE_PASSWORD: getInputValue('MOODLE_PASSWORD'),
     HEADLESS_LOGIN: document.getElementById('HEADLESS_LOGIN').checked ? 'true' : 'false',
     LOGIN_TIMEOUT_SECONDS: getInputValue('LOGIN_TIMEOUT_SECONDS'),
 
@@ -452,6 +514,55 @@ async function triggerLogin() {
     }
   } catch (err) {
     setFeedback(feedback, `✖ Erro ao disparar login: ${err.message}`, 'error');
+  }
+}
+
+function updateAuthModeUI(mode) {
+  const credBox = document.getElementById('credentials-box');
+  const cookiesBox = document.getElementById('cookies-box');
+  const cardCookies = document.getElementById('card-mode-cookies');
+  const cardCreds = document.getElementById('card-mode-credentials');
+
+  if (mode === 'credentials') {
+    if (credBox) credBox.style.display = 'block';
+    if (cardCreds) cardCreds.classList.add('active');
+    if (cardCookies) cardCookies.classList.remove('active');
+  } else {
+    if (credBox) credBox.style.display = 'none';
+    if (cardCookies) cardCookies.classList.add('active');
+    if (cardCreds) cardCreds.classList.remove('active');
+  }
+}
+
+async function testCredentialsLogin() {
+  const feedback = document.getElementById('cred-login-feedback');
+  const username = getInputValue('MOODLE_USERNAME');
+  const password = getInputValue('MOODLE_PASSWORD');
+
+  if (!username || !password) {
+    setFeedback(feedback, '✖ Preencha usuário e senha antes de testar.', 'error');
+    return;
+  }
+
+  setFeedback(feedback, 'Conectando ao MinhaUFMG e realizando login em segundo plano (headless)...', 'loading');
+
+  try {
+    const res = await fetch('/api/login-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, save: true })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(feedback, `✔ ${data.message} A sessão foi salva e está pronta para uso!`, 'success');
+      showToast('Login automático concluído com sucesso!', 'success');
+      await loadStatus();
+    } else {
+      setFeedback(feedback, `✖ ${data.error}`, 'error');
+      showToast('Falha no login: ' + data.error, 'error');
+    }
+  } catch (err) {
+    setFeedback(feedback, `✖ Erro ao comunicar com o servidor: ${err.message}`, 'error');
   }
 }
 

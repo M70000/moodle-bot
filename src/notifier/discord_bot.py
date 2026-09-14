@@ -810,7 +810,7 @@ def extract_quiz_answers_payload(
 
 
 class SessionExpiredView(ui.View):
-    """View interativa com botão para abrir a janela de login do Moodle no computador."""
+    """View interativa com botão para abrir a janela de login do Moodle no computador ou tentar login automático."""
 
     def __init__(self, timeout: Optional[float] = None):
         super().__init__(timeout=timeout)
@@ -859,6 +859,36 @@ class SessionExpiredView(ui.View):
         except Exception as err:
             console.print(f"[red]Erro ao disparar login pelo botão do Discord: {err}[/red]")
             await interaction.followup.send(f"❌ Erro ao abrir janela de login: {err}", ephemeral=True)
+
+    @ui.button(label="Tentar Login Automático", style=discord.ButtonStyle.secondary, emoji="🔄", custom_id="btn_retry_auto_login")
+    async def retry_auto_login_button(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer(ephemeral=True)
+        try:
+            from config.settings import settings
+            from src.auth.moodle_auth import MoodleAuth
+
+            if not getattr(settings, "MOODLE_USERNAME", "") or not getattr(settings, "MOODLE_PASSWORD", ""):
+                await interaction.followup.send(
+                    "⚠️ Credenciais não configuradas no `.env`. Utilize o botão '🔑 Abrir Login no PC' ou configure seu usuário e senha no painel (`configurar.bat`).",
+                    ephemeral=True
+                )
+                return
+
+            await interaction.followup.send("⏳ Iniciando login automático com suas credenciais salvas em segundo plano...", ephemeral=True)
+            auth = MoodleAuth()
+            ok, user_or_err = await auth.login_with_credentials(headless=True)
+            if ok:
+                notifier = MoodleDiscordNotifier()
+                await notifier.send_session_renewed_notification(user_name=user_or_err)
+            else:
+                await interaction.followup.send(
+                    f"❌ Não foi possível autenticar automaticamente: {user_or_err}\n"
+                    "Por favor, use o botão '🔑 Abrir Login no PC' para fazer o login no navegador.",
+                    ephemeral=True
+                )
+        except Exception as err:
+            console.print(f"[red]Erro ao tentar login automático pelo botão: {err}[/red]")
+            await interaction.followup.send(f"❌ Erro: {err}", ephemeral=True)
 
 
 class ReviewActionView(ui.View):
@@ -1927,11 +1957,17 @@ async def build_status_embed() -> discord.Embed:
     )
 
     hb_min = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
+    auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
+    mode_label = "🔐 Credenciais (Automático)" if auth_mode == "credentials" else "🍪 Cookies (Manual)"
+    cred_user = getattr(settings, "MOODLE_USERNAME", "")
+    cred_info = f" | Conta: `{cred_user}`" if cred_user and auth_mode == "credentials" else ""
+
     embed.add_field(
         name="🔐 Sessão Moodle / MinhaUFMG",
         value=(
             f"{'🟢 **Ativa & Headless**' if is_valid else '🔴 **Inativa/Expirada**'}\n"
-            f"Usuário: `{user or 'N/A'}`\n"
+            f"Modo: **{mode_label}**{cred_info}\n"
+            f"Usuário na Sessão: `{user or 'N/A'}`\n"
             f"💓 Keep-Alive Heartbeat: a cada **{hb_min} min**"
         ),
         inline=False
@@ -3356,6 +3392,81 @@ async def cmd_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@bot.tree.command(name="login", description="Realiza login ou renova a sessão do Moodle / MinhaUFMG")
+@app_commands.describe(
+    metodo="Método de login: 'credentials' (automático) ou 'cookies' (abrir navegador no PC)"
+)
+@app_commands.choices(metodo=[
+    app_commands.Choice(name="🔐 Automático (Credenciais salvas)", value="credentials"),
+    app_commands.Choice(name="🍪 Manual (Abrir Navegador no PC)", value="cookies"),
+])
+async def cmd_login(interaction: discord.Interaction, metodo: Optional[str] = None):
+    await interaction.response.defer(ephemeral=True)
+    try:
+        from config.settings import settings
+        from src.auth.moodle_auth import MoodleAuth
+
+        chosen_mode = metodo or getattr(settings, "AUTH_MODE", "cookies").lower()
+        auth = MoodleAuth()
+
+        if chosen_mode == "credentials":
+            if not getattr(settings, "MOODLE_USERNAME", "") or not getattr(settings, "MOODLE_PASSWORD", ""):
+                await interaction.followup.send(
+                    "⚠️ Credenciais institucionais não configuradas no `.env`. Configure seu usuário e senha no `configurar.bat` ou utilize a opção de login manual.",
+                    ephemeral=True
+                )
+                return
+
+            await interaction.followup.send("⏳ Iniciando login automático com suas credenciais salvas em segundo plano...", ephemeral=True)
+            ok, user_or_err = await auth.login_with_credentials(headless=True)
+            if ok:
+                notifier = MoodleDiscordNotifier()
+                await notifier.send_session_renewed_notification(user_name=user_or_err)
+            else:
+                await interaction.followup.send(
+                    f"❌ Falha no login automático por credenciais: {user_or_err}\n"
+                    "Você pode tentar abrir a janela manual com `/login metodo:Manual`.",
+                    ephemeral=True
+                )
+        else:
+            # Modo manual (cookies)
+            render_url = (settings.RENDER_URL or "").rstrip("/")
+            cookies_exist = Path(settings.STORAGE_COOKIES_PATH).exists()
+            if not cookies_exist and render_url:
+                from src.notifier.bridge_manager import cloud_bridge
+                task_id = await cloud_bridge.dispatch_action(
+                    action="relogin",
+                    channel_id=str(interaction.channel_id),
+                    message_id="",
+                    requester=interaction.user.name,
+                    title="Renovação de Sessão Moodle",
+                    course="Autenticação"
+                )
+                await interaction.followup.send(
+                    f"🚀 **Solicitação enviada para o seu computador!** (ID: `{task_id}`)\n"
+                    "A janela do navegador para login no MinhaUFMG está sendo aberta no desktop.",
+                    ephemeral=True
+                )
+            else:
+                async def _bg_login():
+                    success = await auth.interactive_login(headless=False)
+                    if success:
+                        notifier = MoodleDiscordNotifier()
+                        valid, user = await auth.validate_session()
+                        await notifier.send_session_renewed_notification(user_name=user)
+
+                asyncio.create_task(_bg_login())
+                await interaction.followup.send(
+                    "🖥️ **Janela de login aberta no seu computador!**\n"
+                    "Basta preencher seu usuário e senha do MinhaUFMG na tela do navegador que acabou de abrir. "
+                    "Assim que entrar, o assistente salvará a nova sessão e confirmará aqui.",
+                    ephemeral=True
+                )
+    except Exception as err:
+        console.print(f"[red]Erro ao executar comando /login: {err}[/red]")
+        await interaction.followup.send(f"❌ Erro ao disparar login: {err}", ephemeral=True)
+
+
 @bot.tree.command(name="adicionarconteudo", description="Salva arquivos e resumos na base de conhecimento da matéria")
 @app_commands.describe(
     disciplina="Disciplina que receberá o material",
@@ -4338,6 +4449,53 @@ async def prefix_status(ctx: commands.Context):
     await ctx.send(embed=embed)
 
 
+@bot.command(name="login")
+async def prefix_login(ctx: commands.Context, metodo: Optional[str] = None):
+    """Comando alternativo com prefixo: !login [cookies/credentials]."""
+    from config.settings import settings
+    from src.auth.moodle_auth import MoodleAuth
+
+    chosen_mode = (metodo or getattr(settings, "AUTH_MODE", "cookies")).lower()
+    auth = MoodleAuth()
+
+    if chosen_mode in ("credentials", "credenciais", "auto"):
+        if not getattr(settings, "MOODLE_USERNAME", "") or not getattr(settings, "MOODLE_PASSWORD", ""):
+            await ctx.send("⚠️ Credenciais não configuradas no `.env`. Use `!login cookies` ou configure no `configurar.bat`.")
+            return
+
+        await ctx.send("⏳ Iniciando login automático com suas credenciais salvas em segundo plano...")
+        ok, user_or_err = await auth.login_with_credentials(headless=True)
+        if ok:
+            notifier = MoodleDiscordNotifier()
+            await notifier.send_session_renewed_notification(user_name=user_or_err)
+        else:
+            await ctx.send(f"❌ Falha no login automático por credenciais: {user_or_err}\nTente com `!login cookies`.")
+    else:
+        render_url = (settings.RENDER_URL or "").rstrip("/")
+        cookies_exist = Path(settings.STORAGE_COOKIES_PATH).exists()
+        if not cookies_exist and render_url:
+            from src.notifier.bridge_manager import cloud_bridge
+            task_id = await cloud_bridge.dispatch_action(
+                action="relogin",
+                channel_id=str(ctx.channel.id),
+                message_id=str(ctx.message.id) if ctx.message else "",
+                requester=ctx.author.name,
+                title="Renovação de Sessão Moodle",
+                course="Autenticação"
+            )
+            await ctx.send(f"🚀 **Solicitação enviada para o seu computador!** (ID: `{task_id}`)\nA janela do navegador está sendo aberta no desktop.")
+        else:
+            async def _bg_login():
+                success = await auth.interactive_login(headless=False)
+                if success:
+                    notifier = MoodleDiscordNotifier()
+                    valid, user = await auth.validate_session()
+                    await notifier.send_session_renewed_notification(user_name=user)
+
+            asyncio.create_task(_bg_login())
+            await ctx.send("🖥️ **Janela de login aberta no seu computador!** Preencha suas credenciais no MinhaUFMG.")
+
+
 @bot.command(name="materiais")
 async def prefix_materiais(ctx: commands.Context, *, disciplina: str):
     """Comando alternativo com prefixo: !materiais <disciplina>."""
@@ -5271,8 +5429,12 @@ class MoodleDiscordNotifier:
             console.print(f"[red]Erro ao enviar alerta de contagem: {e}[/red]")
         return False
 
-    async def send_session_expired_alert(self, browser_opened: bool = True) -> bool:
-        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou e abrindo o login."""
+    async def send_session_expired_alert(
+        self,
+        browser_opened: bool = False,
+        custom_details: Optional[str] = None
+    ) -> bool:
+        """Envia alerta no canal de alertas informando que a sessão do Moodle expirou."""
         try:
             channel = await self._resolve_channel(self.channel_id)
             if not channel:
@@ -5281,17 +5443,22 @@ class MoodleDiscordNotifier:
             desc_lines = [
                 "A sua sessão de autenticação no **Moodle UFMG / MinhaUFMG** expirou no servidor.\n"
             ]
+            if custom_details:
+                desc_lines.append(f"ℹ️ **Detalhes:** {custom_details}\n")
+
             if browser_opened:
                 desc_lines.append(
-                    "🖥️ **A janela do navegador já foi aberta automaticamente no seu computador!**\n"
+                    "🖥️ **A janela do navegador já foi aberta no seu computador!**\n"
                     "Basta preencher seu **usuário e senha** na tela do MinhaUFMG. Assim que o Moodle carregar, a nova sessão será salva e o bot voltará a operar normalmente.\n"
                 )
-            desc_lines.append(
-                "👉 **Caso a janela tenha sido fechada ou precise reabri-la:**\n"
-                "• Clique no botão **'🔑 Abrir Login no PC'** abaixo;\n"
-                "• Ou execute no terminal: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
-                "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
-            )
+            else:
+                desc_lines.append(
+                    "👉 **Para renovar a sessão agora:**\n"
+                    "• Clique no botão **'🔑 Abrir Login no PC'** abaixo para abrir o navegador;\n"
+                    "• Ou clique em **'🔄 Tentar Login Automático'** se você possui credenciais configuradas;\n"
+                    "• Ou execute no terminal: `.venv\\Scripts\\python.exe -m src.auth.moodle_auth`.\n\n"
+                    "*(O assistente continuará monitorando prazos, mas não conseguirá acessar questões internas nem enviar respostas até a renovação.)*"
+                )
 
             embed = discord.Embed(
                 title="⚠️ Sessão do Moodle Expirada",
@@ -5303,7 +5470,7 @@ class MoodleDiscordNotifier:
             content = (
                 "⚠️ **Atenção:** Sua sessão de login no Moodle expirou! A tela de login foi aberta no seu computador."
                 if browser_opened
-                else "⚠️ **Atenção:** Sua sessão de login no Moodle expirou!"
+                else "⚠️ **Atenção:** Sua sessão de login no Moodle expirou! Clique no botão abaixo para renovar."
             )
             await channel.send(
                 content=content,

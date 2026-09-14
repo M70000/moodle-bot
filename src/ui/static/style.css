@@ -901,3 +901,78 @@ select option {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--accent-amber);
 }
+
+/* Auth Mode Selector */
+.auth-mode-selector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 8px;
+}
+
+@media (max-width: 768px) {
+  .auth-mode-selector {
+    grid-template-columns: 1fr;
+  }
+}
+
+.auth-mode-card {
+  position: relative;
+  display: flex;
+  background: var(--bg-well);
+  border: 2px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 14px 16px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.auth-mode-card:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-strong);
+}
+
+.auth-mode-card input[type="radio"] {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.auth-mode-card.active,
+.auth-mode-card:has(input[type="radio"]:checked) {
+  background: rgba(217, 119, 6, 0.08);
+  border-color: var(--accent-amber);
+  box-shadow: 0 0 12px rgba(245, 158, 11, 0.15);
+}
+
+.auth-mode-content {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.auth-mode-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+}
+
+.auth-mode-info h4 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  margin-bottom: 4px;
+}
+
+.auth-mode-info p {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+.credentials-box {
+  background: var(--bg-well);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  padding: 16px;
+  margin-top: 14px;
+}

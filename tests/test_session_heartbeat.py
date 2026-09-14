@@ -120,7 +120,7 @@ class TestSessionHeartbeat(unittest.IsolatedAsyncioTestCase):
                 session_file.unlink()
 
     async def test_daemon_heartbeat_alert_debounced(self):
-        """O daemon deve disparar alerta de expiração no Discord com debounce e auto-relogin."""
+        """O daemon deve disparar alerta no Discord com debounce e auto-relogin conforme o modo de autenticação."""
         daemon = MoodleDaemon()
         daemon.auth.heartbeat_session = AsyncMock(return_value=(False, "Sessão expirada"))
         daemon.notifier.send_session_expired_alert = AsyncMock(return_value=True)
@@ -128,25 +128,36 @@ class TestSessionHeartbeat(unittest.IsolatedAsyncioTestCase):
         daemon.notifier.token = "fake_token"
         daemon.notifier.channel_id = 123456
 
-        # Primeiro ciclo do heartbeat com falha -> deve disparar alerta e auto-relogin
-        await daemon.session_heartbeat_job()
-        self.assertTrue(daemon._session_expired_alerted)
-        self.assertEqual(daemon.notifier.send_session_expired_alert.call_count, 1)
-        self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
+        # Modo 1: 'credentials' -> dispara auto-relogin em background
+        with patch.object(settings, "AUTH_MODE", "credentials"):
+            await daemon.session_heartbeat_job()
+            self.assertTrue(daemon._session_expired_alerted)
+            self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
 
-        # Segundo ciclo consecutivo com falha -> NÃO deve disparar novamente (debounce)
-        await daemon.session_heartbeat_job()
-        self.assertTrue(daemon._session_expired_alerted)
-        self.assertEqual(daemon.notifier.send_session_expired_alert.call_count, 1)
-        self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
+            # Segundo ciclo consecutivo com falha -> NÃO deve disparar novamente (debounce)
+            await daemon.session_heartbeat_job()
+            self.assertEqual(daemon._auto_relogin_flow.call_count, 1)
 
-        # Sessão restabelecida -> reseta flag
+        # Reseta flag com sessão ativa
         daemon.auth.heartbeat_session = AsyncMock(return_value=(True, "Sessão renovada"))
         await daemon.session_heartbeat_job()
         self.assertFalse(daemon._session_expired_alerted)
 
+        # Modo 2: 'cookies' -> NÃO deve disparar auto-relogin nem abrir navegador; apenas envia alerta
+        daemon.auth.heartbeat_session = AsyncMock(return_value=(False, "Sessão expirada"))
+        daemon._auto_relogin_flow.reset_mock()
+        daemon.notifier.send_session_expired_alert.reset_mock()
+
+        with patch.object(settings, "AUTH_MODE", "cookies"):
+            await daemon.session_heartbeat_job()
+            self.assertTrue(daemon._session_expired_alerted)
+            # No modo cookies, _auto_relogin_flow NÃO deve ser chamado automaticamente!
+            self.assertEqual(daemon._auto_relogin_flow.call_count, 0)
+            self.assertEqual(daemon.notifier.send_session_expired_alert.call_count, 1)
+            daemon.notifier.send_session_expired_alert.assert_called_with(browser_opened=False)
+
     async def test_auto_relogin_flow_success(self):
-        """Testa o fluxo automático de abertura do navegador e notificação de renovação."""
+        """Testa o fluxo de renovação interativa no modo cookies e automática no modo credenciais."""
         daemon = MoodleDaemon()
         daemon.auth.interactive_login = AsyncMock(return_value=True)
         daemon.auth.validate_session = AsyncMock(return_value=(True, "Aluno UFMG"))
@@ -155,12 +166,12 @@ class TestSessionHeartbeat(unittest.IsolatedAsyncioTestCase):
         daemon.notifier.channel_id = 123456
         daemon._session_expired_alerted = True
 
-        await daemon._auto_relogin_flow()
-
-        daemon.auth.interactive_login.assert_called_once_with(headless=False)
-        self.assertFalse(daemon._session_expired_alerted)
-        self.assertFalse(daemon._is_reauthenticating)
-        daemon.notifier.send_session_renewed_notification.assert_called_once_with(user_name="Aluno UFMG")
+        with patch.object(settings, "AUTH_MODE", "cookies"):
+            await daemon._auto_relogin_flow(force_interactive=True)
+            daemon.auth.interactive_login.assert_called_once_with(headless=False)
+            self.assertFalse(daemon._session_expired_alerted)
+            self.assertFalse(daemon._is_reauthenticating)
+            daemon.notifier.send_session_renewed_notification.assert_called_once_with(user_name="Aluno UFMG")
 
     async def test_send_session_expired_alert_discord(self):
         """Testa montagem e envio da notificação de sessão expirada no Discord com botão interativo."""

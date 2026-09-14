@@ -28,6 +28,18 @@ class Settings(BaseSettings):
         default="https://virtual.ufmg.br",
         description="URL base do Moodle/UFMG Virtual (ex: https://virtual.ufmg.br)"
     )
+    AUTH_MODE: str = Field(
+        default="cookies",
+        description="Modo de autenticação: 'cookies' (manual via navegador) ou 'credentials' (automático via usuário e senha)"
+    )
+    MOODLE_USERNAME: str = Field(
+        default="",
+        description="Usuário institucional MinhaUFMG para autenticação automática"
+    )
+    MOODLE_PASSWORD: str = Field(
+        default="",
+        description="Senha institucional MinhaUFMG para autenticação automática"
+    )
 
     # Discord Bot
     DISCORD_BOT_TOKEN: str = Field(
@@ -227,6 +239,15 @@ class Settings(BaseSettings):
     def normalize_moodle_url(cls, v: str) -> str:
         """Remove barra final se presente para padronização de URLs."""
         return v.rstrip("/")
+
+    @field_validator("AUTH_MODE", mode="before")
+    @classmethod
+    def normalize_auth_mode(cls, v: str) -> str:
+        """Normaliza o modo de autenticação para 'cookies' ou 'credentials'."""
+        mode = str(v or "cookies").strip().lower()
+        if mode in ("credentials", "credential", "credenciais", "login", "password"):
+            return "credentials"
+        return "cookies"
 
     @field_validator("STORAGE_COOKIES_PATH", "STORAGE_MATERIALS_DIR", "STORAGE_SUBMISSIONS_DIR", mode="before")
     @classmethod
