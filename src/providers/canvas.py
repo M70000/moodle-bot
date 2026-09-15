@@ -460,6 +460,12 @@ class CanvasAdapter(BaseLMSProvider):
                                 parts.append(f"{d_mins} minuto{'s' if d_mins > 1 else ''}")
                             time_rem = " restante(s): " + " e ".join(parts)
 
+                    # Filtra tarefas que não possuem submissão online (em branco / apenas leitura / papel)
+                    sub_types = item.get("submission_types") or []
+                    non_submittable = {"none", "on_paper", "not_graded"}
+                    if sub_types and set(sub_types).issubset(non_submittable):
+                        continue
+
                     assign_url = item.get("html_url") or f"{self.base_url}/courses/{course.id}/assignments/{item.get('id')}"
 
                     all_assignments.append(
@@ -478,7 +484,8 @@ class CanvasAdapter(BaseLMSProvider):
                             submission_status=sub_status,
                             grade_value=grade_val,
                             time_remaining=time_rem,
-                            due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if (due_dt and due_dt.year >= 1900) else (due_dt.isoformat()[:16] if due_dt else None)
+                            due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if (due_dt and due_dt.year >= 1900) else (due_dt.isoformat()[:16] if due_dt else None),
+                            submission_types=sub_types
                         )
                     )
             except Exception as e:
@@ -614,6 +621,7 @@ class CanvasAdapter(BaseLMSProvider):
             if not desc_clean:
                 desc_clean = desc
 
+            sub_types = item.get("submission_types") or []
             return LMSAssignment(
                 id=str(item.get("id")),
                 course_id=clean_course_id,
@@ -628,7 +636,8 @@ class CanvasAdapter(BaseLMSProvider):
                 points_possible=item.get("points_possible"),
                 submission_status=sub_status,
                 grade_value=grade_val,
-                due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if due_dt else None
+                due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if due_dt else None,
+                submission_types=sub_types
             )
         except Exception as e:
             console.print(f"[yellow]⚠️ Erro ao consultar atividade {clean_assign_id} no Canvas: {e}[/yellow]")
@@ -852,8 +861,8 @@ class CanvasSubmitter:
         if not clean_course_id:
             clean_course_id = str(course_id)
 
-        if not self.adapter.api_token:
-            return False, "Token de acesso do Canvas LMS não configurado no .env (CANVAS_API_TOKEN)."
+        if not self.adapter.is_configured:
+            return False, "Canvas LMS não configurado no .env (token ou cookies ausentes)."
 
         client = self.adapter._get_client()
 
@@ -939,4 +948,88 @@ class CanvasSubmitter:
             return False, str(rl_err)
         except Exception as exc:
             return False, f"Erro na submissão ao Canvas: {exc}"
+
+    async def submit_url(
+        self,
+        course_id: str,
+        assignment_id: str,
+        url: str,
+        comment: Optional[str] = None,
+        on_log: Optional[Any] = None
+    ) -> Tuple[bool, str]:
+        """Submete uma URL (web_url / snapshot URL) para uma atividade no Canvas LMS via API REST."""
+        clean_course_id, clean_assign_id = extract_canvas_ids(assignment_id, course_id)
+        if not clean_assign_id:
+            clean_assign_id = str(assignment_id)
+        if not clean_course_id:
+            clean_course_id = str(course_id)
+
+        if not self.adapter.is_configured:
+            return False, "Canvas LMS não configurado no .env (token ou cookies ausentes)."
+
+        clean_url = str(url or "").strip()
+        if not clean_url or not clean_url.startswith(("http://", "https://")):
+            return False, f"URL de submissão inválida: '{clean_url}'. Deve iniciar com http:// ou https://"
+
+        if on_log:
+            await _emit_log(on_log, f"📡 Submetendo URL no Canvas: {clean_url}...")
+
+        endpoint = f"/api/v1/courses/{clean_course_id}/assignments/{clean_assign_id}/submissions"
+        params: Dict[str, Any] = {
+            "submission[submission_type]": "online_url",
+            "submission[url]": clean_url,
+        }
+        if comment:
+            params["comment[text_comment]"] = comment
+
+        try:
+            resp = await self.adapter._request("POST", endpoint, params=params)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                sub_id = data.get("id", "N/A")
+                sub_date = data.get("submitted_at", datetime.now().isoformat())
+                return True, f"URL submetida com sucesso no Canvas! Protocolo ID: #{sub_id} em {sub_date}."
+            return False, f"Falha na submissão de URL (HTTP {resp.status_code}): {resp.text}"
+        except Exception as e:
+            return False, f"Erro ao submeter URL no Canvas: {e}"
+
+    async def submit_text(
+        self,
+        course_id: str,
+        assignment_id: str,
+        body: str,
+        comment: Optional[str] = None,
+        on_log: Optional[Any] = None
+    ) -> Tuple[bool, str]:
+        """Submete texto online para uma atividade no Canvas LMS via API REST."""
+        clean_course_id, clean_assign_id = extract_canvas_ids(assignment_id, course_id)
+        if not clean_assign_id:
+            clean_assign_id = str(assignment_id)
+        if not clean_course_id:
+            clean_course_id = str(course_id)
+
+        if not self.adapter.is_configured:
+            return False, "Canvas LMS não configurado no .env (token ou cookies ausentes)."
+
+        if on_log:
+            await _emit_log(on_log, "📡 Submetendo texto online no Canvas...")
+
+        endpoint = f"/api/v1/courses/{clean_course_id}/assignments/{clean_assign_id}/submissions"
+        params: Dict[str, Any] = {
+            "submission[submission_type]": "online_text_entry",
+            "submission[body]": body,
+        }
+        if comment:
+            params["comment[text_comment]"] = comment
+
+        try:
+            resp = await self.adapter._request("POST", endpoint, params=params)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                sub_id = data.get("id", "N/A")
+                sub_date = data.get("submitted_at", datetime.now().isoformat())
+                return True, f"Texto submetido com sucesso no Canvas! Protocolo ID: #{sub_id} em {sub_date}."
+            return False, f"Falha na submissão de texto (HTTP {resp.status_code}): {resp.text}"
+        except Exception as e:
+            return False, f"Erro ao submeter texto no Canvas: {e}"
 

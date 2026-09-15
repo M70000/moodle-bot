@@ -250,36 +250,58 @@ def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[st
 
 
 def get_available_courses() -> List[str]:
-    """Retorna os nomes das disciplinas que possuem pasta em storage/materials/
-    OU que aparecem nas atividades catalogadas no state.json ou Canvas LMS."""
+    """Retorna os nomes das disciplinas ativas respeitando estritamente o LMS_PROVIDER configurado."""
     courses_set: set = set()
+    provider = getattr(settings, "LMS_PROVIDER", "moodle").strip().lower()
 
-    # 1. Disciplinas com pasta de material
-    mat_dir = settings.STORAGE_MATERIALS_DIR
-    if mat_dir.exists():
-        for p in mat_dir.iterdir():
-            if p.is_dir() and not p.name.startswith("."):
-                courses_set.add(p.name)
-
-    # 2. Disciplinas das atividades no state.json
+    state = None
     try:
         state = DaemonState()
-        for item in state.data.get("assignments", {}).values():
-            course = item.get("course", "").strip()
-            if course:
-                courses_set.add(course)
     except Exception:
         pass
 
-    # 3. Disciplinas do Canvas LMS
-    try:
-        state = DaemonState()
+    # 1. Se Canvas ou Multi: inclui cursos do Canvas
+    if provider in ("canvas", "multi") and state:
         canvas_courses = state.data.get("canvas_courses", [])
         for cc in canvas_courses:
             if isinstance(cc, dict) and cc.get("name"):
-                courses_set.add(cc["name"])
-    except Exception:
-        pass
+                courses_set.add(cc["name"].strip())
+            elif isinstance(cc, str) and cc.strip():
+                courses_set.add(cc.strip())
+
+    # 2. Se Moodle ou Multi: inclui pastas em storage/materials/ e cursos Moodle registrados
+    if provider in ("moodle", "multi"):
+        mat_dir = settings.STORAGE_MATERIALS_DIR
+        if mat_dir.exists():
+            for p in mat_dir.iterdir():
+                if p.is_dir() and not p.name.startswith("."):
+                    courses_set.add(p.name)
+        if state:
+            moodle_courses = state.data.get("courses", [])
+            for mc in moodle_courses:
+                if isinstance(mc, str) and mc.strip():
+                    courses_set.add(mc.strip())
+
+    # 3. Disciplinas das tarefas catalogadas no state.json (filtradas estritamente pelo provedor)
+    if state:
+        for item_id, item in state.data.get("assignments", {}).items():
+            if not isinstance(item, dict):
+                continue
+            item_plat = item.get("platform", "").lower()
+            item_url = item.get("url", "").lower()
+            is_canvas_item = (
+                item_plat == "canvas"
+                or str(item_id).startswith(("canvas_", "c_"))
+                or "instructure.com" in item_url
+            )
+            if provider == "canvas" and not is_canvas_item:
+                continue
+            if provider == "moodle" and is_canvas_item:
+                continue
+
+            course = (item.get("course") or item.get("course_name") or "").strip()
+            if course:
+                courses_set.add(course)
 
     return sorted(courses_set)
 
@@ -397,17 +419,27 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
 
     if is_my_user:
         assignments: Dict[str, Any] = {}
+        prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
         try:
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
             if local_assignments:
-                assignments.update(local_assignments)
+                for k, v in local_assignments.items():
+                    if not isinstance(v, dict):
+                        continue
+                    plat = v.get("platform", "").lower()
+                    url = v.get("url", "").lower()
+                    is_canvas = plat == "canvas" or str(k).startswith(("canvas_", "c_")) or "instructure.com" in url
+                    if prov == "canvas" and not is_canvas:
+                        continue
+                    if prov == "moodle" and is_canvas:
+                        continue
+                    assignments[k] = v
         except Exception:
             pass
 
         # Se for usuário do Canvas nesta máquina e local ainda estiver vazio, consulta direto
         try:
-            prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
             if prov in ("canvas", "multi"):
                 from src.providers.canvas import CanvasAdapter
                 canvas = CanvasAdapter()
@@ -457,11 +489,22 @@ def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
 
     if is_my_user:
         assignments: Dict[str, Any] = {}
+        prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
         try:
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
             if local_assignments:
-                assignments.update(local_assignments)
+                for k, v in local_assignments.items():
+                    if not isinstance(v, dict):
+                        continue
+                    plat = v.get("platform", "").lower()
+                    url = v.get("url", "").lower()
+                    is_canvas = plat == "canvas" or str(k).startswith(("canvas_", "c_")) or "instructure.com" in url
+                    if prov == "canvas" and not is_canvas:
+                        continue
+                    if prov == "moodle" and is_canvas:
+                        continue
+                    assignments[k] = v
         except Exception:
             pass
         return assignments
@@ -1041,9 +1084,17 @@ class ReviewActionView(ui.View):
         self._draft = draft  # SolutionDraft associado (para revisão)
         self.platform = (platform or "moodle").lower()
         if self.platform != "canvas":
-            if self.assignment_url and "instructure.com" in self.assignment_url:
+            url_lower = (self.assignment_url or "").lower()
+            canvas_base = (getattr(settings, "CANVAS_BASE_URL", "") or "").lower()
+            prov = (getattr(settings, "LMS_PROVIDER", "") or "").lower()
+            is_moodle_url = "moodle" in url_lower or "ufmg.br" in url_lower or "/mod/" in url_lower
+            if "instructure.com" in url_lower or "canvas" in url_lower:
+                self.platform = "canvas"
+            elif canvas_base and canvas_base.split("//")[-1].split("/")[0] in url_lower:
                 self.platform = "canvas"
             elif self.assignment_id and str(self.assignment_id).startswith(("canvas_", "c_")):
+                self.platform = "canvas"
+            elif prov == "canvas" and not is_moodle_url:
                 self.platform = "canvas"
 
         self._build_buttons(draft_saved=draft_saved, is_finalized=is_finalized)
@@ -1505,31 +1556,43 @@ class ReviewActionView(ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
-        if not self.file_to_submit:
-            await interaction.followup.send("⚠️ Nenhum arquivo foi anexado a este pedido.", ephemeral=True)
-            return
-
         state = DaemonState()
         item_data = state.data.get("assignments", {}).get(self.assignment_id, {})
         title_raw = item_data.get("title") or (embed.title if embed else f"Tarefa {self.assignment_id}")
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
 
+        has_canvas_alt = (
+            self.platform == "canvas"
+            and (
+                "online_url" in item_data.get("submission_types", [])
+                or "online_text_entry" in item_data.get("submission_types", [])
+            )
+        )
+        if not self.file_to_submit and not has_canvas_alt:
+            await interaction.followup.send("⚠️ Nenhum arquivo ou resposta textual foi anexada a este pedido.", ephemeral=True)
+            return
+
         # ROTEAMENTO CANVAS LMS (REST API)
         if self.platform == "canvas":
             async def _do_canvas_approve():
                 from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                sub_types = item_data.get("submission_types", []) or []
+                draft_text = getattr(self._draft, "prepared_response", "") or ""
+                found_urls = re.findall(r"https?://[^\s\)\"\'<>]+", draft_text)
+
+                file_desc = f"`{self.file_to_submit.name}`" if self.file_to_submit else "Resolução Digital"
                 console.print(
                     f"[bold cyan]Submissão Canvas executada para {self.assignment_id}![/bold cyan] "
-                    f"Disparando envio de {self.file_to_submit.name}..."
+                    f"Disparando envio ({file_desc})..."
                 )
                 status_msg = await interaction.followup.send(
-                    content=f"🎓 **Enviando resolução para o Canvas da sua faculdade...** `{self.file_to_submit.name}`...",
+                    content=f"🎓 **Enviando resolução para o Canvas da sua faculdade...** ({file_desc})...",
                     ephemeral=False
                 )
                 reporter = DiscordLiveReporter(
                     status_msg,
-                    f"🎓 **Enviando resolução para o Canvas da sua faculdade...** `{self.file_to_submit.name}`..."
+                    f"🎓 **Enviando resolução para o Canvas da sua faculdade...** ({file_desc})..."
                 )
 
                 course_id, assignment_id = extract_canvas_ids(self.assignment_url or self.assignment_id)
@@ -1539,12 +1602,44 @@ class ReviewActionView(ui.View):
                 submitter = CanvasSubmitter()
                 current_time = datetime.now().strftime("%H:%M:%S")
 
-                success, message = await submitter.submit_assignment(
-                    course_id=str(course_id),
-                    assignment_id=str(assignment_id),
-                    file_path=self.file_to_submit,
-                    on_log=reporter.log
-                )
+                if "online_url" in sub_types and found_urls and ("online_upload" not in sub_types or not self.file_to_submit):
+                    target_url = found_urls[0]
+                    reporter.log(f"Submetendo link gerado no Canvas: {target_url}")
+                    success, message = await submitter.submit_url(
+                        course_id=str(course_id),
+                        assignment_id=str(assignment_id),
+                        url=target_url,
+                        comment="Submetido via LumiBot",
+                        on_log=reporter.log
+                    )
+                elif "online_text_entry" in sub_types and ("online_upload" not in sub_types or not self.file_to_submit):
+                    reporter.log("Submetendo entrada de texto no Canvas...")
+                    success, message = await submitter.submit_text(
+                        course_id=str(course_id),
+                        assignment_id=str(assignment_id),
+                        body_text=draft_text,
+                        comment="Submetido via LumiBot",
+                        on_log=reporter.log
+                    )
+                elif self.file_to_submit:
+                    success, message = await submitter.submit_assignment(
+                        course_id=str(course_id),
+                        assignment_id=str(assignment_id),
+                        file_path=self.file_to_submit,
+                        on_log=reporter.log
+                    )
+                elif found_urls and "online_url" in sub_types:
+                    target_url = found_urls[0]
+                    success, message = await submitter.submit_url(
+                        course_id=str(course_id),
+                        assignment_id=str(assignment_id),
+                        url=target_url,
+                        comment="Submetido via LumiBot",
+                        on_log=reporter.log
+                    )
+                else:
+                    success = False
+                    message = "Nenhum arquivo ou URL válido encontrado para submissão no Canvas."
 
                 if success:
                     st = DaemonState()
@@ -3134,7 +3229,7 @@ async def enqueue_solve_flow(
 @bot.tree.command(name="resolver", description="Resolve uma tarefa ou questionário pendente com IA")
 @app_commands.describe(
     tarefa="ID, link ou nome da tarefa pendente a ser resolvida",
-    modo="Modo de execução: apenas resolver, preencher rascunho no Moodle ou enviar tudo",
+    modo="Modo de execução: apenas resolver, salvar rascunho no portal ou enviar tudo",
     instrucoes="Instruções adicionais personalizadas (ex: use linguagem R ou deduza passo a passo)",
     arquivo="Arquivo de referência complementar anexado por você (enunciado, foto ou PDF)",
     material_1="Material 1 salvo da matéria para usar como apoio (opcional)",
@@ -3144,8 +3239,8 @@ async def enqueue_solve_flow(
 @app_commands.choices(
     modo=[
         app_commands.Choice(name="🧠 Apenas Resolver (Gera rascunho e envia para revisão)", value="resolver"),
-        app_commands.Choice(name="📝 Resolver e Preencher (Preenche no Moodle sem submeter)", value="preencher"),
-        app_commands.Choice(name="⚡ Resolver, Preencher e Enviar Tudo (End-to-End)", value="finalizar"),
+        app_commands.Choice(name="📝 Resolver e Preencher (Salva rascunho no LMS sem submeter)", value="preencher"),
+        app_commands.Choice(name="⚡ Resolver e Enviar Tudo Diretamente (End-to-End)", value="finalizar"),
     ]
 )
 @app_commands.autocomplete(
@@ -3802,8 +3897,8 @@ class BatchSelectView(ui.View):
 
         mode_labels = {
             "resolver": "🧠 Apenas Resolver (Gera rascunhos para conferência)",
-            "preencher": "📝 Resolver e Preencher (Preenche no Moodle sem submeter)",
-            "finalizar": "⚡ Resolver, Preencher e Enviar Tudo (End-to-End)"
+            "preencher": "📝 Resolver e Preencher (Salva rascunho no LMS sem submeter)",
+            "finalizar": "⚡ Resolver e Enviar Tudo Diretamente (End-to-End)"
         }
         mode_label = mode_labels.get(modo, modo)
 
@@ -6106,11 +6201,14 @@ class MoodleDiscordNotifier:
                     emoji="📓"
                 ))
             if moodle_url:
+                is_canvas_link = "canvas" in moodle_url.lower() or "instructure" in moodle_url.lower() or getattr(settings, "LMS_PROVIDER", "") == "canvas"
+                lms_btn_name = "Canvas" if is_canvas_link else "Moodle"
+                lms_btn_emoji = "🎓" if is_canvas_link else "🔗"
                 buttons.append(ui.Button(
-                    label="Abrir no Moodle",
+                    label=f"Abrir no {lms_btn_name}",
                     style=discord.ButtonStyle.link,
                     url=moodle_url,
-                    emoji="🔗"
+                    emoji=lms_btn_emoji
                 ))
 
             view = None

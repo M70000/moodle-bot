@@ -5,7 +5,7 @@ educacionais (Moodle, Canvas LMS, etc.).
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 import re
 from pydantic import BaseModel, Field
 
@@ -93,6 +93,10 @@ class LMSAssignment(BaseModel):
         default=None,
         description="Representação em string da data de entrega"
     )
+    submission_types: List[str] = Field(
+        default_factory=list,
+        description="Tipos de submissão permitidos ('online_url', 'online_upload', 'online_text_entry', etc.)"
+    )
 
     @property
     def course(self) -> str:
@@ -112,9 +116,17 @@ class LMSAssignment(BaseModel):
         return False
 
     @property
+    def has_online_submission(self) -> bool:
+        """Indica se a atividade aceita submissão online ou se é apenas leitura/em papel ('em branco')."""
+        if not self.submission_types:
+            return True
+        non_submittable = {"none", "on_paper", "not_graded"}
+        return not set(self.submission_types).issubset(non_submittable)
+
+    @property
     def is_actionable_pending(self) -> bool:
-        """Indica se a atividade está pendente e pode ser resolvida."""
-        return not self.is_submitted and not self.is_expired
+        """Indica se a atividade está pendente e pode ser resolvida online."""
+        return not self.is_submitted and not self.is_expired and self.has_online_submission
 
     def to_dict(self) -> Dict[str, Any]:
         """Serializa a atividade em formato compatível com o catálogo do state.json."""
@@ -138,6 +150,8 @@ class LMSAssignment(BaseModel):
             "time_remaining": self.time_remaining,
             "grade_value": self.grade_value,
             "grading_status": self.grading_status,
+            "submission_types": self.submission_types,
+            "can_submit": self.has_online_submission,
         }
 
 

@@ -110,7 +110,9 @@ class DaemonState:
                 submission_status=item.get("submission_status", "Não enviado"),
                 activity_type=item.get("activity_type", "assign"),
                 grade_value=item.get("grade_value"),
-                can_submit=bool(item.get("can_submit", True))
+                can_submit=bool(item.get("can_submit", True)),
+                platform=item.get("platform", "moodle"),
+                submission_types=item.get("submission_types", []) or []
             )
             all_items.append(assign)
         return all_items
@@ -138,6 +140,7 @@ class DaemonState:
             "has_grade": getattr(assignment, "has_grade", False),
             "is_submitted": assignment.is_submitted,
             "platform": platform or getattr(assignment, "platform", "moodle"),
+            "submission_types": getattr(assignment, "submission_types", []) or existing.get("submission_types", []),
             "course_id": getattr(assignment, "course_id", ""),
             "description": getattr(assignment, "description", ""),
             "draft_path": draft_path or existing.get("draft_path"),

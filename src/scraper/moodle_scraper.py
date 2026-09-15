@@ -168,6 +168,8 @@ class Assignment(BaseModel):
     submitted_files: List[str] = Field(default_factory=list)
     can_submit: bool = True
     attachments: List[CourseMaterial] = Field(default_factory=list)
+    platform: str = "moodle"
+    submission_types: List[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _auto_parse_due_date(self) -> "Assignment":

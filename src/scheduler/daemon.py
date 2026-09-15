@@ -64,10 +64,13 @@ class MoodleDaemon:
     @property
     def is_canvas_enabled(self) -> bool:
         """Indica se a plataforma Canvas LMS está ativa neste ciclo."""
-        return (
-            self.lms_provider in ("canvas", "multi")
-            and bool(getattr(settings, "CANVAS_API_TOKEN", "").strip())
-        )
+        if self.lms_provider not in ("canvas", "multi"):
+            return False
+        try:
+            from src.providers.canvas import CanvasAdapter
+            return CanvasAdapter().is_configured
+        except Exception:
+            return bool(getattr(settings, "CANVAS_API_TOKEN", "").strip())
 
 
     async def _auto_relogin_flow(self, force_interactive: bool = False):
@@ -226,12 +229,16 @@ class MoodleDaemon:
                 sync_announcements=True,
             )
 
-            # Registra cursos do Canvas no catálogo de estado
-            known_courses = self.state.data.get("courses", [])
+            # Registra cursos do Canvas separadamente no catálogo de estado
+            canvas_courses_data = []
             for c in c_courses:
-                if c.name not in known_courses:
-                    known_courses.append(c.name)
-            self.state.data["courses"] = known_courses
+                canvas_courses_data.append({
+                    "id": c.id,
+                    "name": c.name,
+                    "code": getattr(c, "code", ""),
+                    "enrollment_state": getattr(c, "enrollment_state", "")
+                })
+            self.state.data["canvas_courses"] = canvas_courses_data
             self.state.save()
 
             # Processa comunicados do Canvas
@@ -271,7 +278,9 @@ class MoodleDaemon:
                     time_remaining=assign.time_remaining or "",
                     submission_status=sub_st,
                     grade_value=assign.grade_value,
-                    activity_type=assign.activity_type
+                    activity_type=assign.activity_type,
+                    platform="canvas",
+                    submission_types=getattr(assign, "submission_types", []) or []
                 )
                 await self._process_assignment(m_assign, platform="canvas")
 
