@@ -1709,13 +1709,14 @@ class LumiBotClient(commands.Bot):
 
         for guild in self.guilds:
             try:
-                # Copia os comandos globais para o escopo do servidor (propagação INSTANTÂNEA)
-                # Isso garante que autocomplete funcione imediatamente sem esperar até 1h
-                self.tree.copy_global_to(guild=guild)
-                synced_guild = await self.tree.sync(guild=guild)
-                console.print(f"[green]✔ {len(synced_guild)} comandos sincronizados instantaneamente em '{guild.name}'![/green]")
+                # Remove comandos específicos de servidor para evitar duplicação com os comandos globais.
+                # Como os comandos já são registrados e sincronizados globalmente no setup_hook(),
+                # limpar o escopo da guilda elimina as duplicatas visuais no menu de Slash Commands do Discord.
+                self.tree.clear_commands(guild=guild)
+                await self.tree.sync(guild=guild)
+                console.print(f"[green]✔ Escopo do servidor '{guild.name}' desduplicado com sucesso![/green]")
             except Exception as e:
-                console.print(f"[yellow]Aviso ao sincronizar comandos no servidor {guild.name}: {e}[/yellow]")
+                console.print(f"[yellow]Aviso ao desduplicar comandos no servidor {guild.name}: {e}[/yellow]")
 
 
         # Inicializa o worker da Fila Centralizada e o Painel Dinâmico
@@ -5424,6 +5425,20 @@ async def prefix_ajuda(ctx: commands.Context):
     """Exibe o guia de comandos do LumiBot."""
     embed = build_ajuda_embed()
     await ctx.send(embed=embed)
+
+
+@bot.command(name="sync")
+async def prefix_sync(ctx: commands.Context):
+    """Sincroniza os comandos globais e limpa qualquer duplicata local no servidor."""
+    msg = await ctx.send("⏳ Sincronizando comandos globais e limpando duplicatas de servidor...")
+    try:
+        synced_global = await bot.tree.sync()
+        if ctx.guild:
+            bot.tree.clear_commands(guild=ctx.guild)
+            await bot.tree.sync(guild=ctx.guild)
+        await msg.edit(content=f"✔ **Sincronização concluída!** {len(synced_global)} Slash Commands registrados globalmente. Duplicatas locais removidas.")
+    except Exception as err:
+        await msg.edit(content=f"❌ Erro ao sincronizar: `{err}`")
 
 
 class MoodleDiscordNotifier:
