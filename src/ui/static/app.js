@@ -139,14 +139,9 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnTestNotion) btnTestNotion.addEventListener('click', testNotion);
 
   document.getElementById('btn-trigger-login').addEventListener('click', triggerLogin);
-  document.getElementById('btn-login-quick').addEventListener('click', () => {
-    const mode = document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies';
-    if (mode === 'credentials') {
-      testCredentialsLogin();
-    } else {
-      triggerLogin();
-    }
-  });
+  document.getElementById('btn-nav-lms')?.addEventListener('click', () => switchTab('tab-lms'));
+  document.getElementById('sidebar-moodle-item')?.addEventListener('click', () => switchTab('tab-moodle'));
+  document.getElementById('sidebar-canvas-item')?.addEventListener('click', () => switchTab('tab-canvas'));
 
   // Alternância dinâmica de Modo de Autenticação (Cookies vs Credenciais)
   document.querySelectorAll('input[name="AUTH_MODE"]').forEach(radio => {
@@ -234,6 +229,14 @@ function setupNavigation() {
   });
 }
 
+// Alterna ativamente para uma aba específica
+function switchTab(tabId) {
+  const navItem = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+  if (navItem) {
+    navItem.click();
+  }
+}
+
 // Carrega Configuração do Backend
 async function loadConfig() {
   try {
@@ -319,39 +322,132 @@ async function loadConfig() {
   }
 }
 
-// Carrega Status do Sistema e Sessão
+// Carrega Status do Sistema e Sessão (Moodle e Canvas LMS)
 async function loadStatus() {
   try {
     const res = await fetch('/api/status');
     const status = await res.json();
 
-    const sessionBadge = document.getElementById('session-badge');
-    const sessionInfo = document.getElementById('session-info');
-    const boxTitle = document.getElementById('session-box-title');
-    const boxDesc = document.getElementById('session-box-desc');
+    // -------------------------------------------------------------
+    // 1. Status do Moodle (Sidebar)
+    // -------------------------------------------------------------
+    const moodleBadge = document.getElementById('moodle-session-badge');
+    const moodleInfo = document.getElementById('moodle-session-info');
+    const moodleDot = document.getElementById('moodle-status-dot');
 
-    const isCreds = status.auth_mode === 'credentials';
+    const isMoodleCreds = status.auth_mode === 'credentials';
     if (status.session_exists) {
-      sessionBadge.textContent = 'Autenticado';
-      sessionBadge.className = 'badge badge-success';
-      sessionInfo.innerHTML = `Sessão ativa (${isCreds ? 'Auto' : 'Cookies'})<br><small class="text-muted">${status.session_date || 'Recente'}</small>`;
-      boxTitle.textContent = isCreds ? 'Sessão Ativa (Modo Automático)' : 'Sessão Ativa no MinhaUFMG';
-      boxDesc.textContent = isCreds
-        ? `Cookies válidos salvos. Se a sessão expirar, o assistente renovará automaticamente com as credenciais cadastradas.`
-        : `Cookies válidos salvos (${status.session_date}). As próximas varreduras rodarão em segundo plano sem pedir senha.`;
+      if (moodleBadge) {
+        moodleBadge.textContent = 'Ativo';
+        moodleBadge.className = 'badge badge-sm badge-success';
+      }
+      if (moodleDot) moodleDot.className = 'status-dot dot-active';
+      if (moodleInfo) {
+        moodleInfo.innerHTML = `Sessão ativa (${isMoodleCreds ? 'Auto' : 'Cookies'})<span class="subtext-date">${status.session_date || 'Recente'}</span>`;
+      }
+    } else if (isMoodleCreds && status.has_credentials) {
+      if (moodleBadge) {
+        moodleBadge.textContent = 'Pronto';
+        moodleBadge.className = 'badge badge-sm badge-info';
+      }
+      if (moodleDot) moodleDot.className = 'status-dot dot-pending';
+      if (moodleInfo) moodleInfo.textContent = 'Auto-login configurado';
     } else {
-      sessionBadge.textContent = isCreds ? (status.has_credentials ? 'Pronto' : 'Sem Credenciais') : 'Pendente';
-      sessionBadge.className = isCreds && status.has_credentials ? 'badge badge-info' : 'badge badge-warning';
-      sessionInfo.textContent = isCreds
-        ? (status.has_credentials ? 'Auto-login configurado.' : 'Informe usuário e senha.')
-        : 'Nenhuma sessão encontrada. Clique abaixo para logar.';
-      boxTitle.textContent = isCreds ? 'Login Automático Pendente' : 'Autenticação Pendente';
-      boxDesc.textContent = isCreds
-        ? 'O assistente fará login automaticamente usando suas credenciais salvas.'
-        : 'O assistente precisa que você faça login no MinhaUFMG uma vez para salvar a sessão.';
+      if (moodleBadge) {
+        moodleBadge.textContent = 'Pendente';
+        moodleBadge.className = 'badge badge-sm badge-warning';
+      }
+      if (moodleDot) moodleDot.className = 'status-dot dot-off';
+      if (moodleInfo) moodleInfo.textContent = isMoodleCreds ? 'Sem credenciais' : 'Requer login';
     }
 
-    // Status da Sessão do Canvas LMS
+    // Atualiza card interno da aba Moodle
+    const boxTitle = document.getElementById('session-box-title');
+    const boxDesc = document.getElementById('session-box-desc');
+    if (boxTitle && boxDesc) {
+      if (status.session_exists) {
+        boxTitle.textContent = isMoodleCreds ? 'Sessão Ativa (Modo Automático)' : 'Sessão Ativa no Moodle';
+        boxDesc.textContent = isMoodleCreds
+          ? `Cookies válidos salvos (${status.session_date || 'Recente'}). Renovação automática habilitada.`
+          : `Cookies válidos salvos (${status.session_date || 'Recente'}). Próximas varreduras autenticadas.`;
+      } else {
+        boxTitle.textContent = isMoodleCreds ? 'Login Automático Pendente' : 'Autenticação Pendente';
+        boxDesc.textContent = isMoodleCreds
+          ? 'O assistente fará login automaticamente usando suas credenciais salvas.'
+          : 'O assistente precisa que você faça login no Moodle para salvar a sessão.';
+      }
+    }
+
+    // -------------------------------------------------------------
+    // 2. Status do Canvas LMS (Sidebar)
+    // -------------------------------------------------------------
+    const canvasBadge = document.getElementById('canvas-session-badge');
+    const canvasInfo = document.getElementById('canvas-session-info');
+    const canvasDot = document.getElementById('canvas-status-dot');
+
+    const canvasMode = status.canvas_auth_mode || 'token';
+    if (canvasMode === 'token') {
+      if (status.canvas_has_token) {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Ativo';
+          canvasBadge.className = 'badge badge-sm badge-success';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-active';
+        if (canvasInfo) canvasInfo.textContent = 'Token REST v1 ativo';
+      } else {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Pendente';
+          canvasBadge.className = 'badge badge-sm badge-warning';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-off';
+        if (canvasInfo) canvasInfo.textContent = 'Sem token informado';
+      }
+    } else if (canvasMode === 'cookies') {
+      if (status.canvas_session_exists) {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Ativo';
+          canvasBadge.className = 'badge badge-sm badge-success';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-active';
+        if (canvasInfo) {
+          canvasInfo.innerHTML = `Sessão ativa (Cookies)<span class="subtext-date">${status.canvas_session_date || 'Recente'}</span>`;
+        }
+      } else {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Pendente';
+          canvasBadge.className = 'badge badge-sm badge-warning';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-off';
+        if (canvasInfo) canvasInfo.textContent = 'Requer login navegador';
+      }
+    } else if (canvasMode === 'credentials') {
+      if (status.canvas_session_exists) {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Ativo';
+          canvasBadge.className = 'badge badge-sm badge-success';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-active';
+        if (canvasInfo) {
+          canvasInfo.innerHTML = `Sessão ativa (Auto)<span class="subtext-date">${status.canvas_session_date || 'Recente'}</span>`;
+        }
+      } else if (status.canvas_has_credentials) {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Pronto';
+          canvasBadge.className = 'badge badge-sm badge-info';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-pending';
+        if (canvasInfo) canvasInfo.textContent = 'Auto-login configurado';
+      } else {
+        if (canvasBadge) {
+          canvasBadge.textContent = 'Pendente';
+          canvasBadge.className = 'badge badge-sm badge-warning';
+        }
+        if (canvasDot) canvasDot.className = 'status-dot dot-off';
+        if (canvasInfo) canvasInfo.textContent = 'Sem credenciais salvas';
+      }
+    }
+
+    // Atualiza card interno da aba Canvas LMS
     const canvasBoxTitle = document.getElementById('canvas-session-box-title');
     const canvasBoxDesc = document.getElementById('canvas-session-box-desc');
     if (canvasBoxTitle && canvasBoxDesc) {

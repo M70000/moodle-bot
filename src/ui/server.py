@@ -351,6 +351,7 @@ def get_system_status() -> Dict[str, Any]:
     canvas_has_token = bool(cfg.get("CANVAS_API_TOKEN", ""))
 
     return {
+        "lms_provider": cfg.get("LMS_PROVIDER", "multi").lower(),
         "session_exists": has_session,
         "session_date": session_date,
         "canvas_session_exists": canvas_has_session,

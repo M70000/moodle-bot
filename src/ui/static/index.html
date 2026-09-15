@@ -94,17 +94,42 @@
 
       <div class="sidebar-status">
         <div class="status-header">
-          <span class="status-title">Status da Sessão</span>
-          <span id="session-badge" class="badge badge-warning">Verificando</span>
+          <span class="status-title">Status das Sessões</span>
         </div>
-        <p id="session-info" class="status-subtext">Verificando autenticação...</p>
-        <button id="btn-login-quick" class="btn btn-sm btn-outline btn-full">
+
+        <div class="status-items-list">
+          <!-- Moodle Session Status -->
+          <div class="status-item" id="sidebar-moodle-item" title="Clique para gerenciar o Moodle">
+            <div class="status-item-header">
+              <span class="status-item-name">
+                <span class="status-dot" id="moodle-status-dot"></span>
+                Moodle
+              </span>
+              <span id="moodle-session-badge" class="badge badge-sm badge-secondary">Verificando</span>
+            </div>
+            <p id="moodle-session-info" class="status-item-subtext">Aguardando...</p>
+          </div>
+
+          <!-- Canvas LMS Session Status -->
+          <div class="status-item" id="sidebar-canvas-item" title="Clique para gerenciar o Canvas LMS">
+            <div class="status-item-header">
+              <span class="status-item-name">
+                <span class="status-dot" id="canvas-status-dot"></span>
+                Canvas LMS
+              </span>
+              <span id="canvas-session-badge" class="badge badge-sm badge-secondary">Verificando</span>
+            </div>
+            <p id="canvas-session-info" class="status-item-subtext">Aguardando...</p>
+          </div>
+        </div>
+
+        <button id="btn-nav-lms" class="btn btn-sm btn-outline btn-full" title="Configurar Plataformas LMS">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
-            <polyline points="10 17 15 12 10 7"></polyline>
-            <line x1="15" y1="12" x2="3" y2="12"></line>
+            <polygon points="12 2 2 7 12 12 22 7 12 2"></polygon>
+            <polyline points="2 17 12 22 22 17"></polyline>
+            <polyline points="2 12 12 17 22 12"></polyline>
           </svg>
-          Login MinhaUFMG
+          Configurar Plataformas
         </button>
       </div>
     </aside>
