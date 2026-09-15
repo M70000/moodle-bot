@@ -143,7 +143,11 @@ def get_current_config() -> Dict[str, Any]:
     base_defaults = {
         "LMS_PROVIDER": "multi",
         "CANVAS_BASE_URL": "https://pucminas.instructure.com",
+        "CANVAS_AUTH_MODE": "token",
         "CANVAS_API_TOKEN": "",
+        "CANVAS_USERNAME": "",
+        "CANVAS_PASSWORD": "",
+        "CANVAS_COOKIES_PATH": "storage/cookies/canvas_session.json",
         "MOODLE_BASE_URL": "https://virtual.ufmg.br",
         "AUTH_MODE": "cookies",
         "MOODLE_USERNAME": "",
@@ -235,7 +239,11 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         "# 1b. Plataforma Canvas LMS",
         "# -------------------------------------------------------------------",
         f"CANVAS_BASE_URL={_val('CANVAS_BASE_URL', 'https://pucminas.instructure.com')}",
+        f"CANVAS_AUTH_MODE={_val('CANVAS_AUTH_MODE', 'token').lower()}",
         f"CANVAS_API_TOKEN={_val('CANVAS_API_TOKEN', '')}",
+        f"CANVAS_USERNAME={_val('CANVAS_USERNAME', '')}",
+        f"CANVAS_PASSWORD={_val('CANVAS_PASSWORD', '')}",
+        f"CANVAS_COOKIES_PATH={_val('CANVAS_COOKIES_PATH', 'storage/cookies/canvas_session.json')}",
         "",
         "# -------------------------------------------------------------------",
         "# 2. Discord Bot - Notificações e Revisão",
@@ -308,6 +316,7 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
 def get_system_status() -> Dict[str, Any]:
     """Retorna o status geral de autenticação, cookies e diretórios."""
     cookies_file = PROJECT_ROOT / "storage" / "cookies" / "session.json"
+    canvas_cookies_file = PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json"
     materials_dir = PROJECT_ROOT / "storage" / "materials"
     submissions_dir = PROJECT_ROOT / "storage" / "submissions"
 
@@ -316,6 +325,12 @@ def get_system_status() -> Dict[str, Any]:
     if has_session:
         mtime = cookies_file.stat().st_mtime
         session_date = datetime.fromtimestamp(mtime).strftime("%d/%m/%Y às %H:%M")
+
+    canvas_has_session = canvas_cookies_file.exists() and canvas_cookies_file.stat().st_size > 10
+    canvas_session_date = None
+    if canvas_has_session:
+        mtime = canvas_cookies_file.stat().st_mtime
+        canvas_session_date = datetime.fromtimestamp(mtime).strftime("%d/%m/%Y às %H:%M")
 
     materials_count = 0
     if materials_dir.exists():
@@ -330,14 +345,25 @@ def get_system_status() -> Dict[str, Any]:
     moodle_user = cfg.get("MOODLE_USERNAME", "")
     has_credentials = bool(moodle_user and cfg.get("MOODLE_PASSWORD", ""))
 
+    canvas_auth_mode = cfg.get("CANVAS_AUTH_MODE", "token")
+    canvas_user = cfg.get("CANVAS_USERNAME", "")
+    canvas_has_credentials = bool(canvas_user and cfg.get("CANVAS_PASSWORD", ""))
+    canvas_has_token = bool(cfg.get("CANVAS_API_TOKEN", ""))
+
     return {
         "session_exists": has_session,
         "session_date": session_date,
+        "canvas_session_exists": canvas_has_session,
+        "canvas_session_date": canvas_session_date,
         "materials_count": materials_count,
         "submissions_count": submissions_count,
         "auth_mode": auth_mode,
         "has_credentials": has_credentials,
         "moodle_user": moodle_user,
+        "canvas_auth_mode": canvas_auth_mode,
+        "canvas_has_credentials": canvas_has_credentials,
+        "canvas_has_token": canvas_has_token,
+        "canvas_user": canvas_user,
     }
 
 
@@ -375,45 +401,105 @@ def test_moodle_connection(url: str) -> Dict[str, Any]:
 def test_canvas_connection(
     base_url: str,
     api_token: Optional[str] = None,
+    auth_mode: str = "token",
+    username: Optional[str] = None,
+    password: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Testa a conectividade com a API do Canvas LMS."""
+    """Testa a conectividade com a API do Canvas LMS de acordo com o modo de autenticação."""
     target = (base_url or "https://pucminas.instructure.com").rstrip("/")
-    token = (api_token or "").strip()
-    if not token:
-        return {
-            "ok": False,
-            "error": "Token de acesso da API do Canvas não informado."
-        }
+    mode = (auth_mode or "token").strip().lower()
 
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "LumiBot-MultiLMS/1.0",
-        "Accept": "application/json",
-    }
-    start_time = time.time()
-    try:
-        req = urllib.request.Request(f"{target}/api/v1/users/self", headers=headers)
-        with urllib.request.urlopen(req, timeout=10.0) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            user_name = data.get("name") or data.get("short_name") or "Aluno"
-            user_id = data.get("id")
-        elapsed = round((time.time() - start_time) * 1000)
-        return {
-            "ok": True,
-            "user_name": user_name,
-            "user_id": user_id,
-            "elapsed_ms": elapsed,
-            "message": f"Conexão com Canvas LMS ({target}) autenticada com sucesso como '{user_name}' ({elapsed}ms)!"
+    if mode == "token":
+        token = (api_token or "").strip()
+        if not token:
+            return {
+                "ok": False,
+                "error": "Token de acesso da API do Canvas não informado."
+            }
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "User-Agent": "LumiBot-MultiLMS/1.0",
+            "Accept": "application/json",
         }
-    except urllib.error.HTTPError as e:
-        elapsed = round((time.time() - start_time) * 1000)
-        if e.code == 401:
-            return {"ok": False, "error": f"Token do Canvas inválido ou expirado (HTTP 401 Unauthorized) em {target}."}
-        if e.code == 404:
-            return {"ok": False, "error": f"Endpoint não encontrado (HTTP 404). Verifique se a URL '{target}' é a raiz correta do Canvas."}
-        return {"ok": False, "error": f"Erro do Canvas LMS HTTP {e.code}: {e.reason}"}
-    except Exception as e:
-        return {"ok": False, "error": f"Falha ao conectar no Canvas LMS ({target}): {str(e)}"}
+        start_time = time.time()
+        try:
+            req = urllib.request.Request(f"{target}/api/v1/users/self", headers=headers)
+            with urllib.request.urlopen(req, timeout=10.0) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+                user_name = data.get("name") or data.get("short_name") or "Aluno"
+                user_id = data.get("id")
+            elapsed = round((time.time() - start_time) * 1000)
+            return {
+                "ok": True,
+                "user_name": user_name,
+                "user_id": user_id,
+                "elapsed_ms": elapsed,
+                "message": f"Conexão com Canvas LMS ({target}) autenticada com sucesso como '{user_name}' ({elapsed}ms)!"
+            }
+        except urllib.error.HTTPError as e:
+            elapsed = round((time.time() - start_time) * 1000)
+            if e.code == 401:
+                return {"ok": False, "error": f"Token do Canvas inválido ou expirado (HTTP 401 Unauthorized) em {target}."}
+            if e.code == 404:
+                return {"ok": False, "error": f"Endpoint não encontrado (HTTP 404). Verifique se a URL '{target}' é a raiz correta do Canvas."}
+            return {"ok": False, "error": f"Erro do Canvas LMS HTTP {e.code}: {e.reason}"}
+        except Exception as e:
+            return {"ok": False, "error": f"Falha ao conectar no Canvas LMS ({target}): {str(e)}"}
+
+    elif mode == "cookies":
+        from src.auth.canvas_auth import CanvasAuth
+        auth = CanvasAuth(base_url=target)
+        if not auth.session_exists:
+            return {
+                "ok": False,
+                "error": "Nenhum arquivo de sessão do Canvas encontrado. Clique em 'Iniciar Login no Canvas (Navegador)' para autenticar."
+            }
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            valid, user = loop.run_until_complete(auth.validate_session())
+            if valid:
+                return {
+                    "ok": True,
+                    "message": f"Sessão de cookies do Canvas ativa e autenticada como '{user or 'Aluno'}'!"
+                }
+            return {
+                "ok": False,
+                "error": "Sessão de cookies expirada. Clique em 'Iniciar Login no Canvas (Navegador)' para renovar."
+            }
+        finally:
+            loop.close()
+
+    elif mode == "credentials":
+        from src.auth.canvas_auth import CanvasAuth
+        auth = CanvasAuth(base_url=target)
+        user = username or getattr(settings, "CANVAS_USERNAME", "")
+        pwd = password or getattr(settings, "CANVAS_PASSWORD", "")
+        if not user or not pwd:
+            return {
+                "ok": False,
+                "error": "Informe o usuário e senha do Canvas para testar as credenciais."
+            }
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            valid, user_or_err = loop.run_until_complete(auth.login_with_credentials(username=user, password=pwd, headless=True))
+            if valid:
+                return {
+                    "ok": True,
+                    "message": f"Login automático por credenciais realizado com sucesso como '{user_or_err}'!"
+                }
+            return {
+                "ok": False,
+                "error": user_or_err or "Falha ao autenticar com credenciais no Canvas."
+            }
+        finally:
+            loop.close()
+
+    return {"ok": False, "error": f"Modo de autenticação '{mode}' desconhecido."}
 
 
 def test_gemini_connection(api_key: str, model_name: str) -> Dict[str, Any]:
@@ -768,7 +854,16 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
         if url_path == "/api/test-canvas":
             base_url = payload.get("base_url", "")
             token = payload.get("token", "")
-            res = test_canvas_connection(base_url, token)
+            auth_mode = payload.get("auth_mode", "token")
+            username = payload.get("username", "")
+            password = payload.get("password", "")
+            res = test_canvas_connection(
+                base_url=base_url,
+                api_token=token,
+                auth_mode=auth_mode,
+                username=username,
+                password=password,
+            )
             self._send_json(res)
             return
 
@@ -874,6 +969,65 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
                 self._send_json({"ok": True, "message": "Janela do navegador para login no MinhaUFMG aberta!"})
             except Exception as e:
                 self._send_json({"ok": False, "error": f"Erro ao iniciar login: {str(e)}"}, status=500)
+            return
+
+        if url_path == "/api/login-canvas":
+            try:
+                venv_python = PROJECT_ROOT / ".venv" / "Scripts" / "python.exe"
+                python_bin = str(venv_python) if venv_python.exists() else sys.executable
+                creation_flags = subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
+                subprocess.Popen(
+                    [python_bin, "-m", "src.auth.canvas_auth"],
+                    cwd=str(PROJECT_ROOT),
+                    creationflags=creation_flags
+                )
+                self._send_json({"ok": True, "message": "Janela do navegador para login no Canvas LMS aberta!"})
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"Erro ao iniciar login no Canvas: {str(e)}"}, status=500)
+            return
+
+        if url_path == "/api/login-canvas-credentials":
+            username = payload.get("username", "")
+            password = payload.get("password", "")
+            base_url = payload.get("base_url", "")
+            save = payload.get("save", True)
+            if not username or not password:
+                self._send_json({"ok": False, "error": "Usuário e senha institucionais do Canvas são obrigatórios."}, status=400)
+                return
+
+            if save:
+                save_data = {
+                    "CANVAS_AUTH_MODE": "credentials",
+                    "CANVAS_USERNAME": username,
+                    "CANVAS_PASSWORD": password,
+                }
+                if base_url:
+                    save_data["CANVAS_BASE_URL"] = base_url
+                save_config_to_env(save_data)
+
+            import asyncio
+            from src.auth.canvas_auth import CanvasAuth
+
+            async def _run_canvas_cred_login():
+                auth = CanvasAuth(base_url=base_url)
+                return await auth.login_with_credentials(username=username, password=password, headless=True)
+
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                success, user_or_err = loop.run_until_complete(_run_canvas_cred_login())
+                loop.close()
+
+                if success:
+                    self._send_json({
+                        "ok": True,
+                        "user": user_or_err,
+                        "message": f"Autenticado com sucesso no Canvas LMS como '{user_or_err}'!"
+                    })
+                else:
+                    self._send_json({"ok": False, "error": user_or_err or "Falha na autenticação do Canvas."}, status=400)
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"Erro durante login no Canvas: {str(e)}"}, status=500)
             return
 
         if url_path == "/api/open-folder":

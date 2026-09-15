@@ -52,9 +52,25 @@ class Settings(BaseSettings):
         default="https://pucminas.instructure.com",
         description="URL base da instituição no Canvas LMS (ex: https://pucminas.instructure.com)"
     )
+    CANVAS_AUTH_MODE: str = Field(
+        default="token",
+        description="Modo de autenticação do Canvas: 'token', 'cookies' ou 'credentials'"
+    )
     CANVAS_API_TOKEN: str = Field(
         default="",
         description="Token de acesso pessoal da API do Canvas LMS (Bearer token)"
+    )
+    CANVAS_USERNAME: str = Field(
+        default="",
+        description="Usuário institucional para login automático no Canvas"
+    )
+    CANVAS_PASSWORD: str = Field(
+        default="",
+        description="Senha institucional para login automático no Canvas"
+    )
+    CANVAS_COOKIES_PATH: Path = Field(
+        default=PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json",
+        description="Caminho do arquivo com os cookies e sessão do Canvas"
     )
     # Discord Bot
     DISCORD_BOT_TOKEN: str = Field(
@@ -264,7 +280,18 @@ class Settings(BaseSettings):
             return "credentials"
         return "cookies"
 
-    @field_validator("STORAGE_COOKIES_PATH", "STORAGE_MATERIALS_DIR", "STORAGE_SUBMISSIONS_DIR", mode="before")
+    @field_validator("CANVAS_AUTH_MODE", mode="before")
+    @classmethod
+    def normalize_canvas_auth_mode(cls, v: str) -> str:
+        """Normaliza o modo de autenticação do Canvas para 'token', 'cookies' ou 'credentials'."""
+        mode = str(v or "token").strip().lower()
+        if mode in ("cookie", "cookies", "manual", "browser", "navegador"):
+            return "cookies"
+        if mode in ("credentials", "credential", "credenciais", "login", "password", "auto", "automatico"):
+            return "credentials"
+        return "token"
+
+    @field_validator("STORAGE_COOKIES_PATH", "CANVAS_COOKIES_PATH", "STORAGE_MATERIALS_DIR", "STORAGE_SUBMISSIONS_DIR", mode="before")
     @classmethod
     def make_absolute_path(cls, v) -> Path:
         """Converte caminhos relativos do .env para absolutos baseados na raiz do projeto.

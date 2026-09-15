@@ -3768,16 +3768,82 @@ async def cmd_status(interaction: discord.Interaction):
 
 @bot.tree.command(name="login", description="Realiza login ou renova a sessão do Moodle / MinhaUFMG")
 @app_commands.describe(
-    metodo="Método de login: 'credentials' (automático) ou 'cookies' (abrir navegador no PC)"
+    metodo="Método de login: 'credentials' (automático) ou 'cookies' (abrir navegador no PC)",
+    plataforma="Plataforma de ensino: 'moodle' ou 'canvas'"
 )
 @app_commands.choices(metodo=[
     app_commands.Choice(name="🔐 Automático (Credenciais salvas)", value="credentials"),
     app_commands.Choice(name="🍪 Manual (Abrir Navegador no PC)", value="cookies"),
 ])
-async def cmd_login(interaction: discord.Interaction, metodo: Optional[str] = None):
+@app_commands.choices(plataforma=[
+    app_commands.Choice(name="🏛️ Moodle", value="moodle"),
+    app_commands.Choice(name="🎓 Canvas LMS", value="canvas"),
+])
+async def cmd_login(
+    interaction: discord.Interaction,
+    metodo: Optional[str] = None,
+    plataforma: Optional[str] = None
+):
     await interaction.response.defer(ephemeral=True)
     try:
         from config.settings import settings
+
+        target_plat = (plataforma or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
+        if target_plat == "multi":
+            target_plat = "canvas" if getattr(settings, "CANVAS_AUTH_MODE", "token") != "token" else "moodle"
+
+        if target_plat == "canvas":
+            from src.auth.canvas_auth import CanvasAuth
+            canvas_auth = CanvasAuth()
+            chosen_mode = metodo or getattr(settings, "CANVAS_AUTH_MODE", "cookies").lower()
+
+            if chosen_mode in ("credentials", "credenciais", "auto"):
+                if not getattr(settings, "CANVAS_USERNAME", "") or not getattr(settings, "CANVAS_PASSWORD", ""):
+                    await interaction.followup.send(
+                        "⚠️ Credenciais do Canvas não configuradas no `.env`. Configure usuário e senha no `configurar.bat` ou utilize o login manual.",
+                        ephemeral=True
+                    )
+                    return
+
+                await interaction.followup.send("⏳ Iniciando login automático no Canvas LMS com credenciais salvas em segundo plano...", ephemeral=True)
+                ok, user_or_err = await canvas_auth.login_with_credentials(headless=True)
+                if ok:
+                    await interaction.followup.send(
+                        f"✔ **Sessão do Canvas LMS autenticada com sucesso como `{user_or_err}`!**\n"
+                        "O assistente utilizará a nova sessão para todas as consultas e submissões.",
+                        ephemeral=True
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ Falha no login automático do Canvas: {user_or_err}\n"
+                        "Você pode tentar abrir a janela manual com `/login metodo:Manual plataforma:Canvas LMS`.",
+                        ephemeral=True
+                    )
+            else:
+                async def _bg_canvas_login():
+                    success = await canvas_auth.interactive_login(headless=False)
+                    if success:
+                        valid, user = await canvas_auth.validate_session()
+                        notifier = MoodleDiscordNotifier()
+                        ch = await notifier._resolve_channel(settings.DISCORD_ANNOUNCEMENTS_CHANNEL_ID)
+                        if ch:
+                            embed = discord.Embed(
+                                title="🎓 Sessão do Canvas LMS Renovada!",
+                                description=f"O aluno **{user or 'Autenticado'}** realizou login com sucesso no Canvas LMS.",
+                                color=LumiTheme.SUCCESS
+                            )
+                            apply_lumi_footer(embed, extra_info="Canvas LMS Auth")
+                            await ch.send(embed=embed)
+
+                asyncio.create_task(_bg_canvas_login())
+                await interaction.followup.send(
+                    "🖥️ **Janela de login do Canvas LMS aberta no seu computador!**\n"
+                    "Basta preencher suas credenciais na tela do navegador que acabou de abrir. "
+                    "Assim que entrar, o assistente salvará a nova sessão e confirmará.",
+                    ephemeral=True
+                )
+            return
+
         from src.auth.moodle_auth import MoodleAuth
 
         chosen_mode = metodo or getattr(settings, "AUTH_MODE", "cookies").lower()
@@ -4913,9 +4979,35 @@ async def prefix_status(ctx: commands.Context):
 
 
 @bot.command(name="login")
-async def prefix_login(ctx: commands.Context, metodo: Optional[str] = None):
-    """Comando alternativo com prefixo: !login [cookies/credentials]."""
+async def prefix_login(ctx: commands.Context, metodo: Optional[str] = None, plataforma: Optional[str] = None):
+    """Comando alternativo com prefixo: !login [cookies/credentials] [moodle/canvas]."""
     from config.settings import settings
+
+    target_plat = (plataforma or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
+    if target_plat == "multi":
+        target_plat = "canvas" if getattr(settings, "CANVAS_AUTH_MODE", "token") != "token" else "moodle"
+
+    if target_plat == "canvas":
+        from src.auth.canvas_auth import CanvasAuth
+        canvas_auth = CanvasAuth()
+        chosen_mode = (metodo or getattr(settings, "CANVAS_AUTH_MODE", "cookies")).lower()
+        if chosen_mode in ("credentials", "credenciais", "auto"):
+            if not getattr(settings, "CANVAS_USERNAME", "") or not getattr(settings, "CANVAS_PASSWORD", ""):
+                await ctx.send("⚠️ Credenciais do Canvas não configuradas no `.env`. Configure no `configurar.bat`.")
+                return
+            await ctx.send("⏳ Iniciando login automático no Canvas com credenciais salvas...")
+            ok, user_or_err = await canvas_auth.login_with_credentials(headless=True)
+            if ok:
+                await ctx.send(f"✔ **Sessão do Canvas LMS autenticada como `{user_or_err}`!**")
+            else:
+                await ctx.send(f"❌ Falha no login do Canvas: {user_or_err}")
+        else:
+            async def _bg_canvas_login():
+                await canvas_auth.interactive_login(headless=False)
+            asyncio.create_task(_bg_canvas_login())
+            await ctx.send("🖥️ **Janela de login do Canvas LMS aberta no seu computador!** Conclua o login no navegador.")
+        return
+
     from src.auth.moodle_auth import MoodleAuth
 
     chosen_mode = (metodo or getattr(settings, "AUTH_MODE", "cookies")).lower()

@@ -118,15 +118,21 @@ O painel visual local (`http://127.0.0.1:5055`) permite ajustar parâmetros sem 
 
 ### 2. Configuração do Canvas LMS
 
-1. Acesse o portal Canvas da sua instituição (exemplo: `https://pucminas.instructure.com`).
-2. Clique no ícone do seu perfil no menu lateral esquerdo (**Conta**) e entre em **Configurações**.
-3. Na seção **Tokens de Acesso Aprovados**, clique no botão **+ Novo Token de Acesso**.
-4. Digite uma finalidade (exemplo: `LumiBot`), defina ou não data de expiração e clique em **Gerar Token**.
-5. Copie o código alfanumérico gerado imediatamente.
-6. No painel de configuração (ou no arquivo `.env`):
-   - **URL Base:** `https://pucminas.instructure.com` (ou o domínio do Canvas da sua faculdade).
-   - **Token de Acesso:** Cole o token gerado.
-7. Clique em **Testar Conexão** para confirmar a autenticação com a API REST.
+O LumiBot suporta três modalidades de autenticação para o Canvas LMS, adaptando-se às regras de segurança da sua instituição de ensino:
+
+1. **Token de Acesso da API (`token`):**
+   - Acesse o portal Canvas da sua instituição (exemplo: `https://pucminas.instructure.com`).
+   - Clique em **Conta** &rarr; **Configurações** &rarr; role até **Tokens de Acesso Aprovados** e clique em **+ Novo Token de Acesso**.
+   - Defina um rótulo (exemplo: `LumiBot`), copie o token gerado e cole no campo de token no painel ou no `.env` (`CANVAS_API_TOKEN`).
+
+2. **Cookies de Sessão via Navegador (`cookies`):**
+   - Recomendado quando a instituição desabilita a geração manual de tokens para alunos ou exige duplo fator de autenticação (2FA) / SSO institucional.
+   - Clique no botão **Iniciar Login no Canvas (Navegador)** no painel ou execute `/login plataforma:Canvas` no Discord.
+   - Conclua a autenticação na janela do Chromium que abrirá. A sessão é capturada e salva em `storage/cookies/canvas_session.json` e o bot passa a consultar a API REST v1 através desses cookies.
+
+3. **Credenciais Automáticas (`credentials`):**
+   - Preencha o usuário institucional (`CANVAS_USERNAME`) e a senha (`CANVAS_PASSWORD`).
+   - O bot efetua login headless via Playwright, salva a sessão e renova os cookies automaticamente em segundo plano sempre que expirarem.
 
 ---
 

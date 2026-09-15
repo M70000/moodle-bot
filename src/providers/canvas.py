@@ -17,6 +17,7 @@ from rich.console import Console
 from config.settings import settings
 from src.core.models import LMSCourse, LMSAssignment, LMSAnnouncement
 from src.providers.base import BaseLMSProvider
+from src.auth.canvas_auth import CanvasAuth
 
 console = Console()
 
@@ -105,6 +106,8 @@ class CanvasAdapter(BaseLMSProvider):
         self,
         base_url: Optional[str] = None,
         api_token: Optional[str] = None,
+        auth_mode: Optional[str] = None,
+        auth: Optional[CanvasAuth] = None,
         timeout: float = 30.0
     ):
         raw_url = base_url or getattr(settings, "CANVAS_BASE_URL", "https://pucminas.instructure.com")
@@ -114,12 +117,30 @@ class CanvasAdapter(BaseLMSProvider):
             or os.environ.get("CANVAS_API_TOKEN")
             or getattr(settings, "CANVAS_API_TOKEN", "")
         ).strip()
+        self.auth_mode = (
+            auth_mode
+            or os.environ.get("CANVAS_AUTH_MODE")
+            or getattr(settings, "CANVAS_AUTH_MODE", "token")
+        ).strip().lower()
+        self.auth = auth or CanvasAuth(base_url=self.base_url)
         self.timeout = timeout
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
     def platform(self) -> str:
         return "canvas"
+
+    @property
+    def is_configured(self) -> bool:
+        """Verifica se o adaptador possui credenciais ou sessão configuradas."""
+        if self.auth_mode == "token":
+            return bool(self.api_token)
+        if self.auth_mode == "credentials":
+            return self.auth.session_exists or bool(
+                getattr(settings, "CANVAS_USERNAME", "") and getattr(settings, "CANVAS_PASSWORD", "")
+            )
+        # cookies
+        return self.auth.session_exists
 
     def _get_client(self) -> httpx.AsyncClient:
         """Cria ou reaproveita o cliente HTTP assíncrono com cabeçalhos padrão."""
@@ -128,12 +149,20 @@ class CanvasAdapter(BaseLMSProvider):
                 "Accept": "application/json",
                 "User-Agent": "LumiBot-CanvasAdapter/2.0",
             }
-            if self.api_token:
-                headers["Authorization"] = f"Bearer {self.api_token}"
+            cookies = None
+            if self.auth_mode == "token":
+                if self.api_token:
+                    headers["Authorization"] = f"Bearer {self.api_token}"
+            else:
+                cookies = self.auth.get_cookies_dict()
+                csrf = self.auth.get_csrf_token()
+                if csrf:
+                    headers["X-CSRF-Token"] = csrf
 
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers=headers,
+                cookies=cookies,
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=True,
             )
@@ -183,10 +212,29 @@ class CanvasAdapter(BaseLMSProvider):
 
                 # Tratamento de 401 Unauthorized
                 if response.status_code == 401:
-                    raise CanvasAuthenticationError(
-                        "Autenticação no Canvas falhou (401 Unauthorized). "
-                        "Verifique se a variável CANVAS_API_TOKEN no arquivo .env é válida."
-                    )
+                    if self.auth_mode == "credentials" and attempt <= retries:
+                        console.print("[yellow]Sessão do Canvas expirada (401). Renovando automaticamente com credenciais...[/yellow]")
+                        ok, _ = await self.auth.login_with_credentials(headless=True)
+                        if ok:
+                            await self.close()
+                            client = self._get_client()
+                            continue
+
+                    if self.auth_mode == "token":
+                        raise CanvasAuthenticationError(
+                            "Autenticação no Canvas falhou (401 Unauthorized). "
+                            "Verifique se a variável CANVAS_API_TOKEN no arquivo .env é válida."
+                        )
+                    elif self.auth_mode == "credentials":
+                        raise CanvasAuthenticationError(
+                            "Autenticação no Canvas falhou (401 Unauthorized). "
+                            "Não foi possível autenticar ou renovar a sessão com CANVAS_USERNAME e CANVAS_PASSWORD."
+                        )
+                    else:
+                        raise CanvasAuthenticationError(
+                            "Sessão do Canvas expirada ou ausente (401 Unauthorized). "
+                            "Realize o login no navegador pelo painel ou Discord para renovar os cookies."
+                        )
 
                 # Tratamento de 429 Too Many Requests (Rate Limit Exceeded)
                 if response.status_code == 429:
@@ -255,20 +303,31 @@ class CanvasAdapter(BaseLMSProvider):
     # -----------------------------------------------------------------
 
     async def test_connection(self) -> bool:
-        """Testa se o token é aceito pela API do Canvas."""
-        if not self.api_token:
+        """Testa a conectividade e autenticação com o Canvas LMS."""
+        if not self.is_configured:
             return False
 
-        try:
-            # GET /api/v1/users/self/profile é o endpoint mais leve para checar credenciais
-            resp = await self._request("GET", "/api/v1/users/self/profile")
-            return resp.status_code == 200
-        except (CanvasAuthenticationError, CanvasError):
-            return False
+        if self.auth_mode == "token":
+            try:
+                resp = await self._request("GET", "/api/v1/users/self/profile")
+                return resp.status_code == 200
+            except (CanvasAuthenticationError, CanvasError):
+                return False
+
+        if self.auth.session_exists:
+            ok, _ = await self.auth.validate_session()
+            if ok:
+                return True
+
+        if self.auth_mode == "credentials":
+            ok, _ = await self.auth.login_with_credentials(headless=True)
+            return ok
+
+        return False
 
     async def get_courses(self) -> List[LMSCourse]:
         """Obtém as disciplinas ativas do usuário no Canvas."""
-        if not self.api_token:
+        if not self.is_configured:
             return []
 
         raw_courses = await self._get_paginated(
@@ -312,7 +371,7 @@ class CanvasAdapter(BaseLMSProvider):
         days: int = 7
     ) -> List[LMSAssignment]:
         """Obtém tarefas acadêmicas do Canvas ordenadas por data limite de entrega."""
-        if not self.api_token:
+        if not self.is_configured:
             return []
 
         # Se course_id foi especificado, consulta apenas ele; caso contrário, busca todos os ativos
@@ -392,7 +451,7 @@ class CanvasAdapter(BaseLMSProvider):
         limit: int = 5
     ) -> List[LMSAnnouncement]:
         """Obtém avisos e comunicados publicados nas disciplinas do Canvas."""
-        if not self.api_token:
+        if not self.is_configured:
             return []
 
         courses_to_query: List[LMSCourse] = []
@@ -456,7 +515,7 @@ class CanvasAdapter(BaseLMSProvider):
         assignment_id: str
     ) -> Optional[LMSAssignment]:
         """Obtém detalhes completos de uma atividade específica no Canvas (enunciado, prazos, etc.)."""
-        if not self.api_token:
+        if not self.is_configured:
             return None
 
         clean_course_id, clean_assign_id = extract_canvas_ids(assignment_id, course_id)
@@ -509,7 +568,7 @@ class CanvasAdapter(BaseLMSProvider):
         mat_dir.mkdir(parents=True, exist_ok=True)
         downloaded: List[Path] = []
 
-        if not self.api_token:
+        if not self.is_configured:
             return downloaded
 
         # Consulta API /api/v1/courses/:id/files e baixa os arquivos

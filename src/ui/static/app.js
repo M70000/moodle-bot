@@ -90,6 +90,45 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // Alternância dinâmica de Modo de Autenticação do Canvas (Token vs Cookies vs Credenciais)
+  document.querySelectorAll('input[name="CANVAS_AUTH_MODE"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      updateCanvasAuthModeUI(e.target.value);
+    });
+  });
+  document.getElementById('card-canvas-mode-token')?.addEventListener('click', () => {
+    const r = document.getElementById('canvas-mode-token');
+    if (r) { r.checked = true; updateCanvasAuthModeUI('token'); }
+  });
+  document.getElementById('card-canvas-mode-cookies')?.addEventListener('click', () => {
+    const r = document.getElementById('canvas-mode-cookies');
+    if (r) { r.checked = true; updateCanvasAuthModeUI('cookies'); }
+  });
+  document.getElementById('card-canvas-mode-credentials')?.addEventListener('click', () => {
+    const r = document.getElementById('canvas-mode-credentials');
+    if (r) { r.checked = true; updateCanvasAuthModeUI('credentials'); }
+  });
+
+  // Toggle de visualização da senha do Canvas
+  const btnToggleCanvasPwd = document.getElementById('btn-toggle-canvas-password');
+  if (btnToggleCanvasPwd) {
+    btnToggleCanvasPwd.addEventListener('click', () => {
+      const pwdInput = document.getElementById('CANVAS_PASSWORD');
+      if (pwdInput) {
+        if (pwdInput.type === 'password') {
+          pwdInput.type = 'text';
+          btnToggleCanvasPwd.textContent = '🔒';
+        } else {
+          pwdInput.type = 'password';
+          btnToggleCanvasPwd.textContent = '👁️';
+        }
+      }
+    });
+  }
+
+  document.getElementById('btn-trigger-canvas-login')?.addEventListener('click', triggerCanvasLogin);
+  document.getElementById('btn-trigger-canvas-cred-login')?.addEventListener('click', testCanvasCredentialsLogin);
+
   const btnTestClaude = document.getElementById('btn-test-claude');
   if (btnTestClaude) btnTestClaude.addEventListener('click', testClaude);
 
@@ -209,7 +248,13 @@ async function loadConfig() {
     updateLmsTabsVisibility(lmsProvider);
 
     setInputValue('CANVAS_BASE_URL', config.CANVAS_BASE_URL || 'https://pucminas.instructure.com');
+    const canvasAuthMode = (config.CANVAS_AUTH_MODE || 'token').toLowerCase();
+    const canvasModeRadio = document.querySelector(`input[name="CANVAS_AUTH_MODE"][value="${canvasAuthMode}"]`);
+    if (canvasModeRadio) canvasModeRadio.checked = true;
     setInputValue('CANVAS_API_TOKEN', config.CANVAS_API_TOKEN || '');
+    setInputValue('CANVAS_USERNAME', config.CANVAS_USERNAME || '');
+    setInputValue('CANVAS_PASSWORD', config.CANVAS_PASSWORD || '');
+    updateCanvasAuthModeUI(canvasAuthMode);
 
     setInputValue('MOODLE_BASE_URL', config.MOODLE_BASE_URL || 'https://virtual.ufmg.br');
     const authMode = config.AUTH_MODE || 'cookies';
@@ -305,6 +350,19 @@ async function loadStatus() {
         ? 'O assistente fará login automaticamente usando suas credenciais salvas.'
         : 'O assistente precisa que você faça login no MinhaUFMG uma vez para salvar a sessão.';
     }
+
+    // Status da Sessão do Canvas LMS
+    const canvasBoxTitle = document.getElementById('canvas-session-box-title');
+    const canvasBoxDesc = document.getElementById('canvas-session-box-desc');
+    if (canvasBoxTitle && canvasBoxDesc) {
+      if (status.canvas_session_exists) {
+        canvasBoxTitle.textContent = 'Sessão do Canvas Ativa';
+        canvasBoxDesc.textContent = `Cookies válidos salvos (${status.canvas_session_date || 'Recente'}). As chamadas à API REST utilizarão esta sessão.`;
+      } else {
+        canvasBoxTitle.textContent = 'Autenticação no Canvas Pendente';
+        canvasBoxDesc.textContent = 'Nenhum cookie de sessão salvo. Clique abaixo para fazer login no Canvas pelo navegador.';
+      }
+    }
   } catch (err) {
     console.error('Erro ao ler status:', err);
   }
@@ -320,7 +378,10 @@ async function saveConfig() {
   const payload = {
     LMS_PROVIDER: document.querySelector('input[name="LMS_PROVIDER"]:checked')?.value || 'multi',
     CANVAS_BASE_URL: getInputValue('CANVAS_BASE_URL') || 'https://pucminas.instructure.com',
+    CANVAS_AUTH_MODE: document.querySelector('input[name="CANVAS_AUTH_MODE"]:checked')?.value || 'token',
     CANVAS_API_TOKEN: getInputValue('CANVAS_API_TOKEN'),
+    CANVAS_USERNAME: getInputValue('CANVAS_USERNAME'),
+    CANVAS_PASSWORD: getInputValue('CANVAS_PASSWORD'),
 
     MOODLE_BASE_URL: getInputValue('MOODLE_BASE_URL'),
     AUTH_MODE: document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies',
@@ -448,15 +509,18 @@ function updateLmsTabsVisibility(provider) {
 // Testes de Conexão
 async function testCanvas() {
   const base_url = getInputValue('CANVAS_BASE_URL') || 'https://pucminas.instructure.com';
+  const auth_mode = document.querySelector('input[name="CANVAS_AUTH_MODE"]:checked')?.value || 'token';
   const token = getInputValue('CANVAS_API_TOKEN');
+  const username = getInputValue('CANVAS_USERNAME');
+  const password = getInputValue('CANVAS_PASSWORD');
   const resultDiv = document.getElementById('canvas-test-result');
-  setFeedback(resultDiv, 'Testando conectividade com o Canvas LMS...', 'loading');
+  setFeedback(resultDiv, 'Testando conectividade e autenticação com o Canvas LMS...', 'loading');
 
   try {
     const res = await fetch('/api/test-canvas', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, token })
+      body: JSON.stringify({ base_url, token, auth_mode, username, password })
     });
     const data = await res.json();
     if (data.ok) {
@@ -661,6 +725,92 @@ function updateAuthModeUI(mode) {
     if (credBox) credBox.style.display = 'none';
     if (cardCookies) cardCookies.classList.add('active');
     if (cardCreds) cardCreds.classList.remove('active');
+  }
+}
+
+function updateCanvasAuthModeUI(mode) {
+  const tokenBox = document.getElementById('canvas-token-box');
+  const credBox = document.getElementById('canvas-credentials-box');
+  const cookiesBox = document.getElementById('canvas-cookies-box');
+  const cardToken = document.getElementById('card-canvas-mode-token');
+  const cardCookies = document.getElementById('card-canvas-mode-cookies');
+  const cardCreds = document.getElementById('card-canvas-mode-credentials');
+
+  [cardToken, cardCookies, cardCreds].forEach(c => c?.classList.remove('active'));
+
+  if (mode === 'cookies') {
+    if (tokenBox) tokenBox.style.display = 'none';
+    if (credBox) credBox.style.display = 'none';
+    if (cookiesBox) cookiesBox.style.display = 'block';
+    if (cardCookies) cardCookies.classList.add('active');
+  } else if (mode === 'credentials') {
+    if (tokenBox) tokenBox.style.display = 'none';
+    if (credBox) credBox.style.display = 'block';
+    if (cookiesBox) cookiesBox.style.display = 'none';
+    if (cardCreds) cardCreds.classList.add('active');
+  } else {
+    // token
+    if (tokenBox) tokenBox.style.display = 'block';
+    if (credBox) credBox.style.display = 'none';
+    if (cookiesBox) cookiesBox.style.display = 'none';
+    if (cardToken) cardToken.classList.add('active');
+  }
+}
+
+async function triggerCanvasLogin() {
+  const feedback = document.getElementById('canvas-login-feedback');
+  setFeedback(feedback, 'Iniciando navegador Chromium para login no Canvas LMS...', 'loading');
+
+  try {
+    const res = await fetch('/api/login-canvas', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(feedback, '✔ Uma janela de navegador foi aberta! Digite suas credenciais no Canvas. Ao concluir, a janela fechará e a sessão será salva automaticamente.', 'success');
+      showToast('Janela de login no Canvas aberta!', 'info');
+      let checks = 0;
+      const interval = setInterval(async () => {
+        checks++;
+        await loadStatus();
+        if (checks >= 30) clearInterval(interval);
+      }, 5000);
+    } else {
+      setFeedback(feedback, `✖ ${data.error}`, 'error');
+    }
+  } catch (err) {
+    setFeedback(feedback, `✖ Erro ao disparar login no Canvas: ${err.message}`, 'error');
+  }
+}
+
+async function testCanvasCredentialsLogin() {
+  const feedback = document.getElementById('canvas-cred-login-feedback');
+  const base_url = getInputValue('CANVAS_BASE_URL') || 'https://pucminas.instructure.com';
+  const username = getInputValue('CANVAS_USERNAME');
+  const password = getInputValue('CANVAS_PASSWORD');
+
+  if (!username || !password) {
+    setFeedback(feedback, '✖ Preencha usuário e senha do Canvas antes de testar.', 'error');
+    return;
+  }
+
+  setFeedback(feedback, 'Conectando ao Canvas e realizando login em segundo plano (headless)...', 'loading');
+
+  try {
+    const res = await fetch('/api/login-canvas-credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url, username, password, save: true })
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setFeedback(feedback, `✔ ${data.message} A sessão foi salva e está pronta para uso!`, 'success');
+      showToast('Login automático no Canvas concluído com sucesso!', 'success');
+      await loadStatus();
+    } else {
+      setFeedback(feedback, `✖ ${data.error}`, 'error');
+      showToast('Falha no login no Canvas: ' + data.error, 'error');
+    }
+  } catch (err) {
+    setFeedback(feedback, `✖ Erro ao comunicar com o servidor: ${err.message}`, 'error');
   }
 }
 

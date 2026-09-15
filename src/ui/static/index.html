@@ -258,26 +258,128 @@
           </div>
         </div>
 
-        <!-- Autenticação & Token da API -->
-        <div class="card">
+        <!-- Autenticação & Sessão do Canvas LMS -->
+        <div class="card card-glow">
           <div class="card-header">
             <div>
-              <h3>Autenticação da API do Canvas</h3>
-              <p>Informe o token de acesso gerado no seu perfil para comunicação segura com a API REST.</p>
+              <h3>Autenticação & Sessão do Canvas LMS</h3>
+              <p>Escolha o modo de autenticação: Token de API REST, Cookies de sessão ou Credenciais automáticas.</p>
             </div>
+            <span class="badge badge-gold">MULTI-AUTH</span>
           </div>
           <div class="card-body">
+            <!-- Seletor de 3 Modos de Autenticação para o Canvas -->
             <div class="form-group">
-              <label for="CANVAS_API_TOKEN">Token de Acesso da API (Bearer Token)</label>
-              <div class="input-with-action">
-                <input type="password" id="CANVAS_API_TOKEN" placeholder="Cole aqui seu token gerado no Canvas">
-                <button type="button" id="btn-toggle-canvas-token" class="btn btn-secondary" title="Exibir/Ocultar Token">
-                  👁️
-                </button>
+              <label>Modo de Autenticação do Canvas</label>
+              <div class="auth-mode-selector" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
+                <label class="auth-mode-card" id="card-canvas-mode-token">
+                  <input type="radio" name="CANVAS_AUTH_MODE" value="token" id="canvas-mode-token" checked>
+                  <div class="auth-mode-content">
+                    <div class="auth-mode-icon">🔑</div>
+                    <div class="auth-mode-info">
+                      <h4>Token de API (Direto)</h4>
+                      <p>Acesso rápido via Bearer Token pessoal gerado na sua Conta do Canvas.</p>
+                    </div>
+                  </div>
+                </label>
+
+                <label class="auth-mode-card" id="card-canvas-mode-cookies">
+                  <input type="radio" name="CANVAS_AUTH_MODE" value="cookies" id="canvas-mode-cookies">
+                  <div class="auth-mode-content">
+                    <div class="auth-mode-icon">🍪</div>
+                    <div class="auth-mode-info">
+                      <h4>Cookies de Sessão (Manual)</h4>
+                      <p>Login manual no navegador com suporte a SSO institucional e 2FA.</p>
+                    </div>
+                  </div>
+                </label>
+
+                <label class="auth-mode-card" id="card-canvas-mode-credentials">
+                  <input type="radio" name="CANVAS_AUTH_MODE" value="credentials" id="canvas-mode-credentials">
+                  <div class="auth-mode-content">
+                    <div class="auth-mode-icon">🔐</div>
+                    <div class="auth-mode-info">
+                      <h4>Credenciais (Automático)</h4>
+                      <p>O bot faz login e renova a sessão em segundo plano via usuário e senha.</p>
+                    </div>
+                  </div>
+                </label>
               </div>
-              <small class="form-help">
-                Como gerar o token: Acesse o Canvas no navegador &rarr; Clique na sua foto/Conta &rarr; Configurações &rarr; Role até 'Tokens de Acesso Aprovados' &rarr; Clique em '+ Novo Token de Acesso'.
-              </small>
+            </div>
+
+            <!-- Caixa 1: Token de API (Exibida no modo Token) -->
+            <div id="canvas-token-box" class="canvas-auth-box">
+              <div class="form-group">
+                <label for="CANVAS_API_TOKEN">Token de Acesso da API (Bearer Token)</label>
+                <div class="input-with-action">
+                  <input type="password" id="CANVAS_API_TOKEN" placeholder="Cole aqui seu token gerado no Canvas">
+                  <button type="button" id="btn-toggle-canvas-token" class="btn btn-secondary" title="Exibir/Ocultar Token">
+                    👁️
+                  </button>
+                </div>
+                <small class="form-help">
+                  Como gerar o token: Acesse o Canvas no navegador &rarr; Conta &rarr; Configurações &rarr; 'Tokens de Acesso Aprovados' &rarr; '+ Novo Token de Acesso'.
+                </small>
+              </div>
+            </div>
+
+            <!-- Caixa 2: Credenciais Automáticas (Exibida no modo Credentials) -->
+            <div id="canvas-credentials-box" class="canvas-auth-box" style="display: none;">
+              <h4 style="margin-bottom: 12px; font-size: 0.95rem; color: var(--text-primary);">Credenciais Institucionais do Canvas</h4>
+              <div class="grid-2">
+                <div class="form-group">
+                  <label for="CANVAS_USERNAME">Usuário / E-mail do Canvas</label>
+                  <input type="text" id="CANVAS_USERNAME" placeholder="ex: seu.email@pucminas.br ou login" autocomplete="username">
+                  <small class="form-help">Seu usuário ou e-mail de acesso ao portal Canvas.</small>
+                </div>
+                <div class="form-group">
+                  <label for="CANVAS_PASSWORD">Senha do Canvas</label>
+                  <div class="input-with-action">
+                    <input type="password" id="CANVAS_PASSWORD" placeholder="••••••••••••" autocomplete="current-password">
+                    <button type="button" id="btn-toggle-canvas-password" class="btn btn-secondary" title="Exibir/Ocultar Senha">
+                      👁️
+                    </button>
+                  </div>
+                  <small class="form-help">Salva localmente com segurança no arquivo .env.</small>
+                </div>
+              </div>
+              <div class="credentials-actions" style="margin-top: 14px; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+                <button type="button" id="btn-trigger-canvas-cred-login" class="btn btn-primary">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                  </svg>
+                  Salvar e Testar Login Automático no Canvas
+                </button>
+                <small class="form-help">Executa login headless no Canvas e grava os cookies de sessão.</small>
+              </div>
+              <div id="canvas-cred-login-feedback" class="test-feedback"></div>
+            </div>
+
+            <!-- Caixa 3: Cookies de Sessão (Exibida no modo Cookies) -->
+            <div id="canvas-cookies-box" class="canvas-auth-box" style="display: none; margin-top: 14px;">
+              <div class="session-box">
+                <div class="session-icon">
+                  <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                  </svg>
+                </div>
+                <div class="session-details">
+                  <h4 id="canvas-session-box-title">Verificando sessão...</h4>
+                  <p id="canvas-session-box-desc">Checando existência do arquivo de cookies do Canvas.</p>
+                </div>
+                <div class="session-actions">
+                  <button type="button" id="btn-trigger-canvas-login" class="btn btn-primary">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"></path>
+                      <polyline points="10 17 15 12 10 7"></polyline>
+                      <line x1="15" y1="12" x2="3" y2="12"></line>
+                    </svg>
+                    Iniciar Login no Canvas (Navegador)
+                  </button>
+                </div>
+              </div>
+              <div id="canvas-login-feedback" class="test-feedback"></div>
             </div>
           </div>
         </div>
