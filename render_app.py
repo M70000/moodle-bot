@@ -12,14 +12,29 @@ import sys
 from datetime import datetime
 from urllib.parse import parse_qs, urlparse
 
+# Garante que os prints apareçam em tempo real nos logs do Render sem buffer
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(line_buffering=True)
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(line_buffering=True)
+
 import discord
 
 from config.settings import settings
 from src.notifier.bridge_manager import cloud_bridge
-from src.notifier.discord_bot import bot, run_bot
+from src.notifier.discord_bot import bot
+
+# Estado de rastreamento da conexão do Discord
+bot_runtime_state = {
+    "status": "iniciando",
+    "token_configured": False,
+    "last_error": None,
+    "connected_at": None,
+}
 
 
 async def notify_discord_completion(task: dict):
+
     """Atualiza o embed e envia comprovante no canal do Discord após execução pelo desktop."""
     try:
         channel_id = int(task.get("channel_id") or 0)
@@ -138,6 +153,7 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
         response_dict = {}
 
         if path in ("/", "/healthz"):
+            token_val = (os.environ.get("DISCORD_BOT_TOKEN") or getattr(settings, "DISCORD_BOT_TOKEN", "") or "").strip()
             response_dict = {
                 "status": "online",
                 "service": "Moodle AI Assistant - Discord Bot Central & Cloud Bridge",
@@ -145,7 +161,12 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                 "discord_ready": bot.is_ready(),
                 "user": str(bot.user) if bot.is_ready() else None,
                 "guilds": len(bot.guilds) if bot.is_ready() else 0,
+                "bot_status": bot_runtime_state["status"],
+                "token_configured": bool(token_val),
+                "token_preview": f"{token_val[:6]}***" if token_val else "AUSENTE",
+                "last_error": bot_runtime_state["last_error"],
             }
+
 
         elif path == "/api/bridge/pending":
             channel_id = query_params.get("channel_id", [""])[0] or None
@@ -308,33 +329,91 @@ async def render_keep_alive():
             print(f"[KeepAlive] Nota ao executar ping: {err}")
 
 
+async def run_discord_supervisor():
+    """Gerencia a conexão com o Discord Gateway, capturando erros de token e intents."""
+    token = (os.environ.get("DISCORD_BOT_TOKEN") or getattr(settings, "DISCORD_BOT_TOKEN", "") or "").strip()
+    if not token:
+        bot_runtime_state["status"] = "missing_token"
+        bot_runtime_state["last_error"] = "DISCORD_BOT_TOKEN não foi configurado nas Environment Variables do Render."
+        print("=" * 60, flush=True)
+        print("❌ [Render] AVISO CRÍTICO: DISCORD_BOT_TOKEN NÃO ESTÁ CONFIGURADO!", flush=True)
+        print("👉 Acesse o Dashboard do Render -> Seu Web Service -> Aba 'Environment'", flush=True)
+        print("👉 Adicione a variável DISCORD_BOT_TOKEN com o token do seu bot.", flush=True)
+        print("=" * 60, flush=True)
+        return
+
+    bot_runtime_state["token_configured"] = True
+    bot_runtime_state["status"] = "connecting"
+    print(f"🤖 [Render] Conectando ao Discord Gateway (Token: {token[:6]}***)...", flush=True)
+
+    try:
+        @bot.event
+        async def on_connect():
+            bot_runtime_state["status"] = "connected"
+            print("✔ [Discord] Conexão estabelecida com o Discord Gateway!", flush=True)
+
+        original_on_ready = bot.on_ready
+        async def _wrapped_on_ready():
+            bot_runtime_state["status"] = "ready"
+            bot_runtime_state["connected_at"] = datetime.now().isoformat()
+            print(f"🎉 [Discord] Bot online e pronto no Render como: {bot.user} (Servidores: {len(bot.guilds)})", flush=True)
+            if original_on_ready:
+                await original_on_ready()
+
+        bot.on_ready = _wrapped_on_ready
+        await bot.start(token)
+
+    except discord.LoginFailure as lf:
+        bot_runtime_state["status"] = "login_failed"
+        bot_runtime_state["last_error"] = f"Token do Discord inválido ou expirado: {lf}"
+        print("=" * 60, flush=True)
+        print(f"❌ [Discord] ERRO DE AUTENTICAÇÃO: O token do Discord foi rejeitado!", flush=True)
+        print(f"👉 Detalhes: {lf}", flush=True)
+        print("👉 Verifique o valor de DISCORD_BOT_TOKEN na aba Environment do Render.", flush=True)
+        print("=" * 60, flush=True)
+    except discord.PrivilegedIntentsRequired as pi:
+        bot_runtime_state["status"] = "intents_required"
+        bot_runtime_state["last_error"] = f"Privileged Intents necessárias não habilitadas: {pi}"
+        print("=" * 60, flush=True)
+        print("❌ [Discord] ERRO DE INTENTS PRIVILEGIADAS:", flush=True)
+        print("👉 Acesse discord.com/developers/applications -> Seu Bot -> Seção 'Bot'", flush=True)
+        print("👉 Ative as 3 opções em 'Privileged Gateway Intents':", flush=True)
+        print("   - Presence Intent", flush=True)
+        print("   - Server Members Intent", flush=True)
+        print("   - Message Content Intent", flush=True)
+        print("=" * 60, flush=True)
+    except Exception as exc:
+        bot_runtime_state["status"] = "error"
+        bot_runtime_state["last_error"] = str(exc)
+        print(f"❌ [Discord] Erro inesperado na execução do bot: {exc}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
 async def main():
     port = int(os.environ.get("PORT", 10000))
     host = "0.0.0.0"
 
-    print("=" * 60)
-    print("  🚀 Moodle Bot - Render Cloud Service & Bridge Hub")
-    print(f"  Porta HTTP: {port} | Host: {host}")
-    print("=" * 60)
+    print("=" * 60, flush=True)
+    print("  🚀 LumiBot - Render Cloud Service & Bridge Hub", flush=True)
+    print(f"  Porta HTTP: {port} | Host: {host}", flush=True)
+    print("=" * 60, flush=True)
 
     server = await asyncio.start_server(handle_http_request, host, port)
-    print(f"✔ Servidor de Health Check & Bridge ativo em http://{host}:{port}/healthz")
-
-    if not settings.DISCORD_BOT_TOKEN:
-        print("⚠ AVISO: DISCORD_BOT_TOKEN não foi configurado nas Environment Variables do Render!")
-    else:
-        print("🤖 Conectando ao Discord Gateway...")
+    print(f"✔ Servidor de Health Check & Bridge ativo em http://{host}:{port}/healthz", flush=True)
 
     async with server:
-        tasks = [server.serve_forever(), render_keep_alive()]
-        if settings.DISCORD_BOT_TOKEN:
-            tasks.append(run_bot())
+        tasks = [
+            server.serve_forever(),
+            render_keep_alive(),
+            run_discord_supervisor(),
+        ]
         await asyncio.gather(*tasks, return_exceptions=True)
-
 
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("Encerrado pelo usuário.")
+        print("Encerrado pelo usuário.", flush=True)
+

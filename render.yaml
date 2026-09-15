@@ -5,8 +5,10 @@ services:
     plan: free
     region: oregon
     buildCommand: pip install -r requirements.txt && playwright install chromium
-    startCommand: python render_app.py
+    startCommand: python -u render_app.py
     envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
       - key: DISCORD_BOT_TOKEN
         sync: false
       - key: BOT_MODE
