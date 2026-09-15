@@ -114,10 +114,9 @@ class MoodleDaemon:
         finally:
             self._is_reauthenticating = False
 
-    async def _process_assignment(self, assign):
+    async def _process_assignment(self, assign, platform: str = "moodle"):
         """Processa uma atividade individual (Moodle ou Canvas): notas, Notion, rascunho de IA e revisão."""
         assign_state = self.state.get_assignment(assign.id)
-        platform = getattr(assign, "platform", "moodle")
         plat_label = "Canvas" if platform == "canvas" else "Moodle"
 
         # 1. Monitor de Notas & Feedback: verifica se o professor lançou a avaliação
@@ -141,11 +140,11 @@ class MoodleDaemon:
                     assign_state["feedback_comments"] = assign.feedback_comments
                     self.state.save()
                 else:
-                    self.state.register_assignment(assign, grade_notified=True)
+                    self.state.register_assignment(assign, grade_notified=True, platform=platform)
 
         # 2. Se a atividade não é acionável pendente (ex: já enviada ou prazo vencido), registra e segue
         if not assign.is_actionable_pending:
-            self.state.register_assignment(assign)
+            self.state.register_assignment(assign, platform=platform)
             return
 
         # 3. Se o usuário cancelou essa tarefa pelo Discord, respeita e não processa
@@ -185,7 +184,7 @@ class MoodleDaemon:
                                 notify_discord=True
                             )
                             if r.get("success"):
-                                self.state.register_assignment(assign)
+                                self.state.register_assignment(assign, platform=platform)
                                 cur = self.state.get_assignment(assign.id)
                                 if cur:
                                     cur["notion_synced"] = True
@@ -195,7 +194,7 @@ class MoodleDaemon:
 
         # 5. Se for questionário online (quiz), registra no catálogo para acompanhamento em /tarefas (resolução sob demanda)
         if getattr(assign, "activity_type", "assign") == "quiz":
-            self.state.register_assignment(assign)
+            self.state.register_assignment(assign, platform=platform)
             return
 
         # 6. Se a tarefa foi adiada pelo usuário e o tempo ainda não passou, pula
@@ -220,7 +219,7 @@ class MoodleDaemon:
                         target_assign,
                         auto_triggered=True,
                     )
-                    self.state.register_assignment(target_assign, draft_path=str(d.output_path))
+                    self.state.register_assignment(target_assign, draft_path=str(d.output_path), platform=platform)
                     if self.notifier.token and self.notifier.channel_id:
                         await self.notifier.send_assignment_review(target_assign, d)
                     return True, f"Rascunho gerado para '{target_assign.title}'"
@@ -236,7 +235,7 @@ class MoodleDaemon:
             except Exception as sol_err:
                 console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
         else:
-            self.state.register_assignment(assign)
+            self.state.register_assignment(assign, platform=platform)
 
     async def _scan_canvas(self):
         """Executa varredura de disciplinas, tarefas e comunicados do Canvas LMS."""
@@ -299,8 +298,7 @@ class MoodleDaemon:
                     grade_value=assign.grade_value,
                     activity_type=assign.activity_type
                 )
-                m_assign.platform = "canvas"
-                await self._process_assignment(m_assign)
+                await self._process_assignment(m_assign, platform="canvas")
 
             console.print(f"[green]✔ Canvas sincronizado: {len(c_courses)} cursos, {len(c_assignments)} tarefas, {len(c_announcements)} avisos.[/green]")
         except Exception as c_err:
@@ -385,8 +383,7 @@ class MoodleDaemon:
 
         # Processa cada atividade pelo pipeline comum
         for assign in assignments:
-            assign.platform = "moodle"
-            await self._process_assignment(assign)
+            await self._process_assignment(assign, platform="moodle")
 
         console.print(f"[green]✔ Moodle sincronizado: {len(courses)} cursos, {len(assignments)} tarefas, {len(announcements)} avisos.[/green]")
 

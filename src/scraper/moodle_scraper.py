@@ -200,18 +200,15 @@ class Assignment(BaseModel):
 
     @property
     def is_submitted(self) -> bool:
-        status_lower = (self.submission_status or "").lower()
+        """Verifica se a atividade já foi submetida ou concluída pelo aluno."""
+        status_lower = self.submission_status.lower()
         time_lower = (self.time_remaining or "").lower()
 
-        # Se contiver termos explícitos de não envio ou pendência, nunca é considerado submetido
-        if any(term in status_lower for term in ["não enviado", "nao enviado", "pendente", "nenhum envio", "sem envio", "nenhuma tentativa"]):
-            return False
-
         if self.activity_type == "quiz":
-            return any(term in status_lower for term in ["concluído", "concluido", "feito", "finalizada", "avaliado", "enviado"])
+            return any(term in status_lower for term in ["concluído", "concluido", "feito", "finalizada"])
 
         # Indicadores fortes de submissão concluída
-        if any(term in status_lower for term in ["enviado para avaliação", "submetido", "submitted", "concluído", "finalizada", "avaliado", "enviado"]):
+        if any(term in status_lower for term in ["enviado para avaliação", "submetido", "submitted", "concluído", "finalizada"]):
             return True
         if "enviada" in time_lower and "adiantado" in time_lower:
             return True
@@ -226,10 +223,8 @@ class Assignment(BaseModel):
         time_lower = (self.time_remaining or "").lower()
         if any(term in time_lower for term in ["atrasad", "expirad", "encerrad", "fechad"]):
             return True
-        if self.due_date:
-            now = datetime.now(self.due_date.tzinfo) if self.due_date.tzinfo else datetime.now()
-            if self.due_date < now:
-                return True
+        if self.due_date and self.due_date < datetime.now():
+            return True
         return False
 
     @property

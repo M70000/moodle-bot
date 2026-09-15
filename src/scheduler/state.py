@@ -115,7 +115,7 @@ class DaemonState:
             all_items.append(assign)
         return all_items
 
-    def register_assignment(self, assignment, draft_path: Optional[str] = None):
+    def register_assignment(self, assignment, draft_path: Optional[str] = None, platform: Optional[str] = None):
         if "assignments" not in self.data:
             self.data["assignments"] = {}
 
@@ -137,7 +137,7 @@ class DaemonState:
             "grade_value": getattr(assignment, "grade_value", None),
             "has_grade": getattr(assignment, "has_grade", False),
             "is_submitted": assignment.is_submitted,
-            "platform": getattr(assignment, "platform", "moodle"),
+            "platform": platform or getattr(assignment, "platform", "moodle"),
             "course_id": getattr(assignment, "course_id", ""),
             "description": getattr(assignment, "description", ""),
             "draft_path": draft_path or existing.get("draft_path"),

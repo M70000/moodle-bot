@@ -2531,7 +2531,6 @@ async def _execute_solve_flow(
         description=target_item.get("description", ""),
         activity_type=target_item.get("activity_type", "quiz" if ("mod/quiz" in target_item.get("url", "") or "/quizzes/" in target_item.get("url", "")) else "assign")
     )
-    assign_obj.platform = platform
 
     if platform == "canvas":
         try:
@@ -2626,7 +2625,7 @@ async def _execute_solve_flow(
         notifier = MoodleDiscordNotifier()
 
         if modo == "preencher":
-            if assign_obj.platform == "canvas":
+            if platform == "canvas":
                 await reporter.log("ℹ️ No Canvas LMS, o envio de arquivos é registrado diretamente. Gerando documento para sua conferência...")
                 sent = await notifier.send_assignment_review(
                     assign_obj, draft, draft_saved=False, is_finalized=False, final_status_message="Pronto para conferência e envio.", channel=channel
@@ -2674,7 +2673,7 @@ async def _execute_solve_flow(
                     return False, f"Falha ao preencher no Moodle: {submit_msg}"
 
         elif modo == "finalizar":
-            if assign_obj.platform == "canvas":
+            if platform == "canvas":
                 await reporter.log("🎓 Enviando resolução para o Canvas da sua faculdade...")
                 from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
                 submitter = CanvasSubmitter()
@@ -2740,7 +2739,7 @@ async def _execute_solve_flow(
             sent = await notifier.send_assignment_review(assign_obj, draft, channel=channel)
             if sent:
                 file_label = "DOCX editável" if (draft.docx_path and draft.docx_path.exists()) else "rascunho"
-                lms_dest = "Canvas" if assign_obj.platform == "canvas" else "Moodle"
+                lms_dest = "Canvas" if platform == "canvas" else "Moodle"
                 await reporter.finish(
                     f"✔ Resolução de **{assign_obj.title}** enviada como {file_label} com botões de revisão para o {lms_dest}!"
                 )
