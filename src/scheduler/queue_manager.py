@@ -25,15 +25,15 @@ console = Console()
 
 class QueueTaskType(str, Enum):
     RESOLVE_QUIZ = "🧠 Resolvendo Questionário com IA"
-    RESOLVE_ASSIGNMENT = "🧠 Resolvendo Tarefa Discursiva com IA"
+    RESOLVE_ASSIGNMENT = "🧠 Resolvendo Tarefa com IA"
     REDO_TASK = "🔄 Refazendo Atividade com IA"
-    FILL_QUIZ = "📝 Preenchendo Quiz no Moodle (Rascunho)"
-    FINALIZE_QUIZ = "🚀 Finalizando e Enviando Quiz no Moodle"
-    SUBMIT_ASSIGNMENT = "📄 Submetendo PDF no Moodle"
-    PIPELINE_FILL = "📝 Resolução & Preenchimento no Moodle"
+    FILL_QUIZ = "📝 Preenchendo Quiz (Rascunho)"
+    FINALIZE_QUIZ = "🚀 Finalizando e Enviando Quiz"
+    SUBMIT_ASSIGNMENT = "📄 Submetendo Atividade"
+    PIPELINE_FILL = "📝 Resolução & Preenchimento"
     PIPELINE_COMPLETE = "⚡ Resolução & Envio Completo (End-to-End)"
     BATCH_PIPELINE = "📦 Processamento em Lote"
-    DAEMON_WATCHER = "🔍 Varredura Automática do Moodle"
+    DAEMON_WATCHER = "🔍 Varredura Automática"
 
 
 class QueueTaskStatus(str, Enum):

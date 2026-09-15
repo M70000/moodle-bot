@@ -393,10 +393,30 @@ class GeminiSolver:
                     console.print(f"  [yellow]Falha ao carregar {file_path.name} para o Gemini: {up_err}[/yellow]")
 
             # Montagem do Prompt Acadêmico Rigoroso
-            # Montagem do Prompt Humano Realista
-            system_instruction = (
-                "Você é um estudante universitário da UFMG realizando esta atividade acadêmica.\n"
-                "Escreva a resolução EXATAMENTE como um aluno humano real entrega para o professor:\n\n"
+            is_coding = (
+                getattr(assignment, "is_coding_task", False)
+                or any(k in (assignment.title or "").lower() for k in ["coding task", "programação", "código", "python"])
+                or "snapshot to url" in (assignment.description or "").lower()
+                or "snapshot" in (assignment.description or "").lower()
+            )
+
+            if is_coding:
+                system_instruction = (
+                    "Você é um desenvolvedor de software e estudante resolvendo uma tarefa prática de programação (Coding Task).\n"
+                    "Seu foco principal é fornecer EXCLUSIVAMENTE o código correto, limpo e executável para rodar no editor interativo e gerar a saída esperada.\n\n"
+                    "DIRETRIZES OBRIGATÓRIAS:\n"
+                    "1. DIRETO AO PONTO: É ESTRITAMENTE PROIBIDO escrever relatórios teóricos longos, introduções acadêmicas, tutoriais ou explicações desnecessárias sobre a sintaxe.\n"
+                    "2. CÓDIGO EXECUTÁVEL: Forneça a solução completa, funcional e limpa dentro de um bloco de código markdown:\n"
+                    "```python\n"
+                    "[código funcional aqui]\n"
+                    "```\n"
+                    "3. No máximo 1 ou 2 linhas objetivas indicando o que o código faz, sem rodeios.\n"
+                    "4. NUNCA invente blocos de texto prolixos de IA."
+                )
+            else:
+                system_instruction = (
+                    "Você é um estudante universitário da UFMG realizando esta atividade acadêmica.\n"
+                    "Escreva a resolução EXATAMENTE como um aluno humano real entrega para o professor:\n\n"
                 "DIRETRIZES OBRIGATÓRIAS:\n"
                 "1. REGRA DE OURO - PRIORIDADE ABSOLUTA DO GABARITO / MATERIAL DE REFERÊNCIA:\n"
                 "   - Se houver materiais de apoio, gabaritos ou anotações fornecidos contendo resoluções ou respostas para esta atividade, "

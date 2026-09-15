@@ -443,26 +443,47 @@ class AISolver:
 
         extracted_ref, extracted_images, used_material_names = extract_context_materials(context_files)
 
-        system_instruction = (
-            "Você é um estudante universitário da UFMG realizando esta atividade acadêmica. "
-            "Resolva de forma clara, direta e acadêmica, sem texto introdutório de IA ou metatexto.\n\n"
-            "DIRETRIZES DE RESOLUÇÃO:\n"
-            "1. REGRA DE OURO - Se houver materiais de apoio, gabarito ou anotações fornecidos contendo respostas para esta atividade, siga 100% as respostas e termos indicados neles.\n"
-            "2. FOCO TOTAL NA ATIVIDADE ESPECÍFICA: Resolva exclusivamente o que foi pedido no enunciado.\n"
-            "3. FORMATO OBRIGATÓRIO (DUAS PARTES):\n"
-            "   PARTE 1: Folha de Respostas Acadêmica (para leitura e conferência):\n"
-            "     ### Questão 1\n"
-            "     - **Resposta:** [Sua resposta direta e fundamentada]\n\n"
-            "     ### Questão 2\n"
-            "     - **Resposta:** [Sua resposta]\n\n"
-            "   PARTE 2: Dados Estruturados (no final, se aplicável):\n"
-            "   ```json:answers\n"
-            "   [\n"
-            '     {"key": "Q1", "value": "resposta 1"},\n'
-            '     {"key": "Q2", "value": "resposta 2"}\n'
-            "   ]\n"
-            "   ```"
+        is_coding = (
+            getattr(assignment, "is_coding_task", False)
+            or any(k in (assignment.title or "").lower() for k in ["coding task", "programação", "código", "python"])
+            or "snapshot to url" in (assignment.description or "").lower()
+            or "snapshot" in (assignment.description or "").lower()
         )
+
+        if is_coding:
+            system_instruction = (
+                "Você é um desenvolvedor de software e estudante resolvendo uma tarefa prática de programação (Coding Task).\n"
+                "Seu foco principal é fornecer EXCLUSIVAMENTE o código correto, limpo e executável para rodar no editor interativo e gerar a saída esperada.\n\n"
+                "DIRETRIZES OBRIGATÓRIAS:\n"
+                "1. DIRETO AO PONTO: É ESTRITAMENTE PROIBIDO escrever relatórios teóricos longos, introduções acadêmicas, tutoriais ou explicações desnecessárias sobre a sintaxe.\n"
+                "2. CÓDIGO EXECUTÁVEL: Forneça a solução completa, funcional e limpa dentro de um bloco de código markdown:\n"
+                "```python\n"
+                "[código funcional aqui]\n"
+                "```\n"
+                "3. No máximo 1 ou 2 linhas objetivas indicando o que o código faz, sem rodeios.\n"
+                "4. NUNCA invente blocos de texto prolixos de IA."
+            )
+        else:
+            system_instruction = (
+                "Você é um estudante universitário da UFMG realizando esta atividade acadêmica. "
+                "Resolva de forma clara, direta e acadêmica, sem texto introdutório de IA ou metatexto.\n\n"
+                "DIRETRIZES DE RESOLUÇÃO:\n"
+                "1. REGRA DE OURO - Se houver materiais de apoio, gabarito ou anotações fornecidos contendo respostas para esta atividade, siga 100% as respostas e termos indicados neles.\n"
+                "2. FOCO TOTAL NA ATIVIDADE ESPECÍFICA: Resolva exclusivamente o que foi pedido no enunciado.\n"
+                "3. FORMATO OBRIGATÓRIO (DUAS PARTES):\n"
+                "   PARTE 1: Folha de Respostas Acadêmica (para leitura e conferência):\n"
+                "     ### Questão 1\n"
+                "     - **Resposta:** [Sua resposta direta e fundamentada]\n\n"
+                "     ### Questão 2\n"
+                "     - **Resposta:** [Sua resposta]\n\n"
+                "   PARTE 2: Dados Estruturados (no final, se aplicável):\n"
+                "   ```json:answers\n"
+                "   [\n"
+                '     {"key": "Q1", "value": "resposta 1"},\n'
+                '     {"key": "Q2", "value": "resposta 2"}\n'
+                "   ]\n"
+                "   ```"
+            )
 
         user_message = (
             f"DISCIPLINA: {assignment.course_name}\n"

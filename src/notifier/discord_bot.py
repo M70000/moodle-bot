@@ -26,7 +26,7 @@ from discord import app_commands, ui
 from discord.ext import commands
 from rich.console import Console
 
-from config.settings import settings
+from config.settings import PROJECT_ROOT, settings
 from src.ui.theme import LumiTheme, create_lumi_embed, apply_lumi_footer
 from src.auth.moodle_auth import MoodleAuth
 from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus
@@ -1603,7 +1603,17 @@ class ReviewActionView(ui.View):
                 submitter = CanvasSubmitter()
                 current_time = datetime.now().strftime("%H:%M:%S")
 
-                has_session = (settings.PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json").exists() and not _is_relay_mode()
+                canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
+                has_session = Path(canvas_cookies_file).exists() and Path(canvas_cookies_file).stat().st_size > 10 and not _is_relay_mode()
+
+                if is_coding and not has_session and not _is_relay_mode():
+                    await reporter.log("🔑 Sessão do navegador não encontrada. Abrindo tela de login no Canvas...")
+                    from src.auth.canvas_auth import CanvasAuth
+                    c_auth = CanvasAuth()
+                    login_ok = await c_auth.interactive_login(headless=False)
+                    if login_ok:
+                        has_session = True
+                        await reporter.log("✔ Sessão do Canvas autenticada com sucesso!")
 
                 if is_coding and has_session:
                     await reporter.log("🚀 Executando código corrigido no editor e gerando Snapshot to URL...")
@@ -1623,6 +1633,20 @@ class ReviewActionView(ui.View):
                             comment="Submetido via LumiBot",
                             on_log=reporter.log
                         )
+                elif is_coding and not has_session:
+                    if found_urls:
+                        target_url = found_urls[0]
+                        await reporter.log(f"Submetendo link na aba Web URL: {target_url}")
+                        success, message = await submitter.submit_url(
+                            course_id=str(course_id),
+                            assignment_id=str(assignment_id),
+                            url=target_url,
+                            comment="Submetido via LumiBot",
+                            on_log=reporter.log
+                        )
+                    else:
+                        success = False
+                        message = "Tarefas interativas com editor de código exigem sessão no navegador. Execute `/login metodo:Manual plataforma:Canvas LMS` no Discord para autenticar o navegador uma vez."
                 elif should_use_web_url(submission_types=sub_types, title=clean_title, description=str(item_data.get("description", ""))):
                     if found_urls:
                         target_url = found_urls[0]
@@ -2943,7 +2967,12 @@ async def _execute_solve_flow(
                     setattr(assign_obj, "submission_types", c_assign.submission_types)
 
             # Inspeciona se é uma tarefa interativa de código no Canvas
-            canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (settings.PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json")
+            clean_t = (assign_obj.title or "").lower()
+            desc_l = str(assign_obj.description or "").lower()
+            if "coding task" in clean_t or "snapshot to url" in desc_l or "snapshot" in desc_l or ("editor" in desc_l and "python" in desc_l):
+                setattr(assign_obj, "is_coding_task", True)
+
+            canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
             if assign_obj.activity_type != "quiz" and Path(canvas_cookies_file).exists() and not _is_relay_mode():
                 try:
                     from src.scraper.canvas_coding import CanvasCodingAutomator
@@ -2985,7 +3014,7 @@ async def _execute_solve_flow(
                 pass
         reporter = DiscordLiveReporter(status_msg, initial_header)
 
-        canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (settings.PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json")
+        canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
         has_local_session = (
             (Path(canvas_cookies_file).exists() if platform == "canvas" else Path(settings.STORAGE_COOKIES_PATH).exists())
             and not _is_relay_mode()
@@ -6129,8 +6158,17 @@ class MoodleDiscordNotifier:
                 if not summary_raw:
                     summary_raw = "Respostas resolvidas pela IA e salvas na tentativa."
 
-                summary_text = summary_raw[:800] + ("..." if len(summary_raw) > 800 else "")
-                embed.add_field(name="📝 Respostas Preparadas", value=f"```markdown\n{summary_text}\n```", inline=False)
+                is_coding_activity = (
+                    getattr(assignment, "is_coding_task", False)
+                    or any(k in (assignment.title or "").lower() for k in ["coding task", "programação", "código", "python"])
+                )
+                from src.scraper.canvas_coding import extract_python_code_from_text
+                code_snip = extract_python_code_from_text(draft.prepared_response or draft.full_markdown or "")
+                if is_coding_activity and code_snip:
+                    embed.add_field(name="💻 Solução em Código (Python)", value=f"```python\n{code_snip[:1000]}\n```", inline=False)
+                else:
+                    summary_text = summary_raw[:800] + ("..." if len(summary_raw) > 800 else "")
+                    embed.add_field(name="📝 Respostas Preparadas", value=f"```markdown\n{summary_text}\n```", inline=False)
 
                 if draft.used_materials:
                     embed.add_field(

@@ -19,7 +19,7 @@ from playwright.async_api import async_playwright
 from rich.console import Console
 from rich.panel import Panel
 
-from config.settings import settings
+from config.settings import PROJECT_ROOT, settings
 
 if sys.platform == "win32":
     try:
@@ -61,7 +61,7 @@ class CanvasAuth:
         self.cookies_path = (
             cookies_path
             or getattr(settings, "CANVAS_COOKIES_PATH", None)
-            or (settings.PROJECT_ROOT / "storage" / "cookies" / "canvas_session.json")
+            or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
         )
         self.timeout_ms = (timeout_seconds or getattr(settings, "LOGIN_TIMEOUT_SECONDS", 300)) * 1000
 

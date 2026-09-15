@@ -305,6 +305,11 @@ class Settings(BaseSettings):
         return p
 
     @property
+    def PROJECT_ROOT(self) -> Path:
+        """Diretório raiz absoluto do projeto."""
+        return PROJECT_ROOT
+
+    @property
     def STORAGE_MATERIALS_PATH(self) -> Path:
         """Alias para STORAGE_MATERIALS_DIR para garantir compatibilidade retroativa."""
         return self.STORAGE_MATERIALS_DIR
