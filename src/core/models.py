@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field
 def sanitize_filename(name: str) -> str:
     """Remove caracteres inválidos para criação segura de arquivos e diretórios."""
     cleaned = re.sub(r'[\\/*?:"<>|]', "_", name)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    return cleaned[:100] if len(cleaned) > 100 else cleaned
+    cleaned = re.sub(r"\s+", " ", cleaned).strip().strip(". ")
+    return (cleaned[:100] if len(cleaned) > 100 else cleaned) or "arquivo"
 
 
 class LMSCourse(BaseModel):

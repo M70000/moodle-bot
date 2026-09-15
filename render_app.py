@@ -153,6 +153,7 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
             response_dict = {"tasks": tasks, "count": len(tasks)}
 
         elif path in ("/api/bridge/courses", "/api/bridge/sync"):
+            channel_id = query_params.get("channel_id", [""])[0] or None
             if method == "POST":
                 # Desktop publica a lista de disciplinas, catálogo de tarefas e materiais
                 try:
@@ -160,59 +161,68 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                     courses = data.get("courses")
                     assignments = data.get("assignments")
                     custom_materials = data.get("custom_materials")
+                    cid = data.get("channel_id") or channel_id
                     await cloud_bridge.publish_state(
                         courses=courses,
                         assignments=assignments,
-                        custom_materials=custom_materials
+                        custom_materials=custom_materials,
+                        channel_id=cid
                     )
                     c_count = len(courses) if courses is not None else 0
                     a_count = len(assignments) if assignments is not None else 0
                     m_count = len(custom_materials) if custom_materials is not None else 0
                     response_dict = {
                         "ok": True,
+                        "channel_id": cid,
                         "courses_count": c_count,
                         "assignments_count": a_count,
                         "materials_count": m_count,
                     }
-                    print(f"[Bridge] Desktop sincronizou {c_count} disciplinas, {a_count} tarefas e {m_count} materiais.")
+                    print(f"[Bridge] Desktop ({cid or 'global'}) sincronizou {c_count} disciplinas, {a_count} tarefas e {m_count} materiais.")
                 except Exception as e:
                     status_code = "400 Bad Request"
                     response_dict = {"error": str(e)}
             else:
-                # Autocomplete (relay mode) lê a lista publicada pelo desktop
-                courses = await cloud_bridge.get_published_courses()
-                online = await cloud_bridge.is_desktop_online()
+                # Autocomplete (relay mode) lê a lista publicada pelo desktop para aquele canal
+                courses = await cloud_bridge.get_published_courses(channel_id=channel_id)
+                online = await cloud_bridge.is_desktop_online(channel_id=channel_id)
                 response_dict = {
                     "courses": courses,
+                    "channel_id": channel_id,
                     "desktop_online": online,
                     "count": len(courses)
                 }
 
         elif path == "/api/bridge/assignments":
-            assignments = await cloud_bridge.get_published_assignments()
-            online = await cloud_bridge.is_desktop_online()
+            channel_id = query_params.get("channel_id", [""])[0] or None
+            assignments = await cloud_bridge.get_published_assignments(channel_id=channel_id)
+            online = await cloud_bridge.is_desktop_online(channel_id=channel_id)
             response_dict = {
                 "assignments": assignments,
+                "channel_id": channel_id,
                 "desktop_online": online,
                 "count": len(assignments)
             }
 
         elif path == "/api/bridge/materials":
+            channel_id = query_params.get("channel_id", [""])[0] or None
             if method == "POST":
                 try:
                     data = json.loads(body_bytes.decode("utf-8"))
+                    cid = data.get("channel_id") if isinstance(data, dict) else channel_id
                     if isinstance(data, list):
                         for item in data:
-                            await cloud_bridge.register_material(item)
+                            item_cid = item.get("channel_id", cid) if isinstance(item, dict) else cid
+                            await cloud_bridge.register_material(item, channel_id=item_cid)
                     elif isinstance(data, dict):
-                        await cloud_bridge.register_material(data)
-                    mats = await cloud_bridge.get_custom_materials()
+                        await cloud_bridge.register_material(data, channel_id=cid)
+                    mats = await cloud_bridge.get_custom_materials(channel_id=cid)
                     response_dict = {"ok": True, "count": len(mats)}
                 except Exception as e:
                     status_code = "400 Bad Request"
                     response_dict = {"error": str(e)}
             else:
-                mats = await cloud_bridge.get_custom_materials()
+                mats = await cloud_bridge.get_custom_materials(channel_id=channel_id)
                 response_dict = {"materials": mats, "count": len(mats)}
 
         elif path == "/api/bridge/desktop-status":

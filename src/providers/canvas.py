@@ -86,12 +86,13 @@ def parse_canvas_datetime(dt_str: Optional[str]) -> Optional[datetime]:
     if not dt_str:
         return None
     try:
-        # Suporta strings com final 'Z' ou offset '+00:00'
         clean = dt_str.strip()
         if clean.endswith("Z"):
             clean = clean[:-1] + "+00:00"
         dt = datetime.fromisoformat(clean)
-        # Converte para o fuso horário local do usuário (ex: America/Sao_Paulo / UTC-3)
+        # Proteção Windows CRT: astimezone() lança [Errno 22] Invalid argument para anos < 1970
+        if dt.year < 1970:
+            return dt
         return dt.astimezone()
     except Exception:
         return None
@@ -477,14 +478,26 @@ class CanvasAdapter(BaseLMSProvider):
                             submission_status=sub_status,
                             grade_value=grade_val,
                             time_remaining=time_rem,
-                            due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if due_dt else None
+                            due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if (due_dt and due_dt.year >= 1900) else (due_dt.isoformat()[:16] if due_dt else None)
                         )
                     )
             except Exception as e:
                 console.print(f"[yellow]⚠️ Erro ao consultar tarefas do curso {course.name} no Canvas: {e}[/yellow]")
                 continue
 
-        all_assignments.sort(key=lambda x: (x.due_date is None, x.due_date or datetime.max.astimezone()))
+        def _safe_canvas_sort(a: LMSAssignment):
+            if a.due_date is None:
+                return (1, float("inf"))
+            try:
+                # Se for timezone-aware, converte para UTC timestamp
+                if a.due_date.tzinfo is not None:
+                    return (0, a.due_date.astimezone(timezone.utc).timestamp())
+                return (0, a.due_date.timestamp())
+            except Exception:
+                # Fallback para comparação por componentes de data
+                return (0, float(a.due_date.year * 31536000 + a.due_date.month * 2592000 + a.due_date.day * 86400))
+
+        all_assignments.sort(key=_safe_canvas_sort)
         return all_assignments
 
     async def get_announcements(

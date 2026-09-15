@@ -126,7 +126,9 @@ class BridgeRunner:
                 custom_materials = []
 
             url = f"{base}/api/bridge/sync"
+            ch_id = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "")
             payload = json.dumps({
+                "channel_id": ch_id,
                 "courses": courses,
                 "assignments": assignments,
                 "custom_materials": custom_materials
@@ -150,7 +152,9 @@ class BridgeRunner:
 
         loop = asyncio.get_running_loop()
         try:
-            url = f"{base}/api/bridge/materials"
+            ch_id = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "")
+            query_str = f"?channel_id={urllib.parse.quote(ch_id)}" if ch_id else ""
+            url = f"{base}/api/bridge/materials{query_str}"
             req = urllib.request.Request(url, headers={"User-Agent": "MoodleDesktopRunner/1.0"})
             resp_bytes = await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=10).read())
             data = json.loads(resp_bytes.decode("utf-8"))
@@ -594,14 +598,23 @@ class BridgeRunner:
         # Publica disciplinas imediatamente ao iniciar (heartbeat inicial)
         if url_base:
             await self.publish_courses_to_hub(url_base)
-            import time
-            self._last_courses_publish = time.time()
+        import time
+        self._last_courses_publish = time.time()
 
         while self._is_running:
             try:
                 await self.poll_once()
             except Exception:
                 pass
+
+            # Heartbeat periódico a cada 60s para manter status online e catálogo atualizado
+            if url_base and (time.time() - getattr(self, "_last_courses_publish", 0)) > 60:
+                try:
+                    await self.publish_courses_to_hub(url_base)
+                    self._last_courses_publish = time.time()
+                except Exception:
+                    pass
+
             await asyncio.sleep(poll_interval)
 
 

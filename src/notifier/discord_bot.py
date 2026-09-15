@@ -31,7 +31,7 @@ from src.ui.theme import LumiTheme, create_lumi_embed, apply_lumi_footer
 from src.auth.moodle_auth import MoodleAuth
 from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus
 from src.scheduler.state import DaemonState
-from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_filename
+from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_filename, parse_moodle_date
 from src.scraper.moodle_submitter import MoodleSubmitter
 from src.solver.gemini_solver import GeminiSolver, SolutionDraft
 from src.solver.ai_solver import AISolver, get_active_provider
@@ -331,123 +331,182 @@ BYOK_RELAY_MESSAGE = (
 )
 
 
-async def _get_current_assignments() -> Dict[str, Any]:
-    """Retorna o dicionário de tarefas ativas unificadas (Moodle + Canvas)."""
-    assignments: Dict[str, Any] = {}
+def resolve_interaction_student_channels(interaction: Optional[Any]) -> Dict[str, str]:
+    """Identifica o mapa de canais ou o canal principal (DISCORD_CHANNEL_ID) do aluno na interação."""
+    if not interaction:
+        return {"DISCORD_CHANNEL_ID": str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "")}
 
+    # 1. Se a interação ocorreu dentro da categoria privada do aluno (🔒 Lumi • Nome)
+    ch = getattr(interaction, "channel", None)
+    if ch and getattr(ch, "category", None):
+        cat = ch.category
+        ch_map = {}
+        for tc in getattr(cat, "text_channels", []):
+            name = tc.name.lower()
+            if "alerta" in name or "revis" in name:
+                ch_map["DISCORD_CHANNEL_ID"] = str(tc.id)
+            elif "conteudo" in name:
+                ch_map["DISCORD_CONTENT_CHANNEL_ID"] = str(tc.id)
+            elif "aviso" in name:
+                ch_map["DISCORD_ANNOUNCEMENTS_CHANNEL_ID"] = str(tc.id)
+            elif "fila" in name:
+                ch_map["DISCORD_QUEUE_CHANNEL_ID"] = str(tc.id)
+            elif "estudo" in name or "simulado" in name:
+                ch_map["DISCORD_STUDY_CHANNEL_ID"] = str(tc.id)
+        if ch_map.get("DISCORD_CHANNEL_ID"):
+            return ch_map
+
+    # 2. Busca pelas salas provisionadas do membro
+    user = getattr(interaction, "user", None) or getattr(interaction, "author", None)
+    if user:
+        try:
+            prov = get_user_provisioned_channels(str(user.id))
+            if prov and prov.get("channels", {}).get("DISCORD_CHANNEL_ID"):
+                return prov["channels"]
+        except Exception:
+            pass
+
+    # 3. Fallback: canal atual ou canal configurado no .env
+    cur_ch = str(getattr(interaction, "channel_id", None) or (ch.id if ch else "") or getattr(settings, "DISCORD_CHANNEL_ID", "") or "")
+    return {"DISCORD_CHANNEL_ID": cur_ch}
+
+
+async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
+    """Retorna o dicionário de tarefas ativas isoladas por aluno/canal (Moodle + Canvas)."""
+    ch_info = resolve_interaction_student_channels(interaction)
+    target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
+    my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
+
+    # Modo Nuvem (Render Hub): busca tarefas publicadas pelo desktop daquele canal
     if _is_relay_mode():
         try:
             from src.notifier.bridge_manager import cloud_bridge
-            rel_assign = await cloud_bridge.get_published_assignments()
+            rel_assign = await cloud_bridge.get_published_assignments(channel_id=target_channel)
             if rel_assign:
-                assignments.update(rel_assign)
+                return rel_assign
         except Exception:
             pass
 
-    # Tenta leitura local do state.json (Moodle e tarefas gravadas)
-    try:
-        state = DaemonState()
-        local_assignments = state.data.get("assignments", {})
-        if local_assignments:
-            assignments.update(local_assignments)
-    except Exception:
-        pass
+    # Modo Desktop:
+    # Se a interação pertence ao próprio aluno desta máquina
+    is_my_user = (
+        not target_channel 
+        or not my_channel 
+        or target_channel == my_channel
+    )
 
-    # Se local vazio (ex: Render sem flag explícita), tenta bridge como fallback
-    if not assignments:
+    if is_my_user:
+        assignments: Dict[str, Any] = {}
         try:
-            from src.notifier.bridge_manager import cloud_bridge
-            pub_assign = await cloud_bridge.get_published_assignments()
-            if pub_assign:
-                assignments.update(pub_assign)
+            state = DaemonState()
+            local_assignments = state.data.get("assignments", {})
+            if local_assignments:
+                assignments.update(local_assignments)
         except Exception:
             pass
 
-    # Unifica tarefas do Canvas LMS
-    try:
-        from src.providers.canvas import CanvasAdapter
-        canvas = CanvasAdapter()
-        if canvas.api_token:
-            canvas_tasks = await canvas.get_upcoming_assignments(days=15)
-            for ct in canvas_tasks:
-                cid = f"canvas_{ct.id}"
-                if ct.id not in assignments and cid not in assignments:
-                    assignments[cid] = ct.to_dict()
-                elif ct.id in assignments:
-                    assignments[ct.id].setdefault("platform", "canvas")
-                    assignments[ct.id].setdefault("course_id", ct.course_id)
-    except Exception:
-        pass
+        # Se for usuário do Canvas nesta máquina e local ainda estiver vazio, consulta direto
+        try:
+            prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+            if prov in ("canvas", "multi"):
+                from src.providers.canvas import CanvasAdapter
+                canvas = CanvasAdapter()
+                if canvas.is_configured and not assignments:
+                    canvas_tasks = await canvas.get_upcoming_assignments(days=15)
+                    for ct in canvas_tasks:
+                        cid = f"canvas_{ct.id}"
+                        assignments[cid] = ct.to_dict()
+        except Exception:
+            pass
 
-    return assignments
+        return assignments
+
+    # Se a interação veio de OUTRO aluno e caiu neste desktop:
+    # Consulta o Render Hub pelo canal daquele aluno
+    hub_url = (getattr(settings, "RENDER_URL", "") or "").rstrip("/")
+    if hub_url and target_channel:
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(f"{hub_url}/api/bridge/assignments", params={"channel_id": target_channel})
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return data.get("assignments", {})
+        except Exception:
+            pass
+
+    # Para outro aluno, NUNCA faz fallback para o catálogo local desta máquina
+    return {}
 
 
-def _get_sync_assignments() -> Dict[str, Any]:
-    """Retorna o catálogo de atividades para contextos síncronos (Moodle + Canvas)."""
-    assignments: Dict[str, Any] = {}
-    try:
-        state = DaemonState()
-        local_assignments = state.data.get("assignments", {})
-        if local_assignments:
-            assignments.update(local_assignments)
-    except Exception:
-        pass
+def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
+    """Retorna o catálogo de atividades para contextos síncronos isolado por aluno/canal."""
+    ch_info = resolve_interaction_student_channels(interaction)
+    target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
+    my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
 
+    is_my_user = not target_channel or not my_channel or target_channel == my_channel
+
+    # Se estiver em nuvem (Render Hub):
     try:
         from src.notifier.bridge_manager import cloud_bridge
-        if cloud_bridge._published_assignments:
-            assignments.update(cloud_bridge._published_assignments)
+        if target_channel and target_channel in cloud_bridge._published_assignments_by_channel:
+            return dict(cloud_bridge._published_assignments_by_channel[target_channel])
     except Exception:
         pass
 
-    # Unifica tarefas síncronas do Canvas registradas no estado local
-    try:
-        state = DaemonState()
-        canvas_tasks = state.data.get("canvas_assignments", {})
-        if canvas_tasks:
-            assignments.update(canvas_tasks)
-    except Exception:
-        pass
+    if is_my_user:
+        assignments: Dict[str, Any] = {}
+        try:
+            state = DaemonState()
+            local_assignments = state.data.get("assignments", {})
+            if local_assignments:
+                assignments.update(local_assignments)
+        except Exception:
+            pass
+        return assignments
 
-    return assignments
+    # Para outro usuário, não vaza tarefas locais
+    return {}
 
 
 async def course_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete interativo para seleção de disciplinas no Discord.
-
-    Funciona em dois modos:
-    - Desktop (local): lê de storage/materials/ + assignments do state.json
-    - Relay (Render): lê cursos publicados pelo desktop via Bridge API,
-      com fallback para o catálogo de tarefas sincronizado
-    """
+    """Autocomplete interativo para seleção de disciplinas no Discord com isolamento por aluno."""
     try:
+        ch_info = resolve_interaction_student_channels(interaction)
+        target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
+        my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
+
         courses: List[str] = []
         if _is_relay_mode():
-            # Modo relay: busca cursos publicados pelo desktop no Render Hub
             from src.notifier.bridge_manager import cloud_bridge
-            courses = await cloud_bridge.get_published_courses()
+            courses = await cloud_bridge.get_published_courses(channel_id=target_channel)
             if not courses:
-                # Fallback: tenta extrair das tarefas publicadas via bridge
-                pub_assign = await cloud_bridge.get_published_assignments()
+                pub_assign = await cloud_bridge.get_published_assignments(channel_id=target_channel)
                 courses = sorted({
                     item.get("course", "").strip()
                     for item in pub_assign.values()
                     if item.get("course")
                 })
         else:
-            # Modo desktop: leitura local (materials + state.json)
-            courses = get_available_courses()
-
-        if not courses:
-            # Fallback cruzado
-            try:
-                from src.notifier.bridge_manager import cloud_bridge
-                courses = await cloud_bridge.get_published_courses()
-            except Exception:
-                pass
+            is_my_user = not target_channel or not my_channel or target_channel == my_channel
+            if is_my_user:
+                courses = get_available_courses()
+            else:
+                hub_url = (getattr(settings, "RENDER_URL", "") or "").rstrip("/")
+                if hub_url and target_channel:
+                    try:
+                        import httpx
+                        async with httpx.AsyncClient(timeout=4.0) as client:
+                            resp = await client.get(f"{hub_url}/api/bridge/courses", params={"channel_id": target_channel})
+                            if resp.status_code == 200:
+                                courses = resp.json().get("courses", [])
+                    except Exception:
+                        pass
+                # Se não encontrou cursos para o outro aluno no Hub, mantém vazio (evita vazar disciplinas locais)
 
         if not courses:
             return [app_commands.Choice(
@@ -458,7 +517,7 @@ async def course_autocomplete(
         norm_curr = normalize_text(current)
         filtered = [c for c in courses if not norm_curr or norm_curr in normalize_text(c)]
         return [
-            app_commands.Choice(name=c[:100], value=c)
+            app_commands.Choice(name=c[:100], value=c[:100])
             for c in filtered[:25]
         ]
     except Exception as err:
@@ -492,7 +551,7 @@ async def pending_task_autocomplete(
 ) -> List[app_commands.Choice[str]]:
     """Autocomplete para /resolver: exibe tarefas e questionários pendentes em ordem alfabética natural (A-Z)."""
     try:
-        assignments = await _get_current_assignments()
+        assignments = await _get_current_assignments(interaction=interaction)
         if not assignments:
             return [app_commands.Choice(
                 name="⚡ Inicie iniciar.bat no seu PC para sincronizar as tarefas",
@@ -538,7 +597,7 @@ async def completed_task_autocomplete(
 ) -> List[app_commands.Choice[str]]:
     """Autocomplete para /refazer: exibe exclusivamente tarefas e questionários já concluídos em ordem alfabética natural."""
     try:
-        assignments = await _get_current_assignments()
+        assignments = await _get_current_assignments(interaction=interaction)
         if not assignments:
             return [app_commands.Choice(
                 name="⚡ Inicie iniciar.bat no seu PC para sincronizar as tarefas",
@@ -2001,7 +2060,7 @@ def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
         target_cat = None
         for cat in guild.categories:
             cat_norm = normalize_text(cat.name)
-            if "moodle" in cat_norm:
+            if "lumi" in cat_norm or "moodle" in cat_norm:
                 if target_member:
                     if normalize_text(target_member.name) in cat_norm or normalize_text(target_member.display_name) in cat_norm:
                         target_cat = cat
@@ -2035,104 +2094,265 @@ def get_user_provisioned_channels(identifier: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def build_tarefas_embed(disciplina: Optional[str] = None) -> discord.Embed:
-    """Gera o painel visual das atividades e questionários cadastrados no portal acadêmico."""
-    assignments = _get_sync_assignments()
+def _safe_due_date_parse(val: Any) -> Optional[datetime]:
+    """Converte valores de data variados (Moodle e Canvas) em datetime."""
+    if not val:
+        return None
+    if isinstance(val, datetime):
+        return val
+    try:
+        from src.scraper.moodle_scraper import parse_moodle_date
+        res = parse_moodle_date(val)
+        if res:
+            return res
+    except Exception:
+        pass
+    try:
+        from src.providers.canvas import parse_canvas_datetime
+        return parse_canvas_datetime(str(val))
+    except Exception:
+        return None
+
+
+def build_tarefas_embed(
+    disciplina: Optional[str] = None,
+    assignments: Optional[Dict[str, Any]] = None,
+    interaction: Optional[Any] = None
+) -> discord.Embed:
+    """Gera o painel visual das atividades e questionários cadastrados no portal acadêmico.
+    
+    Suporta:
+    - Visão Geral (disciplina=None): panorama das matérias com resumo de pendências, próximas entregas a vencer e estatísticas.
+    - Visão Detalhada (disciplina=<nome>): lista minuciosa de trabalhos, questionários e tarefas concluídas com notas.
+    """
+    if assignments is None:
+        assignments = _get_sync_assignments(interaction=interaction)
 
     if not assignments:
         desc = "📋 Nenhuma atividade cadastrada no momento."
         if _is_relay_mode():
             desc += "\n\n⚡ **Dica:** O bot está operando em nuvem no Render. Inicie o `iniciar.bat` no seu computador para sincronizar suas tarefas locais."
+        else:
+            desc += "\n\n💡 Se você possui tarefas no portal acadêmico, aguarde a próxima varredura periódica ou execute `/varrer`."
         embed = discord.Embed(
-            title="📚 Painel de Tarefas e Prazos Acadêmicos",
+            title="📚 Painel Geral de Tarefas Acadêmicas",
             description=desc,
             color=LumiTheme.PRIMARY
         )
         return apply_lumi_footer(embed)
 
-    filtered_items = []
-    norm_disc = normalize_text(disciplina) if disciplina else None
+    # ----------------------------------------------------
+    # MODO 1: VISÃO DETALHADA DE UMA DISCIPLINA ESPECÍFICA
+    # ----------------------------------------------------
+    if disciplina and disciplina.strip():
+        norm_disc = normalize_text(disciplina)
+        filtered_items = []
+        matched_course_name = disciplina
+
+        for assign_id, item in assignments.items():
+            c_name = item.get("course", "")
+            t_name = item.get("title", "")
+            if norm_disc in normalize_text(c_name) or norm_disc in normalize_text(t_name):
+                filtered_items.append((assign_id, item))
+                if norm_disc in normalize_text(c_name):
+                    matched_course_name = c_name
+
+        if not filtered_items:
+            embed = discord.Embed(
+                title=f"📚 Disciplina: {disciplina}",
+                description=f"🔍 Nenhuma atividade encontrada para o filtro **{disciplina}**.",
+                color=LumiTheme.PRIMARY
+            )
+            embed.add_field(
+                name="💡 Dica",
+                value="Use o autocomplete do comando `/tarefas` para escolher diretamente uma das suas matérias matriculadas.",
+                inline=False
+            )
+            return apply_lumi_footer(embed)
+
+        embed = discord.Embed(
+            title=f"📚 Tarefas: {matched_course_name}",
+            description=f"Total de itens monitorados nesta matéria: **{len(filtered_items)}**",
+            color=LumiTheme.PRIMARY
+        )
+
+        trabalhos_pendentes = []
+        quizzes_pendentes = []
+        concluidas = []
+
+        for assign_id, item in filtered_items:
+            title = item.get("title", "Atividade")
+            due = item.get("due_date") or "Sem prazo"
+            status = item.get("status", "")
+            act_type = item.get("activity_type", "assign")
+            is_sub = item.get("is_submitted", False)
+            url = item.get("url", "")
+            platform = item.get("platform")
+            plat_str = f" `[{platform.upper()}]`" if platform else ""
+
+            link_part = f"[{title}]({url})" if url else title
+            line = f"• **{link_part}**{plat_str}\n  ⏰ Prazo: **{due}**"
+
+            if is_sub or status == "submitted":
+                grade = item.get("grade")
+                grade_str = f" | Nota: `{grade}`" if grade else ""
+                concluidas.append(f"{line}{grade_str}")
+            elif status == "cancelled":
+                concluidas.append(f"{line} *(Cancelada)*")
+            elif act_type == "quiz":
+                quizzes_pendentes.append(line)
+            else:
+                trabalhos_pendentes.append(line)
+
+        if trabalhos_pendentes:
+            embed.add_field(
+                name=f"📌 Trabalhos e Relatórios Pendentes ({len(trabalhos_pendentes)})",
+                value="\n".join(trabalhos_pendentes[:10]),
+                inline=False
+            )
+        if quizzes_pendentes:
+            embed.add_field(
+                name=f"📝 Questionários & Quizzes Pendentes ({len(quizzes_pendentes)})",
+                value="\n".join(quizzes_pendentes[:10]),
+                inline=False
+            )
+        if not trabalhos_pendentes and not quizzes_pendentes:
+            embed.add_field(
+                name="⏳ Pendências",
+                value="🎉 Nenhuma atividade pendente nesta disciplina! Tudo em dia.",
+                inline=False
+            )
+        if concluidas:
+            embed.add_field(
+                name=f"✅ Atividades Concluídas ({len(concluidas)})",
+                value="\n".join(concluidas[:8]),
+                inline=False
+            )
+
+        apply_lumi_footer(embed)
+        return embed
+
+    # ----------------------------------------------------
+    # MODO 2: VISÃO GERAL DE TODAS AS DISCIPLINAS
+    # ----------------------------------------------------
+    course_groups: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+    all_pending: List[Dict[str, Any]] = []
+    all_completed: List[Dict[str, Any]] = []
+
     for assign_id, item in assignments.items():
-        if norm_disc:
-            course_name = normalize_text(item.get("course", ""))
-            title_name = normalize_text(item.get("title", ""))
-            if norm_disc not in course_name and norm_disc not in title_name:
-                continue
-        filtered_items.append((assign_id, item))
+        c_raw = (item.get("course") or "Disciplina Geral").strip()
+        c_clean = clean_display_course(c_raw) or c_raw
+        if c_clean not in course_groups:
+            course_groups[c_clean] = {"assigns": [], "quizzes": [], "completed": []}
 
-    title_suffix = f" ({disciplina})" if disciplina else ""
-    embed = discord.Embed(
-        title=f"📚 Painel de Tarefas Acadêmicas{title_suffix}",
-        description=f"Total de itens monitorados: **{len(filtered_items)}**",
-        color=LumiTheme.PRIMARY
-    )
-
-    trabalhos_pendentes = []
-    quizzes_pendentes = []
-    concluidas = []
-
-    for assign_id, item in filtered_items:
-        title = item.get("title", "Atividade")
-        course = item.get("course", "Disciplina")
-        due = item.get("due_date") or "Sem prazo"
         status = item.get("status", "")
         act_type = item.get("activity_type", "assign")
         is_sub = item.get("is_submitted", False)
 
-        platform = item.get("platform")
-        plat_str = f" `[{platform.upper()}]`" if platform else ""
-        line = f"• **[{title}]({item.get('url', '')})**{plat_str}\n  🏫 {course} | ⏰ {due}"
-
-        if is_sub or status == "submitted":
-            concluidas.append(line)
-        elif status == "cancelled":
-            concluidas.append(f"{line} *(Cancelado)*")
+        if is_sub or status in ("submitted", "cancelled"):
+            course_groups[c_clean]["completed"].append(item)
+            all_completed.append(item)
         elif act_type == "quiz":
-            quizzes_pendentes.append(line)
+            course_groups[c_clean]["quizzes"].append(item)
+            all_pending.append(item)
         else:
-            trabalhos_pendentes.append(line)
+            course_groups[c_clean]["assigns"].append(item)
+            all_pending.append(item)
 
-    if trabalhos_pendentes:
+    total_pending = len(all_pending)
+    total_completed = len(all_completed)
+    total_courses = len(course_groups)
+
+    embed = discord.Embed(
+        title="📚 Painel Geral de Tarefas Acadêmicas",
+        description=(
+            f"📊 **Panorama Semestral:** **{total_courses}** matéria(s) monitorada(s)\n"
+            f"⏳ Pendentes: **{total_pending}** | ✅ Concluídas: **{total_completed}**"
+        ),
+        color=LumiTheme.PRIMARY
+    )
+
+    # 1. Resumo por Matéria
+    summary_lines = []
+    for c_name in sorted(course_groups.keys()):
+        grp = course_groups[c_name]
+        n_p_assign = len(grp["assigns"])
+        n_p_quiz = len(grp["quizzes"])
+        n_comp = len(grp["completed"])
+        n_total_p = n_p_assign + n_p_quiz
+
+        if n_total_p == 0:
+            summary_lines.append(f"• **{c_name}**: ✅ *Tudo em dia!* ({n_comp} entregue(s))")
+        else:
+            detalhes = []
+            if n_p_assign:
+                detalhes.append(f"{n_p_assign} trabalho(s)")
+            if n_p_quiz:
+                detalhes.append(f"{n_p_quiz} quiz(zes)")
+            det_str = ", ".join(detalhes)
+            summary_lines.append(f"• **{c_name}**: ⏳ **{n_total_p} pendente(s)** ({det_str})")
+
+    if summary_lines:
         embed.add_field(
-            name="📌 Trabalhos e Relatórios Pendentes (Envio de Arquivo)",
-            value="\n".join(trabalhos_pendentes[:8]),
+            name="🏫 Resumo por Disciplina",
+            value="\n".join(summary_lines[:15]),
             inline=False
         )
 
-    if quizzes_pendentes:
-        count = len(quizzes_pendentes)
-        sample = "\n".join(quizzes_pendentes[:6])
-        if count > 6:
-            sample += f"\n*... e mais {count - 6} questionários pendentes. Use `!tarefas ingles` para filtrar!*"
+    # 2. Próximas Entregas a Vencer (ordenadas cronologicamente)
+    if all_pending:
+        def _safe_sort_key(it: Dict[str, Any]):
+            due_str = it.get("due_date")
+            dt = _safe_due_date_parse(due_str)
+            if dt is not None:
+                try:
+                    if dt.tzinfo is not None:
+                        return (0, dt.astimezone(timezone.utc).timestamp())
+                    return (0, dt.timestamp())
+                except Exception:
+                    return (0, float(dt.year * 31536000 + dt.month * 2592000 + dt.day * 86400))
+            return (1, float("inf"))
+
+        all_pending_sorted = sorted(all_pending, key=_safe_sort_key)
+        urgent_lines = []
+        for it in all_pending_sorted[:6]:
+            t = it.get("title", "Atividade")
+            c = clean_display_course(it.get("course", "Geral")) or it.get("course", "Geral")
+            d = it.get("due_date") or "Sem prazo"
+            u = it.get("url", "")
+            p = it.get("platform")
+            p_badge = f" `[{p.upper()}]`" if p else ""
+            t_link = f"[{t}]({u})" if u else t
+            urgent_lines.append(f"• **{t_link}**{p_badge}\n  🏫 {c} | ⏰ **{d}**")
+
+        rem = len(all_pending_sorted) - len(urgent_lines)
+        if rem > 0:
+            urgent_lines.append(f"\n*... e mais {rem} atividade(s) pendente(s).*")
+
         embed.add_field(
-            name=f"📝 Questionários & Quizzes Pendentes ({count})",
-            value=sample,
+            name=f"🚨 Próximas Entregas a Vencer ({total_pending})",
+            value="\n".join(urgent_lines),
+            inline=False
+        )
+    else:
+        embed.add_field(
+            name="⏳ Próximas Entregas",
+            value="🎉 Todas as atividades estão entregues! Nenhuma pendência no momento.",
             inline=False
         )
 
-    if not trabalhos_pendentes and not quizzes_pendentes:
-        embed.add_field(
-            name="⏳ Atividades Pendentes",
-            value="🎉 Nenhuma atividade pendente! Tudo em dia.",
-            inline=False
-        )
-
-    if concluidas:
-        count = len(concluidas)
-        sample = "\n".join(concluidas[:6])
-        if count > 6:
-            sample += f"\n*... e mais {count - 6} atividades concluídas.*"
-        embed.add_field(
-            name=f"✅ Atividades Concluídas ({count})",
-            value=sample,
-            inline=False
-        )
+    # 3. Dica Interativa
+    embed.add_field(
+        name="💡 Ver Detalhes de uma Matéria",
+        value="Use `/tarefas disciplina: <nome>` para ver os links diretos, descrições e status detalhado de cada disciplina.",
+        inline=False
+    )
 
     apply_lumi_footer(embed)
     return embed
 
 
-async def build_status_embed() -> discord.Embed:
+async def build_status_embed(interaction: Optional[Any] = None) -> discord.Embed:
     """Gera o painel de telemetria e diagnóstico do assistente."""
     auth = MoodleAuth()
     is_valid, user = await auth.validate_session()
@@ -2141,7 +2361,7 @@ async def build_status_embed() -> discord.Embed:
     mat_dir = settings.STORAGE_MATERIALS_DIR
     total_files = sum(len(list(p.glob("*.*"))) for p in mat_dir.iterdir() if p.is_dir()) if mat_dir.exists() else 0
 
-    assignments = await _get_current_assignments()
+    assignments = await _get_current_assignments(interaction=interaction)
     quizzes = [a for a in assignments.values() if a.get("activity_type") == "quiz"]
     assigns = [a for a in assignments.values() if a.get("activity_type") != "quiz"]
 
@@ -2217,10 +2437,20 @@ async def build_status_embed() -> discord.Embed:
     return embed
 
 
-def get_materiais_payload(disciplina: str):
-    """Localiza materiais em storage/materials/ e empacota para envio no Discord."""
+def get_materiais_payload(disciplina: str, interaction: Optional[Any] = None):
+    """Localiza materiais em storage/materials/ e empacota para envio no Discord com suporte multi-usuário."""
+    ch_info = resolve_interaction_student_channels(interaction)
+    target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
+    my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
+    is_my_user = not target_channel or not my_channel or target_channel == my_channel
+
     mat_dir = resolve_course_materials_dir(disciplina)
     if not mat_dir.exists():
+        if not is_my_user:
+            return None, (
+                f"⚡ **Aviso de Sessão Multi-Usuário:** Os materiais de `{disciplina}` pertencem ao computador do outro aluno.\n"
+                f"Para consultar ou baixar materiais salvos da sua conta, inicie o `iniciar.bat` no seu próprio PC!"
+            ), []
         if _is_relay_mode():
             return None, (
                 f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
@@ -2231,6 +2461,11 @@ def get_materiais_payload(disciplina: str):
     disciplina = mat_dir.name
     files = [p for p in mat_dir.iterdir() if p.is_file() and p.suffix.lower() in [".pdf", ".csv", ".docx", ".zip"]]
     if not files:
+        if not is_my_user:
+            return None, (
+                f"⚡ **Aviso de Sessão Multi-Usuário:** Os materiais de `{disciplina}` pertencem ao computador do outro aluno.\n"
+                f"Para consultar ou baixar materiais salvos da sua conta, inicie o `iniciar.bat` no seu próprio PC!"
+            ), []
         if _is_relay_mode():
             return None, (
                 f"⚡ **Aviso de Nuvem (Render):** Os arquivos de `{disciplina}` ficam salvos no seu computador local.\n"
@@ -2266,7 +2501,8 @@ def get_materiais_payload(disciplina: str):
 @app_commands.autocomplete(disciplina=course_autocomplete)
 async def cmd_tarefas(interaction: discord.Interaction, disciplina: Optional[str] = None):
     await interaction.response.defer(ephemeral=False)
-    embed = build_tarefas_embed(disciplina=disciplina)
+    assignments = await _get_current_assignments(interaction=interaction)
+    embed = build_tarefas_embed(disciplina=disciplina, assignments=assignments, interaction=interaction)
     await interaction.followup.send(embed=embed)
 
 
@@ -2275,19 +2511,48 @@ async def cmd_tarefas(interaction: discord.Interaction, disciplina: Optional[str
 @app_commands.autocomplete(disciplina=course_autocomplete)
 async def cmd_materiais(interaction: discord.Interaction, disciplina: str):
     await interaction.response.defer(ephemeral=False)
-    embed, err, discord_files = get_materiais_payload(disciplina)
+    embed, err, discord_files = get_materiais_payload(disciplina, interaction=interaction)
     if err:
         await interaction.followup.send(err)
     else:
         await interaction.followup.send(embed=embed, files=discord_files)
 
 
-async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discord.Embed:
+async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7, interaction: Optional[Any] = None) -> discord.Embed:
     """Constrói embeds temáticos para as consultas do Canvas LMS (Tarefas, Cursos, Avisos, Status)."""
     from src.providers.canvas import CanvasAdapter
     adapter = CanvasAdapter()
 
     mode_badge = "🌐 **API Oficial Canvas**"
+
+    # Se o Canvas não estiver configurado nesta máquina, tenta exibir tarefas sincronizadas via ponte nuvem
+    if not adapter.is_configured and consulta == "tarefas":
+        assignments = await _get_current_assignments(interaction=interaction)
+        canvas_items = [a for a in assignments.values() if a.get("platform") == "canvas"]
+        if canvas_items:
+            embed = discord.Embed(
+                title="📋 Canvas LMS — Tarefas e Prazos Acadêmicos",
+                description=f"{mode_badge}\nTarefas sincronizadas: **{len(canvas_items)}** item(ns)",
+                color=LumiTheme.PRIMARY
+            )
+            pendentes = []
+            entregues = []
+            for a in canvas_items:
+                due_str = a.get("due_date") or "Sem prazo"
+                title = a.get("title", "Atividade")
+                c_name = a.get("course", "Geral")
+                url = a.get("url", "")
+                link_part = f"[{title}]({url})" if url else title
+                line = f"• **{link_part}**\n  🏫 {c_name} | ⏰ {due_str}"
+                if a.get("is_submitted") or a.get("status") == "submitted":
+                    entregues.append(f"{line} *(Entregue)*")
+                else:
+                    pendentes.append(line)
+            if pendentes:
+                embed.add_field(name="⏳ Tarefas Pendentes", value="\n".join(pendentes[:10]), inline=False)
+            if entregues:
+                embed.add_field(name="✅ Tarefas Concluídas", value="\n".join(entregues[:5]), inline=False)
+            return apply_lumi_footer(embed)
 
     if consulta == "cursos":
         courses = await adapter.get_courses()
@@ -2382,7 +2647,7 @@ async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discor
 ])
 async def cmd_canvas(interaction: discord.Interaction, consulta: str = "tarefas", dias: int = 7):
     await interaction.response.defer(ephemeral=False)
-    embed = await build_canvas_embed(consulta=consulta, dias=dias)
+    embed = await build_canvas_embed(consulta=consulta, dias=dias, interaction=interaction)
     await interaction.followup.send(embed=embed)
 
 
@@ -2902,7 +3167,7 @@ async def cmd_resolver(
     await interaction.response.defer(ephemeral=False)
     chosen_modo = modo.value if isinstance(modo, app_commands.Choice) else (modo or "resolver")
 
-    assignments = _get_sync_assignments()
+    assignments = await _get_current_assignments(interaction=interaction)
     matched = find_assignment_by_query(tarefa, assignments)
     target_tarefa = str(matched["id"]) if matched and "id" in matched else tarefa
     expected_course = matched.get("course", "") if matched else None
@@ -3010,7 +3275,7 @@ async def cmd_refazer(
 ):
     await interaction.response.defer(ephemeral=False)
 
-    assignments = _get_sync_assignments()
+    assignments = await _get_current_assignments(interaction=interaction)
     matched = find_assignment_by_query(tarefa, assignments)
     target_tarefa = str(matched["id"]) if matched and "id" in matched else tarefa
     expected_course = matched.get("course", "") if matched else None
@@ -3792,7 +4057,7 @@ async def cmd_resolver_lote(
 @bot.tree.command(name="status", description="Exibe o status da sessão Moodle, materiais e modelos de IA")
 async def cmd_status(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=False)
-    embed = await build_status_embed()
+    embed = await build_status_embed(interaction=interaction)
     await interaction.followup.send(embed=embed)
 
 
@@ -4990,7 +5255,8 @@ async def cmd_help(interaction: discord.Interaction):
 @bot.command(name="tarefas")
 async def prefix_tarefas(ctx: commands.Context, *, disciplina: Optional[str] = None):
     """Comando alternativo com prefixo: !tarefas [disciplina]."""
-    embed = build_tarefas_embed(disciplina=disciplina)
+    assignments = await _get_current_assignments(interaction=ctx)
+    embed = build_tarefas_embed(disciplina=disciplina, assignments=assignments, interaction=ctx)
     await ctx.send(embed=embed)
 
 
@@ -5004,7 +5270,7 @@ async def prefix_canvas(ctx: commands.Context, consulta: str = "tarefas", dias: 
 @bot.command(name="status")
 async def prefix_status(ctx: commands.Context):
     """Comando alternativo com prefixo: !status."""
-    embed = await build_status_embed()
+    embed = await build_status_embed(interaction=ctx)
     await ctx.send(embed=embed)
 
 
