@@ -284,6 +284,30 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
             pass
 
 
+async def render_keep_alive():
+    """Realiza auto-ping periódico no endpoint /healthz para evitar hibernação no plano Free do Render."""
+    await asyncio.sleep(60)
+    external_url = os.environ.get("RENDER_EXTERNAL_URL") or getattr(settings, "RENDER_URL", "")
+    if not external_url:
+        print("[KeepAlive] Nota: RENDER_EXTERNAL_URL não definida. Para manter o bot online 24/7 com o PC desligado, configure um monitor gratuito no UptimeRobot ou cron-job.org.")
+        return
+
+    url = f"{external_url.rstrip('/')}/healthz"
+    print(f"[KeepAlive] Rotina de auto-ping ativada para: {url} (a cada 10 minutos)")
+
+    import httpx
+    while True:
+        try:
+            await asyncio.sleep(600)
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url, headers={"User-Agent": "RenderAutoKeepAlive/1.0"})
+                print(f"[KeepAlive] Ping executado em {url} -> Status {resp.status_code}")
+        except asyncio.CancelledError:
+            break
+        except Exception as err:
+            print(f"[KeepAlive] Nota ao executar ping: {err}")
+
+
 async def main():
     port = int(os.environ.get("PORT", 10000))
     host = "0.0.0.0"
@@ -302,10 +326,11 @@ async def main():
         print("🤖 Conectando ao Discord Gateway...")
 
     async with server:
-        tasks = [server.serve_forever()]
+        tasks = [server.serve_forever(), render_keep_alive()]
         if settings.DISCORD_BOT_TOKEN:
             tasks.append(run_bot())
         await asyncio.gather(*tasks, return_exceptions=True)
+
 
 
 if __name__ == "__main__":

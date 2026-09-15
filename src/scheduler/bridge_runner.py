@@ -244,28 +244,59 @@ class BridgeRunner:
         console.print(f"[bold green]📥 [Ponte Nuvem] Executando submissão aprovada no Discord: {title} ({action})[/bold green]")
         submitter = MoodleSubmitter()
 
+        is_canvas = (
+            "instructure.com" in str(assignment_url or "")
+            or task.get("platform") == "canvas"
+            or str(task.get("assignment_id", "")).startswith(("canvas_", "c_"))
+            or "/quizzes/" in str(assignment_url or "")
+        )
+
         if action == "approve_assign":
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                c_id, a_id = extract_canvas_ids(assignment_url or task.get("assignment_id", ""), task.get("course_id"))
+                snap_url = task.get("snapshot_url") or task.get("url")
+                if snap_url and str(snap_url).startswith("http") and ("snapshot" in str(snap_url) or "trinket" in str(snap_url)):
+                    return await CanvasSubmitter().submit_url(course_id=c_id or "101", assignment_id=a_id or str(task.get("assignment_id")), url=str(snap_url))
+
             file_path_str = task.get("file_to_submit")
             if not file_path_str or not Path(file_path_str).exists():
                 # Busca na pasta submissions se não tiver o caminho completo
                 sub_dir = Path(settings.STORAGE_SUBMISSIONS_DIR)
                 matches = list(sub_dir.glob(f"*{task.get('assignment_id')}*.pdf"))
+                if not matches:
+                    matches = list(sub_dir.glob(f"*{task.get('assignment_id')}*.docx"))
                 if matches:
                     file_path = matches[0]
                 else:
-                    return False, f"Arquivo PDF para a atividade {task.get('assignment_id')} não encontrado no disco local."
+                    return False, f"Arquivo PDF/DOCX para a atividade {task.get('assignment_id')} não encontrado no disco local."
             else:
                 file_path = Path(file_path_str)
 
-            return await submitter.submit_assignment(assignment_url=assignment_url, file_path=file_path)
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                c_id, a_id = extract_canvas_ids(assignment_url or task.get("assignment_id", ""), task.get("course_id"))
+                return await CanvasSubmitter().submit_assignment(course_id=c_id or "101", assignment_id=a_id or str(task.get("assignment_id")), file_path=file_path)
+            else:
+                return await submitter.submit_assignment(assignment_url=assignment_url, file_path=file_path)
+
 
         elif action == "fill_quiz":
             answers = task.get("structured_answers") or {}
-            return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=False)
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter
+                return await CanvasSubmitter().submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=False)
+            else:
+                return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=False)
 
         elif action == "finalize_quiz":
             answers = task.get("structured_answers") or {}
-            return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=True)
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter
+                return await CanvasSubmitter().submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=True)
+            else:
+                return await submitter.submit_quiz(quiz_url=assignment_url, answers=answers, auto_submit=True)
+
 
         elif action in ("solve_task", "redo_task"):
             import discord
@@ -335,7 +366,7 @@ class BridgeRunner:
 
             modo = answers.get("modo", "resolver")
             raw_url = (task.get("assignment_url") or "").strip()
-            is_valid_act_url = raw_url.startswith("http") and "/mod/" in raw_url
+            is_valid_act_url = raw_url.startswith("http") and ("/mod/" in raw_url or "/courses/" in raw_url or "/assignments/" in raw_url or "/quizzes/" in raw_url)
 
             assign_id = str(task.get("assignment_id") or "").strip()
             is_real_id = assign_id and not assign_id.startswith("custom_")
@@ -352,7 +383,8 @@ class BridgeRunner:
             from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
 
             is_quiz = (
-                (is_valid_act_url and "mod/quiz" in raw_url.lower())
+                (is_valid_act_url and ("mod/quiz" in raw_url.lower() or "/quizzes/" in raw_url.lower()))
+                or task.get("activity_type") == "quiz"
                 or "quiz" in title.lower()
                 or "aula" in title.lower()
             )

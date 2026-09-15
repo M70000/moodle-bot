@@ -7,6 +7,8 @@ from src.scraper.moodle_scraper import (
     CourseMaterial,
     MoodleScraper,
 )
+from src.scraper.canvas_quiz import CanvasQuizAutomator
+from src.scraper.canvas_coding import CanvasCodingAutomator
 
 __all__ = [
     "Course",
@@ -14,4 +16,8 @@ __all__ = [
     "CourseAnnouncement",
     "CourseMaterial",
     "MoodleScraper",
+    "CanvasQuizAutomator",
+    "CanvasCodingAutomator",
 ]
+
+

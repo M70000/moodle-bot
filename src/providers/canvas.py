@@ -479,7 +479,7 @@ class CanvasAdapter(BaseLMSProvider):
                             is_submitted=is_sub,
                             url=assign_url,
                             platform="canvas",
-                            activity_type="quiz" if item.get("is_quiz_assignment") or item.get("quiz_id") else "assign",
+                            activity_type="quiz" if (item.get("is_quiz_assignment") or item.get("quiz_id") or "online_quiz" in sub_types) else "assign",
                             points_possible=item.get("points_possible"),
                             submission_status=sub_status,
                             grade_value=grade_val,
@@ -632,7 +632,7 @@ class CanvasAdapter(BaseLMSProvider):
                 is_submitted=is_sub,
                 url=assign_url,
                 platform="canvas",
-                activity_type="quiz" if item.get("is_quiz_assignment") or item.get("quiz_id") else "assign",
+                activity_type="quiz" if (item.get("is_quiz_assignment") or item.get("quiz_id") or "online_quiz" in sub_types) else "assign",
                 points_possible=item.get("points_possible"),
                 submission_status=sub_status,
                 grade_value=grade_val,
@@ -1032,4 +1032,68 @@ class CanvasSubmitter:
             return False, f"Falha na submissão de texto (HTTP {resp.status_code}): {resp.text}"
         except Exception as e:
             return False, f"Erro ao submeter texto no Canvas: {e}"
+
+    async def submit_quiz(
+        self,
+        quiz_url: str,
+        answers: Any,
+        auto_submit: bool = False,
+        on_log: Optional[Any] = None
+    ) -> Tuple[bool, str]:
+        """Preenche e/ou submete um Questionário/Quiz no Canvas LMS via automação Playwright."""
+        from src.scraper.canvas_quiz import CanvasQuizAutomator
+        automator = CanvasQuizAutomator(auth=self.adapter.auth)
+        return await automator.fill_and_submit_quiz(
+            quiz_url=quiz_url,
+            answers=answers,
+            auto_submit=auto_submit,
+            on_log=on_log
+        )
+
+    async def submit_coding_task(
+        self,
+        assignment_url: str,
+        solution_code: str,
+        auto_submit: bool = False,
+        on_log: Optional[Any] = None
+    ) -> Tuple[bool, str, Optional[str]]:
+        """Executa a automação de tarefa de código no Canvas (Run -> Snapshot -> Web URL)."""
+        from src.scraper.canvas_coding import CanvasCodingAutomator
+        automator = CanvasCodingAutomator(auth=self.adapter.auth)
+        return await automator.solve_and_snapshot(
+            assignment_url=assignment_url,
+            solution_code=solution_code,
+            auto_submit=auto_submit,
+            on_log=on_log
+        )
+
+
+def should_use_web_url(
+    assignment: Optional[Any] = None,
+    submission_types: Optional[List[str]] = None,
+    title: str = "",
+    description: str = ""
+) -> bool:
+    """Avalia se uma atividade do Canvas deve ser submetida via Web URL (Snapshot) ou Upload.
+
+    Prioriza Web URL quando a atividade permite 'online_url' e o contexto (enunciado,
+    título ou instruções) solicita envio de Snapshot to URL, link de código ou tarefa prática.
+    """
+    sub_types = list(submission_types or (getattr(assignment, "submission_types", []) or []))
+    if "online_url" not in sub_types:
+        return False
+
+    # Se 'online_url' for o único tipo aceito, deve ser Web URL
+    if sub_types == ["online_url"] or ("online_upload" not in sub_types and "online_text_entry" not in sub_types):
+        return True
+
+    text_corpus = f"{title} {description} {getattr(assignment, 'title', '')} {getattr(assignment, 'description', '')}".lower()
+    keywords = [
+        "snapshot", "snapshot to url", "web url", "url", "link",
+        "coding task", "editor below", "trinket", "repl.it",
+        "paste it into the submission", "copie o link", "cole o link"
+    ]
+    return any(k in text_corpus for k in keywords)
+
+
 
