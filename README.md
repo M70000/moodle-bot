@@ -1,275 +1,195 @@
-# Moodle AI Assistant (UFMG) 🎓
+<div align="center">
+  <img src="assets/logo.png" width="120" alt="LumiBot Logo">
+  <h1>LumiBot</h1>
+  <p><strong>Assistente acadêmico Multi-LMS com suporte a Moodle e Canvas LMS, integração com Discord e resolução assistida por modelos de linguagem.</strong></p>
 
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Playwright](https://img.shields.io/badge/Playwright-Chromium-green.svg)](https://playwright.dev/)
-[![Discord.py](https://img.shields.io/badge/Discord.py-v2.3+-5865F2.svg)](https://discordpy.readthedocs.io/)
-[![Multi-Provider AI](https://img.shields.io/badge/AI-Gemini%20%7C%20Claude%20%7C%20DeepSeek-orange.svg)](https://aistudio.google.com/)
-[![License: MIT](https://img.shields.io/badge/Security-Human--in--the--Loop-red.svg)](#segurança-e-diretrizes-éticas)
-
-Assistente inteligente em segundo plano (*background daemon*) para estudantes da Universidade Federal de Minas Gerais (UFMG). O sistema monitora o Moodle (`virtual.ufmg.br` / `moodle.grad.ufmg.br`), cataloga automaticamente materiais didáticos e avisos, gera rascunhos de exercícios e questionários com Inteligência Artificial contextualizada (RAG) e envia relatórios diagramados em PDF A4 para aprovação humana obrigatória via Discord.
-
----
-
-## ⚡ Principais Funcionalidades
-
-- **Monitoramento em Segundo Plano:** Daemon autônomo com varreduras periódicas que identifica novas atividades, questionários e comunicados dos professores no fórum de notícias.
-- **Salas Privadas Multi-Usuário no Discord:** Com o comando `/meuscanais`, o bot provisiona uma categoria privada com 5 canais exclusivos para cada estudante no mesmo servidor, garantindo privacidade individual com isolamento de permissões.
-- **RAG Acadêmico Local & Upload Complementar:** Baixa automaticamente slides e apostilas postados pelos professores (`storage/materials/<disciplina>/`) e permite que o aluno envie listas, anotações e resumos adicionais com `/adicionarconteudo`.
-- **Resolução Inteligente & em Lote:** Comandos `/resolver` e `/resolver_lote` com 3 níveis de autonomia (`Apenas Resolver`, `Resolver e Preencher`, `Resolver e Enviar Tudo`) e exportação de relatórios em PDF formatados segundo padrões acadêmicos da UFMG.
-- **Central de Estudos Ativos:**
-  - `/perguntar`: Tutor acadêmico que tira dúvidas conceituais citando expressamente os slides e apostilas da disciplina.
-  - `/flashcards`: Gera baralhos de repetição espaçada com carrossel interativo no Discord e arquivo `.txt` pronto para importação no Anki.
-  - `/quiz`: Simulado interativo pré-prova com botões de múltipla escolha (A, B, C, D), correção instantânea e explicação de pegadinhas.
-- **Arquitetura Multi-IA (BYOK) com Fallback:** Suporte nativo a Google Gemini (`gemini-3.5-flash`, `gemini-3.8-flash`), Anthropic Claude (`claude-haiku-4-5`) e DeepSeek (`deepseek-flash` com raciocínio CoT), com alternância automática em caso de instabilidade ou limite de cota.
-- **Aprovação Humana Obrigatória (Human-in-the-Loop):** Nenhuma atividade é submetida ao Moodle sem que o estudante visualize o rascunho, o PDF e clique no botão `[✅ Aprovar e Enviar]`.
+  <p>
+    <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/Python-3.10%2B-blue.svg" alt="Python Version"></a>
+    <a href="https://discordpy.readthedocs.io/"><img src="https://img.shields.io/badge/Discord.py-v2.3%2B-5865F2.svg" alt="Discord.py"></a>
+    <a href="https://playwright.dev/"><img src="https://img.shields.io/badge/Playwright-Chromium-green.svg" alt="Playwright"></a>
+    <a href="https://canvas.instructure.com/doc/api/"><img src="https://img.shields.io/badge/Canvas%20API-REST%20v1-orange.svg" alt="Canvas API"></a>
+    <a href="#seguran%C3%A7a-e-diretrizes-%C3%A9ticas"><img src="https://img.shields.io/badge/Controle-Human--in--the--Loop-red.svg" alt="Human-in-the-Loop"></a>
+  </p>
+</div>
 
 ---
 
-## 🔒 Arquitetura dos Canais Privados no Discord
+## Visão Geral
 
-Ao entrar no servidor compartilhado ou executar o comando `/meuscanais`, o bot cria uma categoria privada (`🔒 Moodle • SeuNome`) com 5 salas exclusivas:
+O **LumiBot** é um serviço em segundo plano projetado para automação acadêmica e consolidação de tarefas educacionais. O sistema monitora continuamente ambientes virtuais de aprendizagem, cataloga arquivos didáticos e comunicados oficiais, gera rascunhos fundamentados de exercícios com apoio de modelos de linguagem e viabiliza a submissão de atividades mediante aprovação humana direta via Discord.
 
-| Canal | Propósito | Comandos Recomendados |
-| :--- | :--- | :--- |
-| 📋 **`alertas-e-revisões`** | Painel de atividades pendentes, prazos críticos, notas lançadas e botões de revisão interativa | `/tarefas`, `/resolver`, `/refazer` |
-| 📚 **`conteúdos`** | Repositório de materiais didáticos da matéria e envio de resumos complementares para a base de conhecimento | `/adicionarconteudo`, `/materiais` |
-| 📢 **`avisos-da-turma`** | Feed automático de comunicados e mensagens postadas pelos docentes no fórum do Moodle | Feed automático de avisos |
-| ⚡ **`fila-de-tarefas`** | Acompanhamento de execuções assíncronas e log de processamento de lotes em tempo real | `/resolver_lote` |
-| 🎯 **`estudos-e-simulados`** | Ambiente focado em fixação de conteúdo, dúvidas teóricas e preparação para provas | `/perguntar`, `/flashcards`, `/quiz` |
-
-> [!NOTE]
-> Todos os canais criados possuem permissões estritas: o cargo `@everyone` não tem permissão de visualização. Somente você e o bot têm acesso à sua categoria.
+O projeto opera sob uma arquitetura de provedores desacoplados, permitindo integrar simultaneamente ou de forma isolada portais baseados em **Moodle** e **Canvas LMS**.
 
 ---
 
-## 📖 Fluxo de Uso Prático (Passo a Passo)
+## Arquitetura Multi-LMS
 
-Veja a seguir a jornada típica de um estudante utilizando o assistente no dia a dia:
+O LumiBot padroniza dados acadêmicos (disciplinas, tarefas, prazos e avisos) em um modelo comum, independentemente da plataforma de origem:
 
-```mermaid
-flowchart TD
-    A["1. Digite /meuscanais"] --> B["Bot cria 5 canais privados"]
-    B --> C["2. Vá em 📚-conteúdos"]
-    C --> D["Execute /adicionarconteudo com slides/resumos"]
-    D --> E["3. Vá em 📋-alertas-e-revisões"]
-    E --> F["Consulte /tarefas"]
-    F --> G["Execute /resolver ou /resolver_lote"]
-    G --> H["Bot resolve e anexa PDF A4"]
-    H --> I{"Revisão do Aluno"}
-    I -->|"Aprovar e Enviar"| J["Submissão realizada no Moodle"]
-    I -->|"Adiar / Cancelar"| K["Mantém como rascunho local"]
-    B --> L["4. Vá em 🎯-estudos-e-simulados"]
-    L --> M["Estude com /perguntar, /flashcards e /quiz"]
+```
+[ Canvas LMS (API REST) ] ──┐
+                            ├─► [ BaseLMSProvider ] ──► [ Daemon & Discord Bot ]
+[ Moodle (Playwright)   ] ──┘
 ```
 
-### 1. Criar suas Salas Privadas
-Em qualquer canal do servidor do Discord onde o bot esteja presente, digite:
-```text
-/meuscanais
-```
-*(Alternativa por texto: `!meuscanais`)*
-
-O bot criará instantaneamente sua categoria pessoal e os 5 canais privados, respondendo com um resumo das salas geradas.
+- **Canvas LMS (Instructure):** Integração direta com a API REST oficial v1 utilizando autenticação por Bearer Token. Realiza consultas paginadas de disciplinas ativas, tarefas pendentes e comunicados. O envio de atividades segue o protocolo oficial em três etapas da Instructure: notificação de upload, transmissão multipart do binário e confirmação de entrega.
+- **Moodle:** Integração automatizada baseada no navegador Chromium (Playwright), compatível com instâncias institucionais que exigem autenticação centralizada (SSO). Suporta persistência de sessão por cookies locais ou autenticação via credenciais.
+- **Modo Multi-LMS:** Sincroniza ambos os provedores simultaneamente, apresentando uma fila unificada de tarefas e materiais no Discord.
 
 ---
 
-### 2. Adicionar Materiais e Resumos da Disciplina
-Entre no seu canal **`📚-conteúdos`** e execute o comando:
-```text
-/adicionarconteudo disciplina: "Cálculo I" arquivo: [anexar resumo_p1.pdf]
-```
-- O bot faz o download do arquivo, cataloga em `storage/materials/Calculo_I/` e indexa o conteúdo no motor RAG.
-- A partir desse momento, todas as resoluções e respostas do tutor usarão esse material como fonte de consulta prioritária.
+## Requisitos do Sistema
+
+Antes de iniciar, certifique-se de que o seu ambiente atende aos seguintes requisitos:
+
+- **Sistema Operacional:** Windows 10/11 ou distribuições Linux x86_64.
+- **Python:** Versão 3.10, 3.11 ou 3.12 instalada e adicionada ao PATH do sistema.
+- **Conexão com a Internet:** Acesso aos portais educacionais e às APIs dos provedores de IA selecionados.
+- **Aplicação no Discord:** Bot criado no [Discord Developer Portal](https://discord.com/developers/applications) com as permissões de `Send Messages`, `Attach Files` e as seguintes *Privileged Gateway Intents* ativadas:
+  - `Message Content Intent`
+  - `Server Members Intent`
 
 ---
 
-### 3. Visualizar Atividades e Prazos
-Vá para o canal **`📋-alertas-e-revisões`** e confira as tarefas pendentes:
-```text
-/tarefas
-```
-O bot exibirá uma lista categorizada por prazos:
-- 🔴 **Urgente:** Menos de 24 horas restantes.
-- 🟡 **Atenção:** Entre 24 horas e 3 dias.
-- 🟢 **No prazo:** Mais de 3 dias para a entrega.
-- ⚪ **Entregues:** Atividades já enviadas no Moodle.
+## Instalação Rápida (Windows)
 
----
+O repositório fornece scripts de automação para facilitar a inicialização e manutenção:
 
-### 4. Resolver uma Atividade com IA
-Ainda no canal **`📋-alertas-e-revisões`**, inicie a resolução:
-```text
-/resolver tarefa: "Lista 1 - Limites e Derivadas" modo: "Apenas Resolver" instrucoes: "Justifique cada passo com detalhes e cite os teoremas utilizados"
-```
-
-Modos disponíveis:
-1. **Apenas Resolver:** Analisa os enunciados, consulta os materiais da disciplina e gera o rascunho completo acompanhado de um relatório acadêmico em PDF formatado.
-2. **Resolver e Preencher:** Resolve a atividade, entra na página do Moodle via navegador e preenche os campos do envio sem finalizar a submissão.
-3. **Resolver e Enviar Tudo:** Resolve, preenche e submete no Moodle automaticamente (destinado a rotinas em que você já validou a metodologia).
-
-> [!TIP]
-> Se tiver muitas atividades pendentes na semana, use o comando `/resolver_lote`. Ele abrirá um menu de seleção múltipla permitindo resolver vários exercícios de forma sequencial com acompanhamento no canal `⚡-fila-de-tarefas`.
-
----
-
-### 5. Revisar e Aprovar a Submissão
-Ao concluir a resolução, o bot envia uma mensagem no Discord contendo:
-- O texto completo da resolução e respostas.
-- O documento acadêmico em PDF anexado (diagramado com cabeçalho institucional, código com realce de sintaxe e paginação).
-- Três botões de ação:
-  - `[✅ Aprovar e Enviar]`: O assistente abre a sessão do Moodle via Playwright e realiza o envio oficial.
-  - `[⏱️ Adiar]`: Mantém o rascunho salvo e silencia o alerta temporariamente.
-  - `[❌ Cancelar / Não Enviar]`: Descarta o envio automatizado.
-
----
-
-### 6. Estudar e Praticar para Provas
-Acesse o canal **`🎯-estudos-e-simulados`** para utilizar a suíte pedagógica:
-
-- **Tirar dúvidas conceituais:**
-  ```text
-  /perguntar disciplina: "Física Básica" duvida: "Qual a diferença física entre campo elétrico conservativo e não-conservativo?"
-  ```
-- **Gerar baralho de flashcards para o Anki:**
-  ```text
-  /flashcards disciplina: "Cálculo I" topico: "Regra da Cadeia" qtd: 8
-  ```
-  *(O Discord exibe um carrossel interativo e anexa o arquivo `.txt` para importação direta no Anki).*
-- **Iniciar um simulado pré-prova:**
-  ```text
-  /quiz disciplina: "Química Geral" qtd_questoes: 5 topico: "Termodinâmica Química"
-  ```
-  *(Simulado interativo com botões A, B, C, D, pontuação em tempo real e explicação dos distratores).*
-
----
-
-## 💻 Instalação e Execução no Windows (Zero Friction)
-
-O repositório inclui utilitários em lote (`.bat`) para instalação e uso simplificado sem necessidade de conhecimentos avançados de terminal:
-
-```text
-├── instalar.bat     # ⚡ Instalador com 1 clique (Python, venv, Playwright e abre a interface)
-├── configurar.bat   # 🖥️ Painel Gráfico de Configurações e Auto-Detecção dos canais do Discord
-├── iniciar.bat      # 🚀 Inicializador diário com sincronização segura e execução do daemon
-└── atualizar.bat    # 🔄 Atualizador manual de código e dependências
-```
-
-### Passo 1: Instalação Automática
-1. Clone ou baixe este repositório no seu computador:
+1. **Clonar ou Baixar o Repositório:**
    ```cmd
    git clone https://github.com/seu-usuario/moodle-bot.git
    cd moodle-bot
    ```
-2. Dê um duplo clique no arquivo [`instalar.bat`](file:///c:/moodle-bot/instalar.bat).
-3. O instalador cuidará de:
-   - Detectar ou instalar o Python 3.10+.
-   - Criar o ambiente virtual isolado `.venv`.
-   - Instalar todas as bibliotecas necessárias.
-   - Instalar os binários do navegador Chromium para o Playwright.
-   - Gerar o seu `.env` inicial e abrir o painel de configurações.
+
+2. **Instalar Dependências:**
+   Execute o arquivo `instalar.bat` com duplo clique. O script criará o ambiente virtual isolado (`.venv`), instalará os pacotes necessários via `pip` e baixará os binários do Chromium necessários para o Playwright.
+
+3. **Configurar o Sistema:**
+   Execute `configurar.bat` para abrir o Painel Web de Configuração no navegador.
+
+4. **Iniciar o Serviço:**
+   Execute `iniciar.bat`. O assistente realizará as checagens pré-voo, validará as conexões configuradas e iniciará o monitoramento automático.
 
 ---
 
-### Passo 2: Configuração via Painel Gráfico
-Ao abrir o [`configurar.bat`](file:///c:/moodle-bot/configurar.bat), uma interface gráfica será exibida no seu navegador:
+## Configuração Passo a Passo
 
-1. **Autenticação Moodle:** Clique em **"Testar Conexão / Fazer Login"** para abrir a janela do MinhaUFMG, digitar suas credenciais e concluir o 2FA. A sessão é salva com segurança em `storage/cookies/session.json`.
-2. **Provedor de IA (BYOK):** Insira sua chave de API gratuita do [Google AI Studio](https://aistudio.google.com/) (ou chaves de Claude / DeepSeek se preferir).
-3. **Auto-Detecção do Discord:**
-   - Insira o token do seu bot do Discord.
-   - No campo **"Seu Usuário / ID do Discord"**, digite seu usuário e clique em **"🔍 Auto-Detectar"**.
-   - O assistente buscará sua categoria privada no Discord e preencherá automaticamente os 5 IDs de canal!
+Toda a configuração pode ser realizada pelo arquivo `.env` ou pela interface visual executando `configurar.bat`.
+
+### 1. Painel Web de Configuração
+
+Ao executar `configurar.bat`, o assistente inicia um servidor local e abre o painel em `http://127.0.0.1:5055`:
+
+- **Aba "Plataformas LMS":** Selecione a arquitetura desejada:
+  - *Multi-LMS (Ambas):* Exibe as abas de configuração do Canvas e do Moodle.
+  - *Canvas LMS:* Exibe apenas as opções do Canvas.
+  - *Moodle:* Exibe apenas as opções do Moodle.
+- **Botão "Salvar Configurações (.env)":** Grava as preferências diretamente no arquivo `.env` local.
 
 ---
 
-### Passo 3: Inicialização Diária
-Para rodar o assistente no dia a dia, execute [`iniciar.bat`](file:///c:/moodle-bot/iniciar.bat). Ele verifica atualizações remotas de forma segura sem alterar seus arquivos de credenciais e inicia o daemon de monitoramento e o bot do Discord.
+### 2. Configuração do Canvas LMS
+
+Para integrar sua conta do Canvas:
+
+1. Acesse o portal da sua instituição no navegador (exemplo: `https://pucminas.instructure.com`).
+2. Clique na sua foto de perfil (**Conta**) no menu lateral e selecione **Configurações**.
+3. Role a página até a seção **Tokens de Acesso Aprovados** e clique em **+ Novo Token de Acesso**.
+4. Defina uma finalidade (exemplo: `LumiBot`), clique em **Gerar Token** e copie o código gerado.
+5. No painel de configuração (ou no `.env`), preencha:
+   - **URL Base:** `https://pucminas.instructure.com` (ou a URL da sua universidade).
+   - **Token de Acesso da API:** Cole o token gerado.
+6. Clique em **Testar Conexão** para validar a autenticação.
 
 ---
 
-## 🐧 Instalação Manual (Linux / Servidor / Docker)
+### 3. Configuração do Moodle
 
-Caso prefira rodar em ambiente Linux ou servidor dedicado:
+Para portais que utilizam Moodle:
+
+1. Informe a **URL Base do Moodle** (exemplo: `https://virtual.ufmg.br`).
+2. Escolha a modalidade de autenticação:
+   - **Cookies de Sessão:** Clique em **Login Interativo** para abrir o navegador, efetuar o login institucional com duplo fator (2FA) e salvar a sessão.
+   - **Credenciais Automáticas:** Informe o usuário e a senha institucionais para que o bot renove o acesso automaticamente em segundo plano.
+3. Teste a conectividade pelo botão correspondente.
+
+---
+
+### 4. Configuração dos Provedores de Inteligência Artificial (BYOK)
+
+O sistema utiliza arquitetura de chaves próprias (*Bring Your Own Key*) com suporte a alternância automática (*fallback*) em caso de instabilidade:
+
+- **Google Gemini (Padrão):** Obtenha uma chave gratuita no [Google AI Studio](https://aistudio.google.com/) e configure `GEMINI_API_KEY`.
+- **DeepSeek:** Suporte aos modelos `deepseek-chat` e `deepseek-flash` com raciocínio analítico (Chain of Thought). Informe `DEEPSEEK_API_KEY`.
+- **Anthropic Claude:** Suporte a modelos Claude 3.5 Sonnet e Claude 3.5 Haiku. Informe `ANTHROPIC_API_KEY`.
+
+---
+
+## Comandos do Discord
+
+Após iniciar o bot com `iniciar.bat`, os comandos de barra (*slash commands*) estarão disponíveis no seu servidor:
+
+| Comando | Descrição | Parâmetros |
+| :--- | :--- | :--- |
+| `/meuscanais` | Cria a categoria privada e os canais de trabalho individuais do estudante | *(Nenhum)* |
+| `/tarefas` | Lista tarefas pendentes e concluídas com classificação de urgência | `disciplina` *(opcional)* |
+| `/canvas` | Consulta informações do Canvas (tarefas, disciplinas ativas, comunicados ou diagnóstico) | `consulta`, `dias` |
+| `/resolver` | Analisa o enunciado, consulta os materiais da matéria e gera resolução formatada | `tarefa`, `modo`, `instrucoes` |
+| `/resolver_lote` | Abre menu interativo para processar múltiplas atividades pendentes | `disciplina`, `instrucoes` |
+| `/materiais` | Envia arquivos e slides catalogados de uma disciplina | `disciplina` |
+| `/adicionarconteudo` | Faz o upload de anotações ou listas complementares para o repositório da disciplina | `disciplina`, `arquivo` |
+| `/perguntar` | Tutor conceitual que esclarece dúvidas citando materiais catalogados | `disciplina`, `duvida` |
+| `/flashcards` | Cria baralho de revisão espaçada com exportação compatível com o Anki | `disciplina`, `topico`, `qtd` |
+| `/quiz` | Gera simulado de múltipla escolha com correção e explicação de alternativas | `disciplina`, `qtd_questoes` |
+| `/status` | Exibe diagnóstico de conectividade, status das sessões e modelo de IA ativo | *(Nenhum)* |
+
+---
+
+## Fluxo de Trabalho e Segurança (Human-in-the-Loop)
+
+> [!IMPORTANT]
+> O LumiBot adota o princípio estrito de supervisão humana (*Human-in-the-Loop*). Nenhuma atividade acadêmica é enviada ao portal sem validação explícita.
+
+Ao solicitar a resolução de uma tarefa pelo comando `/resolver`:
+
+1. **Processamento:** O motor consulta os materiais da disciplina e elabora a resposta estruturada.
+2. **Geração do Documento:** É produzido um documento acadêmico diagramado (em PDF ou DOCX) contendo desenvolvimento passo a passo e identificação das fontes.
+3. **Revisão Interativa no Discord:** O bot publica o resultado acompanhado de botões de ação:
+   - `[Aprovar e Enviar]`: Executa o protocolo de envio oficial para o Canvas ou Moodle.
+   - `[Adiar]`: Mantém o rascunho arquivado sem realizar o envio.
+   - `[Cancelar]`: Descarta a proposta de submissão.
+
+---
+
+## Execução em Ambiente Linux ou Servidor
+
+Para executar em servidores dedicados ou distribuições Linux:
 
 ```bash
-# 1. Clone o repositório
+# 1. Clonar o repositório
 git clone https://github.com/seu-usuario/moodle-bot.git
 cd moodle-bot
 
-# 2. Crie e ative o ambiente virtual
+# 2. Criar e ativar ambiente virtual
 python3 -m venv .venv
 source .venv/bin/activate
 
-# 3. Instale as dependências
+# 3. Instalar dependências e navegadores
 pip install -r requirements.txt
 playwright install chromium
 
-# 4. Configure o arquivo .env
+# 4. Configurar variáveis de ambiente
 cp .env.example .env
-# Edite as variáveis no .env com suas chaves e tokens
+nano .env
 
-# 5. Inicie o daemon e bot
+# 5. Executar o daemon
 python -m src.scheduler.daemon
 ```
 
 ---
 
-## ⌨️ Tabela Geral de Comandos do Discord
+## Diretrizes de Uso e Segurança
 
-| Comando | Descrição | Parâmetros |
-| :--- | :--- | :--- |
-| `/meuscanais` | Cria ou localiza suas 5 salas privadas no servidor | *(Nenhum)* |
-| `/tarefas` | Lista tarefas abertas, prazos e atividades entregues | `[disciplina]` *(opcional)* |
-| `/adicionarconteudo` | Salva materiais didáticos e resumos na memória da IA | `disciplina`, `arquivo` |
-| `/materiais` | Envia os slides e materiais catalogados da matéria | `disciplina` |
-| `/resolver` | Resolve uma tarefa ou questionário com apoio da IA | `tarefa`, `[modo]`, `[instrucoes]`, `[arquivo]` |
-| `/refazer` | Refaz uma tarefa já entregue aplicando novas instruções | `tarefa`, `[instrucoes]`, `[arquivo]` |
-| `/resolver_lote` | Menu interativo para resolver múltiplas tarefas em sequência | `[disciplina]`, `[instrucoes]`, `[arquivo]` |
-| `/perguntar` | Tutor acadêmico com citação de apostilas e slides | `disciplina`, `duvida`, `[material]` |
-| `/flashcards` | Baralho de repetição espaçada e arquivo para Anki | `disciplina`, `[topico]`, `[qtd]`, `[material]` |
-| `/quiz` | Simulado interativo pré-prova com botões de múltipla escolha | `disciplina`, `[qtd_questoes]`, `[topico]`, `[material]` |
-| `/status` | Telemetria do sistema, cookies, IA e fila de tarefas | *(Nenhum)* |
-| `/notion_sync` | Sincroniza tarefas pendentes com seu banco no Notion | *(Nenhum)* |
-| `/atualizar_checklist` | Atualiza a checklist diária no Notion | *(Nenhum)* |
-
----
-
-## 📂 Estrutura do Projeto
-
-```text
-moodle-bot/
-├── config/                 # Módulo de configurações e parsing de variáveis de ambiente
-│   ├── __init__.py
-│   └── settings.py
-├── src/
-│   ├── auth/               # Autenticação MinhaUFMG / Moodle via Playwright
-│   ├── scraper/            # Coleta de tarefas, questionários, avisos e downloads
-│   ├── solver/             # Motores de IA (Gemini, Claude, DeepSeek) e gerador de PDF
-│   ├── notifier/           # Bot do Discord (slash commands, botões interativos e views)
-│   ├── scheduler/          # Background daemon, fila assíncrona e persistência de estado
-│   └── ui/                 # Servidor web local para painel gráfico de configuração
-├── storage/                # Armazenamento em runtime (ignorado pelo git)
-│   ├── cookies/            # Cookies de sessão autenticada (session.json)
-│   ├── materials/          # Slides e apostilas catalogados por disciplina
-│   └── submissions/        # Rascunhos e PDFs gerados para envio
-├── tests/                  # Suíte de testes automatizados com pytest
-├── .env.example            # Modelo de variáveis de ambiente
-├── .gitignore              # Regras estritas de exclusão de segredos e sessões
-├── instalar.bat            # Script de instalação com 1 clique (Windows)
-├── configurar.bat          # Inicializador do painel gráfico local
-├── iniciar.bat             # Inicializador diário com auto-updater
-├── requirements.txt        # Dependências Python
-└── README.md               # Documentação oficial do projeto
-```
-
----
-
-## 🛡️ Segurança e Diretrizes Éticas
-
-> [!IMPORTANT]
-> O Moodle AI Assistant foi desenvolvido como ferramenta de apoio aos estudos e gerenciamento de produtividade acadêmica.
-
-- **Human-in-the-loop Obrigatório:** O bot **nunca** submete trabalhos de forma silenciosa ou sem autorização explícita do estudante.
-- **Proteção Contra Sobrescrita:** Se o sistema detectar que uma atividade já possui envio manual prévio ("Editar envio"), a submissão automatizada é abortada para resguardar o trabalho original do aluno.
-- **Proibições Estritas em Fóruns e Mensagens:** O assistente não possui nenhuma função ou permissão de interação em fóruns de discussão nem de envio de mensagens diretas para professores ou colegas.
-- **Segredos e Credenciais:** Senhas, tokens de API e cookies de sessão residem exclusivamente na sua máquina local em `.env` e `storage/cookies/`, sendo estritamente ignorados pelo controle de versão.
+- **Isolamento de Credenciais:** Tokens de acesso, senhas e cookies de autenticação são armazenados exclusivamente na máquina local (`.env` e diretório `storage/`). Nenhum dado de acesso é transmitido para servidores de terceiros além dos endpoints oficiais dos provedores configurados.
+- **Proteção de Envios Existentes:** Caso o sistema detecte que uma atividade já possui submissão manual registrada pelo estudante, o envio automático é cancelado para evitar sobrescrita acidental.
+- **Restrição de Ações:** O assistente não possui rotinas de interação em fóruns públicos, envio de mensagens diretas nem alteração de dados cadastrais dos usuários nas plataformas educacionais.
