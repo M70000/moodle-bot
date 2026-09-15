@@ -65,23 +65,46 @@ class CanvasCodingAutomator:
     def __init__(self, auth: Optional[CanvasAuth] = None):
         self.auth = auth or CanvasAuth()
 
-    async def _find_editor_frame(self, page: Page) -> Tuple[Optional[Any], str]:
+    async def _find_editor_frame(self, page: Page, max_wait_seconds: int = 15) -> Tuple[Optional[Any], str]:
         """Localiza o contêiner ou iframe onde o editor de código e botões estão hospedados."""
-        # 1. Verifica no documento principal
-        main_has_btn = await page.locator("button:has-text('Snapshot to URL'), a:has-text('Snapshot to URL'), button:has-text('Run')").count() > 0
-        main_has_editor = await page.locator(".ace_editor, .CodeMirror, textarea[id*='code'], textarea").count() > 0
-        if main_has_btn or main_has_editor:
-            return page, "main"
+        # 1. Rola a página até qualquer elemento de iframe para ativar iframes com loading='lazy'
+        try:
+            lazy_iframes = page.locator("#online-editor, iframe[src*='editor'], iframe[src*='csin'], iframe[src*='code4'], div[id*='editor'] iframe, iframe")
+            if await lazy_iframes.count() > 0:
+                await lazy_iframes.first.scroll_into_view_if_needed()
+        except Exception:
+            pass
 
-        # 2. Verifica em todos os iframes da página
-        for idx, frame in enumerate(page.frames):
+        # 2. Polling progressivo aguardando montagem do editor e scripts assíncronos (skulpt, ace, etc.)
+        for attempt in range(max_wait_seconds):
+            # Verifica no documento principal
             try:
-                has_btn = await frame.locator("button:has-text('Snapshot to URL'), a:has-text('Snapshot to URL'), button:has-text('Run')").count() > 0
-                has_editor = await frame.locator(".ace_editor, .CodeMirror, textarea").count() > 0
-                if has_btn or has_editor:
-                    return frame, f"iframe_{idx}"
+                main_has_btn = await page.locator("#runButton, button:has-text('Run'), #codestoreURL, button:has-text('Snapshot')").count() > 0
+                main_has_editor = await page.locator(".ace_editor, .CodeMirror, textarea[id*='code']").count() > 0
+                if main_has_btn or main_has_editor:
+                    return page, "main"
             except Exception:
-                continue
+                pass
+
+            # Verifica em todos os iframes da página
+            for idx, frame in enumerate(page.frames):
+                try:
+                    has_btn = await frame.locator("#runButton, #codestoreURL, button:has-text('Run'), button:has-text('Snapshot')").count() > 0
+                    has_editor = await frame.locator(".ace_editor, .CodeMirror, textarea").count() > 0
+                    if has_btn or has_editor:
+                        return frame, f"iframe_{idx}"
+
+                    # Se a URL do frame for conhecida de editores (ex: csinschools, trinket, code4)
+                    if any(k in frame.url.lower() for k in ["csin", "editor.html", "code4.me", "trinket", "repl.it"]):
+                        try:
+                            await frame.wait_for_selector("#runButton, .ace_editor, textarea", timeout=2000)
+                            return frame, f"iframe_{idx}"
+                        except Exception:
+                            pass
+                except Exception:
+                    continue
+
+            await asyncio.sleep(1.0)
 
         return None, "none"
 
@@ -108,7 +131,7 @@ class CanvasCodingAutomator:
                 task_desc = await desc_el.first.inner_text()
 
             # Procura editor
-            target_context, frame_type = await self._find_editor_frame(page)
+            target_context, frame_type = await self._find_editor_frame(page, max_wait_seconds=12)
             if not target_context:
                 return {
                     "has_coding_task": False,
@@ -220,11 +243,16 @@ class CanvasCodingAutomator:
             async def _handle_response(resp):
                 nonlocal snapshot_captured_url
                 try:
-                    if "snapshot" in resp.url.lower():
+                    url_low = resp.url.lower()
+                    if "codestore" in url_low and "put" in url_low:
+                        text = (await resp.text()).strip()
+                        if text and len(text) < 40 and not text.startswith("<") and not text.startswith("{"):
+                            snapshot_captured_url = f"https://csinschools.io/editor/editor.html?&nosave=1&nofs=1&id={text}"
+                    elif "snapshot" in url_low:
                         text = await resp.text()
                         found = re.findall(r"https?://[^\s\)\"\'<>{}\"]+", text)
                         for u in found:
-                            if "snapshot" in u.lower() or "trinket" in u.lower() or "canvas" in u.lower():
+                            if "snapshot" in u.lower() or "trinket" in u.lower() or "canvas" in u.lower() or "csin" in u.lower():
                                 snapshot_captured_url = u
                                 break
                 except Exception:
@@ -236,8 +264,8 @@ class CanvasCodingAutomator:
             await page.goto(assignment_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2.0)
 
-            # Localiza contexto do editor (página ou iframe)
-            target_context, frame_type = await self._find_editor_frame(page)
+            # Localiza contexto do editor (página ou iframe) com busca progressiva
+            target_context, frame_type = await self._find_editor_frame(page, max_wait_seconds=15)
             if not target_context:
                 return False, "Editor de código interativo não encontrado na página.", None
 
@@ -294,14 +322,14 @@ class CanvasCodingAutomator:
             await asyncio.sleep(1.0)
 
             # Clica no botão Run
-            run_btn = target_context.locator("button:has-text('Run'), a:has-text('Run'), [title*='Run']").first
+            run_btn = target_context.locator("#runButton, button:has-text('Run'), a:has-text('Run'), [title*='Run']").first
             if await run_btn.count() > 0:
                 await _emit_log(on_log, "⚡ Executando código corrigido no console ('Run')...")
                 await run_btn.click()
                 await asyncio.sleep(2.5)
 
             # Clica no botão Snapshot to URL
-            snapshot_btn = target_context.locator("button:has-text('Snapshot to URL'), button:has-text('Snapshot'), a:has-text('Snapshot to URL'), [title*='Snapshot']").first
+            snapshot_btn = target_context.locator("#codestoreURL, button:has-text('Snapshot to URL'), button:has-text('Snapshot'), a:has-text('Snapshot to URL'), [title*='Snapshot']").first
             if await snapshot_btn.count() > 0:
                 await _emit_log(on_log, "🔗 Gerando link público ('Snapshot to URL')...")
                 await snapshot_btn.click()
@@ -309,35 +337,43 @@ class CanvasCodingAutomator:
 
             # Tenta capturar a URL gerada na tela caso não tenha vindo por diálogo
             if not snapshot_captured_url:
-                snapshot_captured_url = await target_context.evaluate(r'''() => {
-                    // Busca em inputs visíveis ou links recém-criados
-                    const inputs = Array.from(document.querySelectorAll("input[type='text'], input[type='url'], input:not([type])"));
-                    for (const inp of inputs) {
-                        if (inp.value && inp.value.startsWith("http") && (inp.value.includes("snapshot") || inp.value.includes("trinket") || inp.value.includes("view") || inp.value.includes("run"))) {
-                            return inp.value;
+                for _ in range(8):
+                    snapshot_captured_url = await target_context.evaluate(r'''() => {
+                        // 1. Tag dialog e urlContent (CS in Schools)
+                        const diaLink = document.querySelector("#urlDialog a, #urlContent a, dialog a");
+                        if (diaLink && diaLink.href && diaLink.href.startsWith("http")) return diaLink.href;
+
+                        const dia = document.querySelector("#urlDialog, dialog, #urlContent");
+                        if (dia && dia.innerText && dia.innerText.includes("http")) {
+                            const m = dia.innerText.match(/https?:\/\/[^\s\)\"\'<>]+/);
+                            if (m) return m[0];
                         }
-                    }
-                    const links = Array.from(document.querySelectorAll("a[href^='http']"));
-                    for (const a of links) {
-                        if (a.href && (a.href.includes("snapshot") || a.href.includes("trinket"))) {
-                            return a.href;
+
+                        // 2. Inputs visíveis ou links recém-criados
+                        const inputs = Array.from(document.querySelectorAll("input[type='text'], input[type='url'], input:not([type])"));
+                        for (const inp of inputs) {
+                            if (inp.value && inp.value.startsWith("http") && (inp.value.includes("snapshot") || inp.value.includes("trinket") || inp.value.includes("view") || inp.value.includes("run") || inp.value.includes("id="))) {
+                                return inp.value;
+                            }
                         }
-                    }
-                    const modal = document.querySelector(".modal, .dialog, .popup, [role='dialog']");
-                    if (modal) {
-                        const mText = modal.innerText;
-                        const match = mText.match(/https?:\/\/[^\s\)\"\'<>]+/);
-                        if (match) return match[0];
-                    }
-                    return null;
-                }''')
+                        const links = Array.from(document.querySelectorAll("a[href^='http']"));
+                        for (const a of links) {
+                            if (a.href && (a.href.includes("snapshot") || a.href.includes("trinket") || a.href.includes("id="))) {
+                                return a.href;
+                            }
+                        }
+                        return null;
+                    }''')
+                    if snapshot_captured_url:
+                        break
+                    await asyncio.sleep(1.0)
 
             # Se ainda não encontrou, busca no contexto principal da página
             if not snapshot_captured_url:
                 snapshot_captured_url = await page.evaluate(r'''() => {
                     const inputs = Array.from(document.querySelectorAll("input[type='text'], input[type='url'], input:not([type])"));
                     for (const inp of inputs) {
-                        if (inp.value && inp.value.startsWith("http") && (inp.value.includes("snapshot") || inp.value.includes("trinket"))) {
+                        if (inp.value && inp.value.startsWith("http") && (inp.value.includes("snapshot") || inp.value.includes("trinket") || inp.value.includes("id="))) {
                             return inp.value;
                         }
                     }
