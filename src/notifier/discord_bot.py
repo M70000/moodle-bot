@@ -1625,7 +1625,7 @@ class ReviewActionView(ui.View):
                         auto_submit=True,
                         on_log=reporter.log
                     )
-                    if not success and snap_url:
+                    if (not success or "submetid" not in str(message).lower()) and snap_url:
                         success, message = await submitter.submit_url(
                             course_id=str(course_id),
                             assignment_id=str(assignment_id),
@@ -3187,7 +3187,7 @@ async def _execute_solve_flow(
                             auto_submit=True,
                             on_log=reporter.log
                         )
-                        if not submit_success and snap_url:
+                        if (not submit_success or "submetid" not in str(submit_msg).lower()) and snap_url:
                             c_id, a_id = extract_canvas_ids(assign_obj.url or assign_obj.id, assign_obj.course_id)
                             submit_success, submit_msg = await submitter.submit_url(
                                 course_id=c_id or "101",

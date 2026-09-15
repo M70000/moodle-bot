@@ -256,7 +256,7 @@ class BridgeRunner:
                 from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
                 c_id, a_id = extract_canvas_ids(assignment_url or task.get("assignment_id", ""), task.get("course_id"))
                 snap_url = task.get("snapshot_url") or task.get("url")
-                if snap_url and str(snap_url).startswith("http") and ("snapshot" in str(snap_url) or "trinket" in str(snap_url)):
+                if snap_url and str(snap_url).startswith("http"):
                     return await CanvasSubmitter().submit_url(course_id=c_id or "101", assignment_id=a_id or str(task.get("assignment_id")), url=str(snap_url))
 
             file_path_str = task.get("file_to_submit")

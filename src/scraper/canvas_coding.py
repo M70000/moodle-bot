@@ -408,22 +408,79 @@ class CanvasCodingAutomator:
                 await _emit_log(on_log, f"✔ {msg}")
                 return True, msg, snapshot_captured_url
 
-            # Modo Finalizar: Clica em Submit Assignment
+            # Modo Finalizar: Tentativa 1 - Via interface web do Canvas
             await _emit_log(on_log, "🚀 Enviando submissão definitiva na aba Web URL...")
-            submit_btn = page.locator("button:has-text('Submit Assignment'), input#submit_button, button#submit_button, input[value*='Submit Assignment']").first
-            if await submit_btn.count() > 0:
-                await submit_btn.click()
-                try:
-                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
-                except Exception:
-                    pass
-                await asyncio.sleep(2.0)
+            submitted_via_dom = False
+
+            try:
+                # 1. Se a tela de submissão não estiver aberta, clica no botão para abrir (Submit/Start Assignment)
+                open_btn = page.locator(
+                    "a.submit_assignment_link, a:has-text('Submit Assignment'), a:has-text('Start Assignment'), "
+                    "a:has-text('Re-submit Assignment'), a:has-text('New Attempt'), "
+                    "button:has-text('Submit Assignment'), button:has-text('Start Assignment'), button:has-text('New Attempt')"
+                ).first
+                if await open_btn.count() > 0 and await open_btn.is_visible():
+                    await open_btn.click()
+                    await asyncio.sleep(1.5)
+
+                # 2. Re-localiza e clica na aba Web URL
+                web_url_tab = page.locator("button:has-text('Web URL'), a:has-text('Web URL'), li:has-text('Web URL'), [data-view*='web_url'], [id*='tab-web_url']").first
+                if await web_url_tab.count() > 0:
+                    await web_url_tab.click()
+                    await asyncio.sleep(1.0)
+
+                # 3. Insere a Snapshot URL no input de submissão
+                url_input = page.locator("#submission_url, input[name='submission[url]'], input[type='url'], input[placeholder*='http']").first
+                if await url_input.count() > 0 and snapshot_captured_url:
+                    await url_input.scroll_into_view_if_needed()
+                    await url_input.fill(snapshot_captured_url)
+                    await asyncio.sleep(0.5)
+
+                # 4. Clica no botão final de confirmação de envio
+                submit_btn = page.locator(
+                    "#submit_assignment_form input[type='submit'], #submit_assignment_form button[type='submit'], "
+                    "input#submit_button, button#submit_button, button[type='submit']:has-text('Submit'), "
+                    "button:has-text('Submit Assignment'), input[value*='Submit Assignment']"
+                ).last
+                if await submit_btn.count() > 0:
+                    await submit_btn.click()
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(2.0)
+                    submitted_via_dom = True
+            except Exception as dom_err:
+                console.print(f"[yellow]Aviso no envio via DOM do Canvas: {dom_err}[/yellow]")
+
+            if submitted_via_dom:
                 msg = f"Atividade submetida com sucesso no Canvas via Web URL! Snapshot: {snapshot_captured_url}"
                 await _emit_log(on_log, f"✔ {msg}")
                 return True, msg, snapshot_captured_url
 
-            # Se não localizou o botão no DOM, o chamador usará o submit_url da API REST
-            return True, f"Snapshot URL gerada com sucesso ({snapshot_captured_url}).", snapshot_captured_url
+            # Modo Finalizar: Tentativa 2 (Infalível) - Via API REST v1 do Canvas
+            if snapshot_captured_url:
+                await _emit_log(on_log, "📡 Confirmando entrega oficial via API REST do Canvas...")
+                try:
+                    from src.providers.canvas import CanvasSubmitter, extract_canvas_ids
+                    c_id, a_id = extract_canvas_ids(assignment_url)
+                    if a_id:
+                        rest_ok, rest_msg = await CanvasSubmitter().submit_url(
+                            course_id=c_id or "101",
+                            assignment_id=a_id,
+                            url=snapshot_captured_url,
+                            on_log=on_log
+                        )
+                        if rest_ok:
+                            msg = f"Atividade submetida com sucesso no Canvas via API REST! Snapshot: {snapshot_captured_url}"
+                            await _emit_log(on_log, f"✔ {msg}")
+                            return True, msg, snapshot_captured_url
+                        else:
+                            await _emit_log(on_log, f"⚠️ API REST retornou: {rest_msg}")
+                except Exception as rest_err:
+                    await _emit_log(on_log, f"⚠️ Erro no fallback da API REST: {rest_err}")
+
+            return False, f"Não foi possível concluir o envio da URL para a atividade ({snapshot_captured_url}).", snapshot_captured_url
 
         except Exception as e:
             console.print(f"[red]Erro na automação da tarefa de código: {e}[/red]")
