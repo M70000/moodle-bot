@@ -202,40 +202,15 @@ class MoodleDaemon:
             console.print(f"[dim]Tarefa {assign.title} adiada pelo usuário. Notificações temporariamente em pausa.[/dim]")
             return
 
-        # 7. Se a tarefa é nova e ainda não possui rascunho gerado
-        has_draft = assign_state and assign_state.get("draft_path")
-        if not has_draft:
+        # 7. Registra a tarefa pendente no catálogo de estado
+        # A resolução é exclusivamente sob demanda: o usuário decide quando e o que resolver
+        # utilizando os comandos /resolver, /refazer ou /resolver_lote.
+        if not assign_state:
             console.print(
-                f"[bold yellow]Nova tarefa pendente identificada ({plat_label}):[/bold yellow] "
-                f"{assign.title} ({assign.course_name})"
+                f"[bold yellow]Nova tarefa pendente catalogada ({plat_label}):[/bold yellow] "
+                f"{assign.title} ({assign.course_name}) [dim]• Disponível em /resolver[/dim]"
             )
-
-            # Gera o rascunho com a IA via fila centralizada
-            try:
-                from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
-
-                async def _do_auto_solve(target_assign=assign):
-                    d = await self.solver.solve_assignment(
-                        target_assign,
-                        auto_triggered=True,
-                    )
-                    self.state.register_assignment(target_assign, draft_path=str(d.output_path), platform=platform)
-                    if self.notifier.token and self.notifier.channel_id:
-                        await self.notifier.send_assignment_review(target_assign, d)
-                    return True, f"Rascunho gerado para '{target_assign.title}'"
-
-                item = QueueItem(
-                    task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
-                    title=assign.title,
-                    course=assign.course_name,
-                    requester=f"Daemon ({plat_label})",
-                    coro_func=_do_auto_solve
-                )
-                await queue_manager.enqueue(item)
-            except Exception as sol_err:
-                console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
-        else:
-            self.state.register_assignment(assign, platform=platform)
+        self.state.register_assignment(assign, platform=platform)
 
     async def _scan_canvas(self):
         """Executa varredura de disciplinas, tarefas e comunicados do Canvas LMS."""

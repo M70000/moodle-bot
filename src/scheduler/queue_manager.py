@@ -229,18 +229,27 @@ class TaskQueueManager:
             timestamp=datetime.now()
         )
 
+        def _safe_field_val(val: str, max_len: int = 1000) -> str:
+            if not val:
+                return "*Nenhum registro.*"
+            if len(val) <= max_len:
+                return val
+            return val[:max_len - 25] + "\n*... (truncado)*"
+
         # 1. Item em Execução
         if running:
             elapsed = int(running.elapsed_seconds)
             mins, secs = divmod(elapsed, 60)
             elapsed_str = f"{mins:02d}:{secs:02d}"
             req_time = running.started_at.strftime("%H:%M:%S") if running.started_at else "Agora"
+            clean_title = (running.title[:60] + "...") if len(running.title) > 60 else running.title
+            clean_course = (running.course[:40] + "...") if len(running.course) > 40 else (running.course or "Geral")
             embed.add_field(
                 name="▶️ Em Execução Agora",
-                value=(
+                value=_safe_field_val(
                     f"• **Operação:** `{running.task_type.value}`\n"
-                    f"• **Atividade:** **{running.title}**\n"
-                    f"• **Disciplina:** {running.course or 'Geral'}\n"
+                    f"• **Atividade:** **{clean_title}**\n"
+                    f"• **Disciplina:** {clean_course}\n"
                     f"• **Solicitante:** {running.requester} | **Início:** {req_time} (⏱️ `{elapsed_str}` decorridos)"
                 ),
                 inline=False
@@ -255,18 +264,19 @@ class TaskQueueManager:
         # 2. Próximas Tarefas na Fila
         if waiting:
             lines = []
-            for idx, item in enumerate(waiting[:8], start=1):
+            for idx, item in enumerate(waiting[:5], start=1):
                 wait_time = int((datetime.now() - item.enqueued_at).total_seconds())
                 w_mins, w_secs = divmod(wait_time, 60)
+                clean_item_title = (item.title[:45] + "...") if len(item.title) > 45 else item.title
                 lines.append(
                     f"**#{idx}** `[{item.id}]` {item.task_type.value}\n"
-                    f"   ↳ **{item.title}** ({item.requester} • aguardando há {w_mins}m{w_secs:02d}s)"
+                    f"   ↳ **{clean_item_title}** ({item.requester} • {w_mins}m{w_secs:02d}s)"
                 )
-            if len(waiting) > 8:
-                lines.append(f"*... e mais {len(waiting) - 8} tarefa(s) na fila.*")
+            if len(waiting) > 5:
+                lines.append(f"*... e mais {len(waiting) - 5} tarefa(s) na fila.*")
             embed.add_field(
                 name=f"📋 Próximas na Fila ({len(waiting)})",
-                value="\n".join(lines),
+                value=_safe_field_val("\n".join(lines)),
                 inline=False
             )
         else:
@@ -283,13 +293,14 @@ class TaskQueueManager:
                 icon = "✔" if item.status == QueueTaskStatus.COMPLETED else "❌"
                 fin_time = item.finished_at.strftime("%H:%M:%S") if item.finished_at else ""
                 dur = f"{int(item.elapsed_seconds)}s"
+                clean_h_title = (item.title[:35] + "...") if len(item.title) > 35 else item.title
                 h_lines.append(
-                    f"{icon} `[{fin_time}]` **{item.title[:35]}**\n"
+                    f"{icon} `[{fin_time}]` **{clean_h_title}**\n"
                     f"   ↳ *{item.task_type.value}* ({dur})"
                 )
             embed.add_field(
                 name="🏁 Concluídos Recentemente",
-                value="\n".join(h_lines),
+                value=_safe_field_val("\n".join(h_lines)),
                 inline=False
             )
 
