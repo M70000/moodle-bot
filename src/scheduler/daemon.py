@@ -39,6 +39,7 @@ class MoodleDaemon:
     """Daemon principal que orquestra a inteligência em segundo plano."""
 
     def __init__(self, enable_tray: bool = True):
+        self.enable_tray = enable_tray
         self.auth = MoodleAuth()
         self.scraper = MoodleScraper(auth=self.auth)
         self.solver = AISolver()  # Multi-provider BYOK: Gemini/Claude/DeepSeek
