@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import unquote
 
 from playwright.async_api import async_playwright, Browser, BrowserContext, Page
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from rich.console import Console
 from rich.table import Table
 
@@ -149,6 +149,8 @@ def parse_moodle_date(date_val: Any) -> Optional[datetime]:
 
 class Assignment(BaseModel):
     """Representa uma atividade/tarefa acadêmica com prazo de entrega."""
+    model_config = ConfigDict(extra="allow")
+
     id: str
     course_id: str = ""
     course_name: str
@@ -170,6 +172,7 @@ class Assignment(BaseModel):
     attachments: List[CourseMaterial] = Field(default_factory=list)
     platform: str = "moodle"
     submission_types: List[str] = Field(default_factory=list)
+    is_coding_task: bool = False
 
     @model_validator(mode="after")
     def _auto_parse_due_date(self) -> "Assignment":

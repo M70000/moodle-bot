@@ -6163,7 +6163,7 @@ class MoodleDiscordNotifier:
                     or any(k in (assignment.title or "").lower() for k in ["coding task", "programação", "código", "python"])
                 )
                 from src.scraper.canvas_coding import extract_python_code_from_text
-                code_snip = extract_python_code_from_text(draft.prepared_response or draft.full_markdown or "")
+                code_snip = extract_python_code_from_text(getattr(draft, "prepared_response", None) or getattr(draft, "full_markdown", "") or "")
                 if is_coding_activity and code_snip:
                     embed.add_field(name="💻 Solução em Código (Python)", value=f"```python\n{code_snip[:1000]}\n```", inline=False)
                 else:

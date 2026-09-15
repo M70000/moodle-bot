@@ -21,7 +21,7 @@ logging.getLogger("google_genai.models").setLevel(logging.ERROR)
 
 from google import genai
 from google.genai import types
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from rich.console import Console
 from rich.panel import Panel
 
@@ -185,6 +185,8 @@ def extract_text_from_context_files(files: List[Path]) -> str:
 
 class SolutionDraft(BaseModel):
     """Representa a resolução elaborada pela IA para a atividade."""
+    model_config = ConfigDict(extra="allow")
+
     assignment_id: str
     assignment_title: str
     course_name: str
@@ -199,6 +201,7 @@ class SolutionDraft(BaseModel):
     auto_triggered: bool = False              # True = automático (daemon/emergência) → PDF
                                               # False = manual (/resolver)             → DOCX
     activity_type: str = "assign"             # "assign" ou "quiz"
+    prepared_response: str = ""
 
 
 class GeminiSolver:
