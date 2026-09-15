@@ -3,13 +3,17 @@
 // ===================================================================
 
 const tabMetadata = {
+  'tab-lms': {
+    title: 'Plataformas LMS',
+    subtitle: 'Defina a arquitetura de plataformas e configure suas integrações.'
+  },
   'tab-canvas': {
-    title: 'Canvas LMS & PUC-Rio',
-    subtitle: 'Configure a URL do Canvas, Token da API ou ative o Modo Mock simulado.'
+    title: 'Canvas LMS',
+    subtitle: 'Configure a URL do portal Canvas e o token de acesso da API.'
   },
   'tab-moodle': {
-    title: 'Moodle & Autenticação UFMG',
-    subtitle: 'Configure a URL base do Moodle e a autenticação SSO via MinhaUFMG.'
+    title: 'Moodle',
+    subtitle: 'Configure a URL base do Moodle e a autenticação SSO.'
   },
   'tab-discord': {
     title: 'Discord Bot & Notificações',
@@ -50,13 +54,24 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-test-discord').addEventListener('click', testDiscord);
   document.getElementById('btn-test-gemini').addEventListener('click', testGemini);
 
-  // Toggle do Modo Mock do Canvas
-  const canvasMockCheckbox = document.getElementById('CANVAS_MOCK');
-  if (canvasMockCheckbox) {
-    canvasMockCheckbox.addEventListener('change', (e) => {
-      updateCanvasMockUI(e.target.checked);
+  // Alternância dinâmica de Arquitetura LMS (Multi vs Canvas vs Moodle)
+  document.querySelectorAll('input[name="LMS_PROVIDER"]').forEach(radio => {
+    radio.addEventListener('change', (e) => {
+      updateLmsTabsVisibility(e.target.value);
     });
-  }
+  });
+  document.getElementById('card-lms-multi')?.addEventListener('click', () => {
+    const r = document.getElementById('lms-multi');
+    if (r) { r.checked = true; updateLmsTabsVisibility('multi'); }
+  });
+  document.getElementById('card-lms-canvas')?.addEventListener('click', () => {
+    const r = document.getElementById('lms-canvas');
+    if (r) { r.checked = true; updateLmsTabsVisibility('canvas'); }
+  });
+  document.getElementById('card-lms-moodle')?.addEventListener('click', () => {
+    const r = document.getElementById('lms-moodle');
+    if (r) { r.checked = true; updateLmsTabsVisibility('moodle'); }
+  });
 
   // Toggle de visualização do token do Canvas
   const btnToggleCanvasToken = document.getElementById('btn-toggle-canvas-token');
@@ -191,12 +206,10 @@ async function loadConfig() {
     const lmsProvider = (config.LMS_PROVIDER || 'multi').toLowerCase();
     const lmsRadio = document.querySelector(`input[name="LMS_PROVIDER"][value="${lmsProvider}"]`);
     if (lmsRadio) lmsRadio.checked = true;
+    updateLmsTabsVisibility(lmsProvider);
 
-    setInputValue('CANVAS_BASE_URL', config.CANVAS_BASE_URL || 'https://puc-rio.instructure.com');
+    setInputValue('CANVAS_BASE_URL', config.CANVAS_BASE_URL || 'https://pucminas.instructure.com');
     setInputValue('CANVAS_API_TOKEN', config.CANVAS_API_TOKEN || '');
-    const isMock = config.CANVAS_MOCK === 'true' || config.CANVAS_MOCK_MODE === 'true' || config.CANVAS_MOCK === true || config.CANVAS_MOCK === undefined;
-    setCheckboxValue('CANVAS_MOCK', isMock);
-    updateCanvasMockUI(isMock);
 
     setInputValue('MOODLE_BASE_URL', config.MOODLE_BASE_URL || 'https://virtual.ufmg.br');
     const authMode = config.AUTH_MODE || 'cookies';
@@ -306,10 +319,8 @@ async function saveConfig() {
 
   const payload = {
     LMS_PROVIDER: document.querySelector('input[name="LMS_PROVIDER"]:checked')?.value || 'multi',
-    CANVAS_BASE_URL: getInputValue('CANVAS_BASE_URL') || 'https://puc-rio.instructure.com',
+    CANVAS_BASE_URL: getInputValue('CANVAS_BASE_URL') || 'https://pucminas.instructure.com',
     CANVAS_API_TOKEN: getInputValue('CANVAS_API_TOKEN'),
-    CANVAS_MOCK: document.getElementById('CANVAS_MOCK')?.checked ? 'true' : 'false',
-    CANVAS_MOCK_MODE: document.getElementById('CANVAS_MOCK')?.checked ? 'True' : 'False',
 
     MOODLE_BASE_URL: getInputValue('MOODLE_BASE_URL'),
     AUTH_MODE: document.querySelector('input[name="AUTH_MODE"]:checked')?.value || 'cookies',
@@ -385,19 +396,59 @@ async function saveConfig() {
   }
 }
 
-// Controle visual do Modo Mock Canvas
-function updateCanvasMockUI(isMock) {
-  const tokenGroup = document.getElementById('canvas-token-group');
-  if (tokenGroup) {
-    tokenGroup.style.display = isMock ? 'none' : 'block';
+// Troca programática de aba
+function switchTab(tabId) {
+  const item = document.querySelector(`.nav-item[data-tab="${tabId}"]`);
+  if (item) {
+    item.click();
+  }
+}
+
+// Controle dinâmico das abas de LMS na barra lateral
+function updateLmsTabsVisibility(provider) {
+  const prov = (provider || 'multi').toLowerCase();
+  const navCanvas = document.getElementById('nav-item-canvas');
+  const navMoodle = document.getElementById('nav-item-moodle');
+  const overviewCanvas = document.getElementById('overview-canvas-card');
+  const overviewMoodle = document.getElementById('overview-moodle-card');
+  const badgeCanvas = document.getElementById('overview-canvas-badge');
+  const badgeMoodle = document.getElementById('overview-moodle-badge');
+
+  if (prov === 'canvas') {
+    if (navCanvas) navCanvas.style.display = 'flex';
+    if (navMoodle) navMoodle.style.display = 'none';
+    if (badgeCanvas) { badgeCanvas.textContent = 'Ativo'; badgeCanvas.className = 'badge badge-success'; }
+    if (badgeMoodle) { badgeMoodle.textContent = 'Desativado'; badgeMoodle.className = 'badge badge-warning'; }
+    if (overviewCanvas) overviewCanvas.style.opacity = '1';
+    if (overviewMoodle) overviewMoodle.style.opacity = '0.4';
+  } else if (prov === 'moodle') {
+    if (navCanvas) navCanvas.style.display = 'none';
+    if (navMoodle) navMoodle.style.display = 'flex';
+    if (badgeCanvas) { badgeCanvas.textContent = 'Desativado'; badgeCanvas.className = 'badge badge-warning'; }
+    if (badgeMoodle) { badgeMoodle.textContent = 'Ativo'; badgeMoodle.className = 'badge badge-success'; }
+    if (overviewCanvas) overviewCanvas.style.opacity = '0.4';
+    if (overviewMoodle) overviewMoodle.style.opacity = '1';
+  } else {
+    // multi (ambas)
+    if (navCanvas) navCanvas.style.display = 'flex';
+    if (navMoodle) navMoodle.style.display = 'flex';
+    if (badgeCanvas) { badgeCanvas.textContent = 'Ativo'; badgeCanvas.className = 'badge badge-success'; }
+    if (badgeMoodle) { badgeMoodle.textContent = 'Ativo'; badgeMoodle.className = 'badge badge-success'; }
+    if (overviewCanvas) overviewCanvas.style.opacity = '1';
+    if (overviewMoodle) overviewMoodle.style.opacity = '1';
+  }
+
+  // Se a aba atualmente aberta for desativada, redireciona suavemente para a central LMS
+  const activePane = document.querySelector('.tab-pane.active')?.id;
+  if ((prov === 'canvas' && activePane === 'tab-moodle') || (prov === 'moodle' && activePane === 'tab-canvas')) {
+    switchTab('tab-lms');
   }
 }
 
 // Testes de Conexão
 async function testCanvas() {
-  const base_url = getInputValue('CANVAS_BASE_URL') || 'https://puc-rio.instructure.com';
+  const base_url = getInputValue('CANVAS_BASE_URL') || 'https://pucminas.instructure.com';
   const token = getInputValue('CANVAS_API_TOKEN');
-  const mock = document.getElementById('CANVAS_MOCK')?.checked ?? false;
   const resultDiv = document.getElementById('canvas-test-result');
   setFeedback(resultDiv, 'Testando conectividade com o Canvas LMS...', 'loading');
 
@@ -405,7 +456,7 @@ async function testCanvas() {
     const res = await fetch('/api/test-canvas', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ base_url, token, mock })
+      body: JSON.stringify({ base_url, token })
     });
     const data = await res.json();
     if (data.ok) {

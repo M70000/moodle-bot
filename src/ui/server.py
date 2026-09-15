@@ -142,10 +142,8 @@ def get_current_config() -> Dict[str, Any]:
     # Defaults de fallback caso .env.example não tenha algo
     base_defaults = {
         "LMS_PROVIDER": "multi",
-        "CANVAS_BASE_URL": "https://puc-rio.instructure.com",
+        "CANVAS_BASE_URL": "https://pucminas.instructure.com",
         "CANVAS_API_TOKEN": "",
-        "CANVAS_MOCK": "true",
-        "CANVAS_MOCK_MODE": "true",
         "MOODLE_BASE_URL": "https://virtual.ufmg.br",
         "AUTH_MODE": "cookies",
         "MOODLE_USERNAME": "",
@@ -217,7 +215,7 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
 
     lines = [
         "# ===================================================================",
-        "# Moodle AI Assistant (UFMG) - Arquivo de Configuração de Ambiente",
+        "# LumiBot - Arquivo de Configuração de Ambiente",
         f"# Atualizado via Interface Gráfica em: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         "# ===================================================================",
         "",
@@ -234,12 +232,10 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
         f"LOGIN_TIMEOUT_SECONDS={_val('LOGIN_TIMEOUT_SECONDS', '300')}",
         "",
         "# -------------------------------------------------------------------",
-        "# 1b. Plataforma Canvas LMS (PUC-Rio e outras)",
+        "# 1b. Plataforma Canvas LMS",
         "# -------------------------------------------------------------------",
-        f"CANVAS_BASE_URL={_val('CANVAS_BASE_URL', 'https://puc-rio.instructure.com')}",
+        f"CANVAS_BASE_URL={_val('CANVAS_BASE_URL', 'https://pucminas.instructure.com')}",
         f"CANVAS_API_TOKEN={_val('CANVAS_API_TOKEN', '')}",
-        f"CANVAS_MOCK={_val('CANVAS_MOCK', 'true').lower()}",
-        f"CANVAS_MOCK_MODE={_val('CANVAS_MOCK_MODE', 'true')}",
         "",
         "# -------------------------------------------------------------------",
         "# 2. Discord Bot - Notificações e Revisão",
@@ -379,22 +375,14 @@ def test_moodle_connection(url: str) -> Dict[str, Any]:
 def test_canvas_connection(
     base_url: str,
     api_token: Optional[str] = None,
-    mock_mode: bool = False,
 ) -> Dict[str, Any]:
-    """Testa a conectividade com o Canvas LMS (ou valida o Modo Mock da PUC-Rio)."""
-    if mock_mode:
-        return {
-            "ok": True,
-            "mock": True,
-            "message": "Modo Mock PUC-Rio ativado e validado! 4 disciplinas simuladas (INF1005, INF1025, MAT1161, ENG1000) disponíveis para testes offline."
-        }
-
-    target = (base_url or "https://puc-rio.instructure.com").rstrip("/")
+    """Testa a conectividade com a API do Canvas LMS."""
+    target = (base_url or "https://pucminas.instructure.com").rstrip("/")
     token = (api_token or "").strip()
-    if not token or token == "mock_token":
+    if not token:
         return {
             "ok": False,
-            "error": "Token de acesso da API do Canvas não informado. Para usar sem token, ative a opção 'Modo Mock PUC-Rio'."
+            "error": "Token de acesso da API do Canvas não informado."
         }
 
     headers = {
@@ -412,7 +400,6 @@ def test_canvas_connection(
         elapsed = round((time.time() - start_time) * 1000)
         return {
             "ok": True,
-            "mock": False,
             "user_name": user_name,
             "user_id": user_id,
             "elapsed_ms": elapsed,
@@ -775,8 +762,7 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
         if url_path == "/api/test-canvas":
             base_url = payload.get("base_url", "")
             token = payload.get("token", "")
-            mock_mode = bool(payload.get("mock", False))
-            res = test_canvas_connection(base_url, token, mock_mode)
+            res = test_canvas_connection(base_url, token)
             self._send_json(res)
             return
 

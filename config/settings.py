@@ -47,20 +47,15 @@ class Settings(BaseSettings):
         description="Provedor educacional ativo: 'moodle', 'canvas' ou 'multi'"
     )
 
-    # Plataforma Canvas LMS (Instructure / PUC-Rio e outras)
+    # Plataforma Canvas LMS (Instructure)
     CANVAS_BASE_URL: str = Field(
-        default="https://puc-rio.instructure.com",
-        description="URL base da instituição no Canvas LMS (ex: https://puc-rio.instructure.com)"
+        default="https://pucminas.instructure.com",
+        description="URL base da instituição no Canvas LMS (ex: https://pucminas.instructure.com)"
     )
     CANVAS_API_TOKEN: str = Field(
         default="",
         description="Token de acesso pessoal da API do Canvas LMS (Bearer token)"
     )
-    CANVAS_MOCK: bool = Field(
-        default=False,
-        description="Ativa o modo de simulação (Mock) com disciplinas da PUC-Rio"
-    )
-
     # Discord Bot
     DISCORD_BOT_TOKEN: str = Field(
         default="",

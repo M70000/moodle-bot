@@ -271,13 +271,13 @@ def get_available_courses() -> List[str]:
     except Exception:
         pass
 
-    # 3. Disciplinas do Canvas LMS (Mock ou configuradas)
+    # 3. Disciplinas do Canvas LMS
     try:
-        from src.providers.canvas import CanvasAdapter
-        canvas = CanvasAdapter()
-        if canvas.mock_mode:
-            for mc in canvas._get_mock_courses():
-                courses_set.add(mc.name)
+        state = DaemonState()
+        canvas_courses = state.data.get("canvas_courses", [])
+        for cc in canvas_courses:
+            if isinstance(cc, dict) and cc.get("name"):
+                courses_set.add(cc["name"])
     except Exception:
         pass
 
@@ -363,11 +363,11 @@ async def _get_current_assignments() -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Unifica tarefas do Canvas LMS (Mock ou Live API)
+    # Unifica tarefas do Canvas LMS
     try:
         from src.providers.canvas import CanvasAdapter
         canvas = CanvasAdapter()
-        if canvas.mock_mode or canvas.api_token:
+        if canvas.api_token:
             canvas_tasks = await canvas.get_upcoming_assignments(days=15)
             for ct in canvas_tasks:
                 cid = f"canvas_{ct.id}"
@@ -400,16 +400,12 @@ def _get_sync_assignments() -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Unifica tarefas síncronas do Canvas (Mock ou registradas)
+    # Unifica tarefas síncronas do Canvas registradas no estado local
     try:
-        from src.providers.canvas import CanvasAdapter
-        canvas = CanvasAdapter()
-        if canvas.mock_mode:
-            mock_tasks = canvas._get_mock_assignments(days=15)
-            for ct in mock_tasks:
-                cid = f"canvas_{ct.id}"
-                if ct.id not in assignments and cid not in assignments:
-                    assignments[cid] = ct.to_dict()
+        state = DaemonState()
+        canvas_tasks = state.data.get("canvas_assignments", {})
+        if canvas_tasks:
+            assignments.update(canvas_tasks)
     except Exception:
         pass
 
@@ -2174,9 +2170,7 @@ async def build_status_embed() -> discord.Embed:
     try:
         from src.providers.canvas import CanvasAdapter
         canvas = CanvasAdapter()
-        if canvas.mock_mode:
-            c_status = "🧪 Modo Mock Ativo (PUC-Rio)"
-        elif canvas.api_token:
+        if canvas.api_token:
             c_status = "🟢 Conectado (Token Bearer)"
         else:
             c_status = "⚪ Não configurado"
@@ -2262,7 +2256,7 @@ async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discor
     from src.providers.canvas import CanvasAdapter
     adapter = CanvasAdapter()
 
-    mode_badge = "🧪 **Modo Mock (PUC-Rio)**" if adapter.mock_mode else "🌐 **API Oficial Canvas**"
+    mode_badge = "🌐 **API Oficial Canvas**"
 
     if consulta == "cursos":
         courses = await adapter.get_courses()
@@ -2304,10 +2298,10 @@ async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discor
             title="🛰️ Canvas LMS — Diagnóstico e Conectividade",
             color=LumiTheme.SUCCESS if is_conn else LumiTheme.WARNING
         )
-        embed.add_field(name="Modo Ativo", value=mode_badge, inline=True)
+        embed.add_field(name="Plataforma", value="Canvas LMS (Instructure)", inline=True)
         embed.add_field(name="Conexão / Autenticação", value="🟢 Ativa & Válida" if is_conn else "🔴 Falha / Token Inválido", inline=True)
         embed.add_field(name="URL Institucional", value=f"`{adapter.base_url}`", inline=False)
-        token_preview = f"`{adapter.api_token[:6]}...{adapter.api_token[-4:]}`" if len(adapter.api_token) > 10 else ("`mock_token`" if adapter.mock_mode else "*Não configurado*")
+        token_preview = f"`{adapter.api_token[:6]}...{adapter.api_token[-4:]}`" if len(adapter.api_token) > 10 else "*Não configurado*"
         embed.add_field(name="Token da API", value=token_preview, inline=True)
         return apply_lumi_footer(embed)
 
@@ -2344,7 +2338,7 @@ async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7) -> discor
         return apply_lumi_footer(embed)
 
 
-@bot.tree.command(name="canvas", description="Consulta tarefas, matérias e avisos do Canvas LMS (PUC-Rio)")
+@bot.tree.command(name="canvas", description="Consulta tarefas, matérias e avisos do Canvas LMS")
 @app_commands.describe(
     consulta="Tipo de consulta a realizar no Canvas LMS",
     dias="Janela em dias para exibição de tarefas (padrão: 7)"

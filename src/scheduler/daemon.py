@@ -100,8 +100,7 @@ class MoodleDaemon:
         """Executa varredura de disciplinas, tarefas e comunicados do Canvas LMS."""
         canvas_enabled = (
             getattr(settings, "LMS_PROVIDER", "moodle").lower() in ("canvas", "multi")
-            or getattr(settings, "CANVAS_MOCK", False)
-            or bool(getattr(settings, "CANVAS_API_TOKEN", ""))
+            and bool(getattr(settings, "CANVAS_API_TOKEN", ""))
         )
         if not canvas_enabled:
             return
