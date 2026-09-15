@@ -119,6 +119,11 @@ def apply_zip_update(zip_bytes: bytes, dest_root: Path = PROJECT_ROOT) -> Dict[s
 
             is_new = not target_file.exists()
             content = zf.read(raw_name)
+
+            # Garante que scripts de lote/PowerShell sempre usem CRLF para evitar erros no cmd.exe
+            if rel_path.lower().endswith((".bat", ".cmd", ".ps1")):
+                content = content.replace(b"\r\n", b"\n").replace(b"\n", b"\r\n")
+
             target_file.write_bytes(content)
 
             if is_new:

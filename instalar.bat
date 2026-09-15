@@ -1,9 +1,10 @@
 @echo off
-title Moodle AI Assistant - Instalador One-Click
+chcp 65001 >nul
+title LumiBot - Instalador One-Click
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Moodle AI Assistant UFMG - Instalador One-Click
+echo   LumiBot - Instalador One-Click
 echo ============================================================
 echo.
 echo Este instalador configurara todo o ambiente necessario para
@@ -91,7 +92,7 @@ echo   Instalacao concluida com sucesso!
 echo ============================================================
 echo.
 echo Abrindo agora o Painel de Configuracao para conectar
-echo seu Moodle, Discord e chave do Gemini...
+echo suas plataformas (Discord, IA, Canvas LMS e Moodle)...
 echo.
 ping 127.0.0.1 -n 4 >nul
 

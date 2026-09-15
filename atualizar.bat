@@ -1,42 +1,44 @@
 @echo off
-title Moodle AI Assistant - Atualizador de Versao
+chcp 65001 >nul
+title LumiBot - Atualizador de Versao
 cd /d "%~dp0"
 
 echo ============================================================
-echo   Moodle AI Assistant UFMG - Atualizador de Versao
+echo   LumiBot - Atualizador de Versao
 echo ============================================================
 echo.
 
 rem 1. Se existir a pasta .git E o comando git estiver disponivel no PATH, atualiza via Git
-if exist ".git" (
-    where git >nul 2>&1
-    if %ERRORLEVEL% EQU 0 (
-        echo [INFO] Repositorio Git detectado.
-        echo [1/3] Baixando novidades do repositorio remoto...
-        git fetch origin main
-        if %ERRORLEVEL% EQU 0 (
-            echo.
-            echo [2/3] Aplicando atualizacoes...
-            git pull origin main
-            goto SYNC_DEPS
-        ) else (
-            echo [AVISO] Nao foi possivel conectar via Git. Tentando atualizador direto...
-        )
-    )
+if not exist ".git" goto ZIP_MODE
+where git >nul 2>&1
+if %ERRORLEVEL% NEQ 0 goto ZIP_MODE
+
+echo [INFO] Repositorio Git detectado.
+echo [1/3] Baixando novidades do repositorio remoto...
+git fetch origin main
+if %ERRORLEVEL% NEQ 0 (
+    echo [AVISO] Nao foi possivel conectar via Git. Tentando atualizador direto...
+    goto ZIP_MODE
 )
 
+echo.
+echo [2/3] Aplicando atualizacoes...
+git pull origin main
+goto SYNC_DEPS
+
+:ZIP_MODE
 rem 2. Modo Download ZIP (instalacao direta sem Git)
 echo [INFO] Modo Download ZIP detectado (instalacao sem Git).
 echo Atualizando o assistente a partir do GitHub...
 echo.
 
 rem Localiza o interpretador Python (.venv ou global)
-set PYTHON_EXE=
+set "PYTHON_EXE="
 if exist ".venv\Scripts\python.exe" (
-    set PYTHON_EXE=".venv\Scripts\python.exe"
+    set "PYTHON_EXE=.venv\Scripts\python.exe"
 ) else (
     where python >nul 2>&1
-    if %ERRORLEVEL% EQU 0 set PYTHON_EXE=python
+    if %ERRORLEVEL% EQU 0 set "PYTHON_EXE=python"
 )
 
 rem Se tiver Python e o script tools\update_zip.py existir, usa o utilitario Python
@@ -72,7 +74,7 @@ echo ============================================================
 echo   Assistente atualizado com sucesso!
 echo ============================================================
 echo.
-echo Suas configuracoes locais (.env), sessao do Moodle e materiais
+echo Suas configuracoes locais [.env], sessao do Moodle e materiais
 echo foram estritamente preservados intactos.
 echo.
 pause
