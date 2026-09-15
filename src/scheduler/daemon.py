@@ -48,8 +48,25 @@ class MoodleDaemon:
         self._running = False
         self._session_expired_alerted = False
         self._is_reauthenticating = False
-        self.enable_tray = enable_tray
         self.tray = None
+
+    @property
+    def lms_provider(self) -> str:
+        """Retorna o provedor educacional configurado ('moodle', 'canvas' ou 'multi')."""
+        return getattr(settings, "LMS_PROVIDER", "moodle").strip().lower()
+
+    @property
+    def is_moodle_enabled(self) -> bool:
+        """Indica se a plataforma Moodle está ativa neste ciclo."""
+        return self.lms_provider in ("moodle", "multi")
+
+    @property
+    def is_canvas_enabled(self) -> bool:
+        """Indica se a plataforma Canvas LMS está ativa neste ciclo."""
+        return (
+            self.lms_provider in ("canvas", "multi")
+            and bool(getattr(settings, "CANVAS_API_TOKEN", "").strip())
+        )
 
 
     async def _auto_relogin_flow(self, force_interactive: bool = False):
@@ -96,17 +113,137 @@ class MoodleDaemon:
         finally:
             self._is_reauthenticating = False
 
+    async def _process_assignment(self, assign):
+        """Processa uma atividade individual (Moodle ou Canvas): notas, Notion, rascunho de IA e revisão."""
+        assign_state = self.state.get_assignment(assign.id)
+        platform = getattr(assign, "platform", "moodle")
+        plat_label = "Canvas" if platform == "canvas" else "Moodle"
+
+        # 1. Monitor de Notas & Feedback: verifica se o professor lançou a avaliação
+        if assign.has_grade and assign.grade_value:
+            already_notified = assign_state and assign_state.get("grade_notified", False)
+            if not already_notified:
+                console.print(
+                    f"[bold green]🎉 NOTA DETECTADA ({plat_label}):[/bold green] "
+                    f"{assign.title} -> {assign.grade_value}"
+                )
+                await self.notifier.send_grade_notification(
+                    course_name=assign.course_name,
+                    assignment_title=assign.title,
+                    grade=assign.grade_value,
+                    feedback=assign.feedback_comments,
+                    graded_by=assign.graded_by
+                )
+                if assign_state:
+                    assign_state["grade_notified"] = True
+                    assign_state["grade_value"] = assign.grade_value
+                    assign_state["feedback_comments"] = assign.feedback_comments
+                    self.state.save()
+                else:
+                    self.state.register_assignment(assign, grade_notified=True)
+
+        # 2. Se a atividade não é acionável pendente (ex: já enviada ou prazo vencido), registra e segue
+        if not assign.is_actionable_pending:
+            self.state.register_assignment(assign)
+            return
+
+        # 3. Se o usuário cancelou essa tarefa pelo Discord, respeita e não processa
+        if assign_state and assign_state.get("status") == "cancelled":
+            console.print(f"[dim]Tarefa {assign.title} marcada como cancelada pelo usuário. Ignorando.[/dim]")
+            return
+
+        # 4. Sincronização automática com a Central de Estudos do Notion
+        # Só sincroniza atividades que possuem DATA/PRAZO DEFINIDO.
+        if assign.is_actionable_pending:
+            if not assign.due_date:
+                if assign_state and not assign_state.get("notion_synced"):
+                    assign_state["notion_synced"] = True
+                    self.state.save()
+            else:
+                notion_synced = assign_state and assign_state.get("notion_synced", False)
+                if not notion_synced:
+                    try:
+                        from src.notifier.notion_client import notion_client
+                        if notion_client.is_configured:
+                            date_iso = assign.due_date.strftime("%Y-%m-%d")
+                            plat_id_prefix = "canvas" if platform == "canvas" else "moodle"
+                            r = await notion_client.create_task(
+                                title=assign.title,
+                                date_str=date_iso,
+                                category="TAREFA✅" if getattr(assign, "activity_type", "assign") != "quiz" else "TRABALHO🟡",
+                                course_name=assign.course_name,
+                                task_id_val=f"{plat_id_prefix}_{assign.id}",
+                                notes_val=f"Atividade {plat_label}: {assign.title} ({assign.course_name})",
+                                details=f"Atividade detectada no {plat_label} com prazo em {assign.due_date_str or date_iso}.\nTipo: {'Questionário' if getattr(assign, 'activity_type', 'assign') == 'quiz' else 'Entrega de Arquivo'}",
+                                moodle_url=assign.url,
+                                steps=[
+                                    f"Revisar anotações e conteúdos de {assign.course_name}",
+                                    f"Resolver '{assign.title}'",
+                                    f"Validar e submeter no {plat_label}"
+                                ],
+                                notify_discord=True
+                            )
+                            if r.get("success"):
+                                self.state.register_assignment(assign)
+                                cur = self.state.get_assignment(assign.id)
+                                if cur:
+                                    cur["notion_synced"] = True
+                                    self.state.save()
+                    except Exception as n_err:
+                        console.print(f"[yellow]Aviso ao sincronizar tarefa {assign.title} no Notion: {n_err}[/yellow]")
+
+        # 5. Se for questionário online (quiz), registra no catálogo para acompanhamento em /tarefas (resolução sob demanda)
+        if getattr(assign, "activity_type", "assign") == "quiz":
+            self.state.register_assignment(assign)
+            return
+
+        # 6. Se a tarefa foi adiada pelo usuário e o tempo ainda não passou, pula
+        if self.state.is_postponed(assign.id):
+            console.print(f"[dim]Tarefa {assign.title} adiada pelo usuário. Notificações temporariamente em pausa.[/dim]")
+            return
+
+        # 7. Se a tarefa é nova e ainda não possui rascunho gerado
+        has_draft = assign_state and assign_state.get("draft_path")
+        if not has_draft:
+            console.print(
+                f"[bold yellow]Nova tarefa pendente identificada ({plat_label}):[/bold yellow] "
+                f"{assign.title} ({assign.course_name})"
+            )
+
+            # Gera o rascunho com a IA via fila centralizada
+            try:
+                from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
+
+                async def _do_auto_solve(target_assign=assign):
+                    d = await self.solver.solve_assignment(
+                        target_assign,
+                        auto_triggered=True,
+                    )
+                    self.state.register_assignment(target_assign, draft_path=str(d.output_path))
+                    if self.notifier.token and self.notifier.channel_id:
+                        await self.notifier.send_assignment_review(target_assign, d)
+                    return True, f"Rascunho gerado para '{target_assign.title}'"
+
+                item = QueueItem(
+                    task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
+                    title=assign.title,
+                    course=assign.course_name,
+                    requester=f"Daemon ({plat_label})",
+                    coro_func=_do_auto_solve
+                )
+                await queue_manager.enqueue(item)
+            except Exception as sol_err:
+                console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
+        else:
+            self.state.register_assignment(assign)
+
     async def _scan_canvas(self):
         """Executa varredura de disciplinas, tarefas e comunicados do Canvas LMS."""
-        canvas_enabled = (
-            getattr(settings, "LMS_PROVIDER", "moodle").lower() in ("canvas", "multi")
-            and bool(getattr(settings, "CANVAS_API_TOKEN", ""))
-        )
-        if not canvas_enabled:
+        if not self.is_canvas_enabled:
             return
 
         try:
-            console.rule("[bold magenta]Varredura do Canvas LMS (Multi-LMS)[/bold magenta]")
+            console.rule("[bold magenta]Varredura do Canvas LMS (Instructure)[/bold magenta]")
             from src.providers.canvas import CanvasAdapter
             canvas_adapter = CanvasAdapter()
             c_courses, c_assignments, c_announcements = await canvas_adapter.scan_all(
@@ -114,11 +251,19 @@ class MoodleDaemon:
                 sync_announcements=True,
             )
 
+            # Registra cursos do Canvas no catálogo de estado
+            known_courses = self.state.data.get("courses", [])
+            for c in c_courses:
+                if c.name not in known_courses:
+                    known_courses.append(c.name)
+            self.state.data["courses"] = known_courses
+            self.state.save()
+
             # Processa comunicados do Canvas
             for ann in c_announcements:
                 if not self.state.is_announcement_seen(ann.id):
                     console.print(f"[bold yellow]📢 NOVO AVISO CANVAS:[/bold yellow] {ann.title} ({ann.course_name})")
-                    from src.scraper.announcements import CourseAnnouncement
+                    from src.scraper.moodle_scraper import CourseAnnouncement
                     moodle_ann = CourseAnnouncement(
                         id=ann.id,
                         course_id=ann.course_id,
@@ -132,9 +277,9 @@ class MoodleDaemon:
                     await self.notifier.send_course_announcement(moodle_ann)
                     self.state.mark_announcement_seen(moodle_ann)
 
-            # Processa tarefas do Canvas
+            # Processa tarefas do Canvas através do pipeline unificado
             for assign in c_assignments:
-                from src.scraper.moodle import Assignment
+                from src.scraper.moodle_scraper import Assignment
                 m_assign = Assignment(
                     id=assign.id,
                     course_id=assign.course_id,
@@ -149,210 +294,116 @@ class MoodleDaemon:
                     activity_type=assign.activity_type
                 )
                 m_assign.platform = "canvas"
-                self.state.register_assignment(m_assign)
+                m_assign.is_submitted = bool(assign.is_submitted)
+                await self._process_assignment(m_assign)
 
             console.print(f"[green]✔ Canvas sincronizado: {len(c_courses)} cursos, {len(c_assignments)} tarefas, {len(c_announcements)} avisos.[/green]")
         except Exception as c_err:
-            console.print(f"[yellow]⚠️ Falha na varredura do Canvas LMS: {c_err}[/yellow]")
+            console.print(f"[bold yellow]⚠️ Falha na varredura do Canvas LMS: {c_err}[/bold yellow]")
 
-    async def run_cycle(self):
-        """Executa um ciclo completo de verificação, resolução e notificação."""
-        console.rule("[bold cyan]Iniciando Ciclo de Varredura do Moodle[/bold cyan]")
-        try:
-            # 1. Valida se a sessão continua ativa
-            valid, user = await self.auth.validate_session()
-            if not valid:
-                auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
-                is_first_login = not self.auth.session_exists
+    async def _run_moodle_cycle(self):
+        """Executa o ciclo de varredura exclusivo do Moodle (UFMG Virtual)."""
+        console.rule("[bold cyan]Varredura do Moodle (UFMG Virtual)[/bold cyan]")
+        valid, user = await self.auth.validate_session()
+        if not valid:
+            auth_mode = getattr(settings, "AUTH_MODE", "cookies").lower()
+            is_first_login = not self.auth.session_exists
 
-                console.print("[bold red]Sessão do Moodle inativa ou expirada.[/bold red]")
+            console.print("[bold red]Sessão do Moodle inativa ou expirada.[/bold red]")
 
-                if auth_mode == "credentials":
-                    console.print("[cyan]Tentando login automático por credenciais...[/cyan]")
-                    auth_success = await self.auth.ensure_authenticated()
+            if auth_mode == "credentials":
+                console.print("[cyan]Tentando login automático por credenciais...[/cyan]")
+                auth_success = await self.auth.ensure_authenticated()
+                if auth_success:
+                    self._session_expired_alerted = False
+                    valid, user = await self.auth.validate_session()
+                    if self.notifier.token and self.notifier.channel_id:
+                        await self.notifier.send_session_renewed_notification(user_name=user)
+                else:
+                    console.print("[red]Não foi possível autenticar automaticamente via credenciais.[/red]")
+                    if not self._session_expired_alerted:
+                        self._session_expired_alerted = True
+                        if self.notifier.token and self.notifier.channel_id:
+                            await self.notifier.send_session_expired_alert(browser_opened=False)
+                    return
+            else:
+                # Modo Cookies
+                if is_first_login:
+                    console.print("[bold cyan]Primeiro login: Abrindo navegador no desktop para autenticação inicial...[/bold cyan]")
+                    auth_success = await self.auth.interactive_login(headless=False)
                     if auth_success:
                         self._session_expired_alerted = False
                         valid, user = await self.auth.validate_session()
                         if self.notifier.token and self.notifier.channel_id:
                             await self.notifier.send_session_renewed_notification(user_name=user)
                     else:
-                        console.print("[red]Não foi possível autenticar automaticamente via credenciais.[/red]")
-                        if not self._session_expired_alerted:
-                            self._session_expired_alerted = True
-                            if self.notifier.token and self.notifier.channel_id:
-                                await self.notifier.send_session_expired_alert(browser_opened=False)
-                        await self._scan_canvas()
+                        console.print("[red]Primeiro login não foi concluído.[/red]")
                         return
                 else:
-                    # Modo Cookies
-                    if is_first_login:
-                        console.print("[bold cyan]Primeiro login: Abrindo navegador no desktop para autenticação inicial...[/bold cyan]")
-                        auth_success = await self.auth.interactive_login(headless=False)
-                        if auth_success:
-                            self._session_expired_alerted = False
-                            valid, user = await self.auth.validate_session()
-                            if self.notifier.token and self.notifier.channel_id:
-                                await self.notifier.send_session_renewed_notification(user_name=user)
-                        else:
-                            console.print("[red]Primeiro login não foi concluído.[/red]")
-                            await self._scan_canvas()
-                            return
-                    else:
-                        # Sessão expirou no modo cookies: NÃO abre navegador automaticamente!
-                        console.print("[bold yellow]Modo cookies: Sessão expirada. O navegador não será aberto automaticamente.[/bold yellow]")
-                        if not self._session_expired_alerted:
-                            self._session_expired_alerted = True
-                            if self.notifier.token and self.notifier.channel_id:
-                                await self.notifier.send_session_expired_alert(browser_opened=False)
-                        await self._scan_canvas()
-                        return
+                    # Sessão expirou no modo cookies: NÃO abre navegador automaticamente!
+                    console.print("[bold yellow]Modo cookies: Sessão expirada. O navegador não será aberto automaticamente.[/bold yellow]")
+                    if not self._session_expired_alerted:
+                        self._session_expired_alerted = True
+                        if self.notifier.token and self.notifier.channel_id:
+                            await self.notifier.send_session_expired_alert(browser_opened=False)
+                    return
 
-            known_ann_ids = self.state.get_known_announcement_ids()
-            first_ann_run = len(known_ann_ids) == 0
+        known_ann_ids = self.state.get_known_announcement_ids()
+        first_ann_run = len(known_ann_ids) == 0
 
-            # 2. Executa a varredura das disciplinas, tarefas e comunicados
-            courses, assignments, announcements = await self.scraper.scan_all(
-                sync_materials=True,
-                sync_announcements=True,
-                known_announcement_ids=known_ann_ids
-            )
+        # Executa a varredura das disciplinas, tarefas e comunicados do Moodle
+        courses, assignments, announcements = await self.scraper.scan_all(
+            sync_materials=True,
+            sync_announcements=True,
+            known_announcement_ids=known_ann_ids
+        )
 
-            # 3. Processa comunicados da turma dos professores
-            for ann in announcements:
-                if not self.state.is_announcement_seen(ann.id):
-                    # Na primeira execução, notifica avisos recentes (ex: do mês corrente ou últimos dias)
-                    is_recent = any(m in ann.date.lower() for m in ["set", "out", "nov", "dez", "hoje", "ontem"]) if ann.date else True
-                    if first_ann_run and not is_recent:
-                        self.state.mark_announcement_seen(ann)
-                        continue
+        # Registra cursos do Moodle no estado
+        known_courses = self.state.data.get("courses", [])
+        for c in courses:
+            if c.name not in known_courses:
+                known_courses.append(c.name)
+        self.state.data["courses"] = known_courses
+        self.state.save()
 
-                    console.print(f"[bold yellow]📢 NOVO AVISO DETECTADO:[/bold yellow] {ann.title} ({ann.course_name})")
-                    await self.notifier.send_course_announcement(ann)
+        # Processa comunicados da turma dos professores
+        for ann in announcements:
+            if not self.state.is_announcement_seen(ann.id):
+                is_recent = any(m in ann.date.lower() for m in ["set", "out", "nov", "dez", "hoje", "ontem"]) if ann.date else True
+                if first_ann_run and not is_recent:
                     self.state.mark_announcement_seen(ann)
-
-            # 4. Processa cada atividade
-            for assign in assignments:
-                assign_state = self.state.get_assignment(assign.id)
-
-                # Monitor de Notas & Feedback: verifica se o professor lançou a avaliação
-                if assign.has_grade and assign.grade_value:
-                    already_notified_grade = assign_state and assign_state.get("grade_notified", False)
-                    if not already_notified_grade:
-                        console.print(
-                            f"[bold green]🎉 NOTA DETECTADA no Moodle:[/bold green] "
-                            f"{assign.title} -> {assign.grade_value}"
-                        )
-                        await self.notifier.send_grade_notification(
-                            course_name=assign.course_name,
-                            assignment_title=assign.title,
-                            grade=assign.grade_value,
-                            feedback=assign.feedback_comments,
-                            graded_by=assign.graded_by
-                        )
-                        if assign_state:
-                            assign_state["grade_notified"] = True
-                            assign_state["grade_value"] = assign.grade_value
-                            assign_state["feedback_comments"] = assign.feedback_comments
-                            self.state.save()
-
-                # Se a tarefa não é acionável (já enviada ou prazo vencido no passado), ignora
-                if not assign.is_actionable_pending:
-                    self.state.register_assignment(assign)
                     continue
 
-                # Se o usuário cancelou essa tarefa pelo Discord, respeita e não processa
-                if assign_state and assign_state.get("status") == "cancelled":
-                    console.print(f"[dim]Tarefa {assign.title} marcada como cancelada pelo usuário. Ignorando.[/dim]")
-                    continue
+                console.print(f"[bold yellow]📢 NOVO AVISO DETECTADO:[/bold yellow] {ann.title} ({ann.course_name})")
+                await self.notifier.send_course_announcement(ann)
+                self.state.mark_announcement_seen(ann)
 
-                # Sincronização automática com a Central de Estudos do Notion
-                # REGRA CRÍTICA: Só sincroniza atividades que possuem DATA/PRAZO DEFINIDO.
-                # Questionários e atividades sem prazo (ex: auto-estudo de Inglês Instrumental) NUNCA são adicionados ao Notion.
-                if assign.is_actionable_pending:
-                    if not assign.due_date:
-                        if assign_state and not assign_state.get("notion_synced"):
-                            assign_state["notion_synced"] = True
-                            self.state.save()
-                    else:
-                        notion_synced = assign_state and assign_state.get("notion_synced", False)
-                        if not notion_synced:
-                            try:
-                                from src.notifier.notion_client import notion_client
-                                if notion_client.is_configured:
-                                    date_iso = assign.due_date.strftime("%Y-%m-%d")
-                                    r = await notion_client.create_task(
-                                        title=assign.title,
-                                        date_str=date_iso,
-                                        category="TAREFA✅" if getattr(assign, "activity_type", "assign") != "quiz" else "TRABALHO🟡",
-                                        course_name=assign.course_name,
-                                        task_id_val=f"moodle_{assign.id}",
-                                        notes_val=f"Atividade Moodle: {assign.title} ({assign.course_name})",
-                                        details=f"Atividade detectada no Moodle UFMG com prazo em {assign.due_date_str or date_iso}.\nTipo: {'Questionário' if getattr(assign, 'activity_type', 'assign') == 'quiz' else 'Entrega de Arquivo'}",
-                                        moodle_url=assign.url,
-                                        steps=[
-                                            f"Revisar anotações e conteúdos de {assign.course_name}",
-                                            f"Resolver '{assign.title}'",
-                                            "Validar e submeter no Moodle"
-                                        ],
-                                        notify_discord=True
-                                    )
-                                    if r.get("success"):
-                                        self.state.register_assignment(assign)
-                                        cur = self.state.get_assignment(assign.id)
-                                        if cur:
-                                            cur["notion_synced"] = True
-                                            self.state.save()
-                            except Exception as n_err:
-                                console.print(f"[yellow]Aviso ao sincronizar tarefa {assign.title} no Notion: {n_err}[/yellow]")
+        # Processa cada atividade pelo pipeline comum
+        for assign in assignments:
+            assign.platform = "moodle"
+            await self._process_assignment(assign)
 
-                # Se for questionário online (quiz), registra no catálogo para acompanhamento em /tarefas (resolução sob demanda)
-                if getattr(assign, "activity_type", "assign") == "quiz":
-                    self.state.register_assignment(assign)
-                    continue
+        console.print(f"[green]✔ Moodle sincronizado: {len(courses)} cursos, {len(assignments)} tarefas, {len(announcements)} avisos.[/green]")
 
-                # Se a tarefa foi adiada pelo usuário e o tempo ainda não passou, pula
-                if self.state.is_postponed(assign.id):
-                    console.print(f"[dim]Tarefa {assign.title} adiada pelo usuário. Notificações temporariamente em pausa.[/dim]")
-                    continue
+    async def run_cycle(self):
+        """Executa um ciclo completo de verificação, resolução e notificação conforme provedores ativos."""
+        try:
+            if not self.is_moodle_enabled and not self.is_canvas_enabled:
+                console.print(
+                    f"[bold yellow]⚠️ Nenhum provedor de LMS ativo configurado (LMS_PROVIDER='{self.lms_provider}').[/bold yellow]\n"
+                    f"Verifique seu .env ou execute 'configurar.bat' para conectar sua instituição."
+                )
+                return
 
-                # Se a tarefa é nova e ainda não possui rascunho gerado
-                has_draft = assign_state and assign_state.get("draft_path")
-                if not has_draft:
-                    console.print(
-                        f"[bold yellow]Nova tarefa pendente identificada:[/bold yellow] "
-                        f"{assign.title} ({assign.course_name})"
-                    )
+            # 1. Executa ciclo do Moodle apenas se estiver ativado
+            if self.is_moodle_enabled:
+                await self._run_moodle_cycle()
 
-                    # Gera o rascunho com a IA via fila centralizada
-                    # auto_triggered=True → gera PDF (comportamento do daemon)
-                    try:
-                        from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType
+            # 2. Executa varredura do Canvas LMS apenas se estiver ativado
+            if self.is_canvas_enabled:
+                await self._scan_canvas()
 
-                        async def _do_auto_solve(target_assign=assign):
-                            d = await self.solver.solve_assignment(
-                                target_assign,
-                                auto_triggered=True,  # daemon/automático → PDF
-                            )
-                            self.state.register_assignment(target_assign, draft_path=str(d.output_path))
-                            if self.notifier.token and self.notifier.channel_id:
-                                await self.notifier.send_assignment_review(target_assign, d)
-                            return True, f"Rascunho gerado para '{target_assign.title}'"
-
-                        item = QueueItem(
-                            task_type=QueueTaskType.RESOLVE_ASSIGNMENT,
-                            title=assign.title,
-                            course=assign.course_name,
-                            requester="Daemon (Automático)",
-                            coro_func=_do_auto_solve
-                        )
-                        await queue_manager.enqueue(item)
-                    except Exception as sol_err:
-                        console.print(f"[red]Erro ao enfileirar tarefa {assign.title}: {sol_err}[/red]")
-
-                else:
-                    self.state.register_assignment(assign)
-
-            # 5. Atualização automática da checklist de tarefas do dia no Notion (uma vez ao dia)
+            # 3. Atualização automática da checklist de tarefas do dia no Notion (uma vez ao dia)
             today_str = datetime.now().strftime("%Y-%m-%d")
             last_checklist_date = self.state.data.get("last_daily_checklist_date")
             if last_checklist_date != today_str:
@@ -367,16 +418,13 @@ class MoodleDaemon:
                 except Exception as chk_err:
                     console.print(f"[yellow]Aviso ao atualizar checklist diária no Notion: {chk_err}[/yellow]")
 
-            # Sincroniza estado com Render Hub (nuvem) se a ponte estiver configurada
+            # 4. Sincroniza estado com Render Hub (nuvem) se a ponte estiver configurada
             if settings.RENDER_URL:
                 try:
                     from src.scheduler.bridge_runner import bridge_runner
                     await bridge_runner.publish_courses_to_hub()
                 except Exception as b_err:
                     console.print(f"[yellow]Aviso ao sincronizar com Render Hub após varredura: {b_err}[/yellow]")
-
-            # 6. Executa varredura de materiais, tarefas e comunicados do Canvas LMS
-            await self._scan_canvas()
 
             console.print("[green]✔ Ciclo de varredura concluído com sucesso.[/green]")
 
@@ -482,18 +530,42 @@ class MoodleDaemon:
                 tray_status = f"[yellow]Indisponível ({tray_err})[/yellow]"
 
         heartbeat_minutes = getattr(settings, "SESSION_HEARTBEAT_INTERVAL_MINUTES", 15) or 15
+        
+        # Constrói o painel informativo baseado nos provedores educacionais ativos
+        prov_info = []
+        if self.is_moodle_enabled and self.is_canvas_enabled:
+            panel_title = "[bold cyan]LumiBot Daemon • Modo Multi-LMS (Canvas + Moodle)[/bold cyan]"
+            prov_info.append(f"• Provedor Ativo: [bold magenta]Multi-LMS (Híbrido)[/bold magenta]")
+            prov_info.append(f"• Canvas URL: [underline]{settings.CANVAS_BASE_URL}[/underline]")
+            prov_info.append(f"• Moodle URL: [underline]{settings.MOODLE_BASE_URL}[/underline]")
+            prov_info.append(f"• Heartbeat Moodle: [dim cyan]A cada {heartbeat_minutes} minutos[/dim cyan]")
+        elif self.is_canvas_enabled:
+            panel_title = "[bold cyan]LumiBot Daemon • Canvas LMS[/bold cyan]"
+            prov_info.append(f"• Provedor Ativo: [bold magenta]Canvas LMS (Instructure)[/bold magenta]")
+            prov_info.append(f"• Canvas URL: [underline]{settings.CANVAS_BASE_URL}[/underline]")
+            prov_info.append("• Autenticação: [bold green]Token de Acesso Pessoal (REST API)[/bold green]")
+        elif self.is_moodle_enabled:
+            panel_title = "[bold cyan]LumiBot Daemon • Moodle UFMG[/bold cyan]"
+            prov_info.append(f"• Provedor Ativo: [bold cyan]Moodle (UFMG Virtual)[/bold cyan]")
+            prov_info.append(f"• Moodle URL: [underline]{settings.MOODLE_BASE_URL}[/underline]")
+            prov_info.append(f"• Heartbeat Moodle: [dim cyan]A cada {heartbeat_minutes} minutos[/dim cyan]")
+        else:
+            panel_title = "[bold yellow]LumiBot Daemon • Configuração Pendente[/bold yellow]"
+            prov_info.append(f"• [bold red]Aviso: Nenhum provedor ativo detectado (LMS_PROVIDER='{self.lms_provider}')![/bold red]")
+            prov_info.append("• Execute 'configurar.bat' para conectar sua instituição.")
+
+        prov_lines_str = "\n".join(prov_info)
         console.print(
             Panel.fit(
-                "[bold cyan]Moodle AI Assistant Daemon (UFMG)[/bold cyan]\n\n"
-                f"• URL: [underline]{settings.MOODLE_BASE_URL}[/underline]\n"
+                f"{panel_title}\n\n"
+                f"{prov_lines_str}\n"
                 f"• Intervalo de varredura: [bold]{settings.CHECK_INTERVAL_MINUTES} minutos[/bold]\n"
-                f"• Heartbeat Keep-Alive: [bold cyan]A cada {heartbeat_minutes} minutos[/bold cyan]\n"
-                f"• IA: [bold]{settings.GEMINI_MODEL}[/bold]\n"
+                f"• IA Principal: [bold]{settings.GEMINI_MODEL}[/bold]\n"
                 f"• Bandeja do Sistema: {tray_status}\n"
                 "• Submissão: [bold green]Estritamente sob aprovação humana[/bold green]\n"
                 "• Alertas de prazo: [bold yellow]Contagem regressiva intensiva (15m, 5m, 2m, 1m)[/bold yellow]\n"
                 "• Pressione [bold]Ctrl+C[/bold] para encerrar.",
-                title="[bold green]Daemon Ativo e Seguro[/bold green]",
+                title="[bold green]LumiBot Ativo e Seguro[/bold green]",
                 border_style="green"
             )
         )
@@ -544,15 +616,16 @@ class MoodleDaemon:
             coalesce=True
         )
 
-        # 5. Agenda o heartbeat silencioso de manutenção da sessão do Moodle
-        self.scheduler.add_job(
-            self.session_heartbeat_job,
-            "interval",
-            minutes=heartbeat_minutes,
-            id="moodle_session_heartbeat_job",
-            misfire_grace_time=300,
-            coalesce=True
-        )
+        # 5. Agenda o heartbeat silencioso de manutenção da sessão do Moodle (apenas se Moodle ativo)
+        if self.is_moodle_enabled:
+            self.scheduler.add_job(
+                self.session_heartbeat_job,
+                "interval",
+                minutes=heartbeat_minutes,
+                id="moodle_session_heartbeat_job",
+                misfire_grace_time=300,
+                coalesce=True
+            )
 
         self.scheduler.start()
 

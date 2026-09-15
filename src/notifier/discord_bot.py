@@ -1726,8 +1726,9 @@ class LumiBotClient(commands.Bot):
         except Exception as q_err:
             console.print(f"[yellow]Aviso ao inicializar fila de tarefas no Discord: {q_err}[/yellow]")
 
-        # Restaura automaticamente arquivos de conteúdo do Discord após reinício (especialmente em nuvem efêmera)
-        asyncio.create_task(restore_materials_from_discord(self))
+        # Restaura automaticamente arquivos de conteúdo do Discord após reinício (apenas se canal exclusivo configurado ou em nuvem efêmera)
+        if getattr(settings, "DISCORD_CONTENT_CHANNEL_ID", 0) != 0 or os.environ.get("RENDER"):
+            asyncio.create_task(restore_materials_from_discord(self))
 
     async def on_member_join(self, member: discord.Member):
         """Ao entrar um novo estudante no servidor, provisiona automaticamente suas 5 salas privadas."""
@@ -1867,8 +1868,14 @@ async def restore_materials_from_discord(client: discord.Client) -> int:
         state = DaemonState()
         from src.notifier.bridge_manager import cloud_bridge
 
+        cfg_id = getattr(settings, "DISCORD_CONTENT_CHANNEL_ID", 0)
+        is_cloud = bool(os.environ.get("RENDER"))
+
+        # Só restaura do Discord se o canal exclusivo foi configurado ou se está em nuvem efêmera
+        if not cfg_id and not is_cloud:
+            return 0
+
         content_channels = []
-        cfg_id = settings.DISCORD_CONTENT_CHANNEL_ID
         if cfg_id and cfg_id != 0:
             ch = client.get_channel(cfg_id)
             if not ch:
@@ -1879,10 +1886,26 @@ async def restore_materials_from_discord(client: discord.Client) -> int:
             if ch:
                 content_channels.append(ch)
 
-        for guild in client.guilds:
-            for ch in guild.text_channels:
-                if ch.name == "conteudos" and ch not in content_channels:
-                    content_channels.append(ch)
+        # Apenas em nuvem busca salas chamadas 'conteudos' como fallback
+        if is_cloud and not content_channels:
+            for guild in client.guilds:
+                for ch in guild.text_channels:
+                    if ch.name == "conteudos" and ch not in content_channels:
+                        content_channels.append(ch)
+
+        if not content_channels:
+            return 0
+
+        # Obtém os cursos matriculados do aluno atual (Moodle ou Canvas) para isolamento estrito
+        known_courses = set()
+        for c in state.data.get("courses", []):
+            if isinstance(c, str):
+                known_courses.add(c.strip().lower())
+            elif isinstance(c, dict) and c.get("name"):
+                known_courses.add(c["name"].strip().lower())
+        for a in state.data.get("assignments", {}).values():
+            if isinstance(a, dict) and a.get("course"):
+                known_courses.add(a["course"].strip().lower())
 
         for channel in content_channels:
             try:
@@ -1905,6 +1928,12 @@ async def restore_materials_from_discord(client: discord.Client) -> int:
 
                     if not target_course:
                         continue
+
+                    # Se temos disciplinas conhecidas do usuário, só baixa materiais que pertençam a elas
+                    if known_courses:
+                        t_norm = target_course.strip().lower()
+                        if not any(t_norm in kc or kc in t_norm for kc in known_courses):
+                            continue
 
                     dest_dir = resolve_course_materials_dir(target_course)
                     dest_dir.mkdir(parents=True, exist_ok=True)
