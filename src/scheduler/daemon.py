@@ -281,6 +281,10 @@ class MoodleDaemon:
             # Processa tarefas do Canvas através do pipeline unificado
             for assign in c_assignments:
                 from src.scraper.moodle_scraper import Assignment
+                sub_st = "Enviado" if assign.is_submitted else "Não enviado"
+                if assign.submission_status in ("Avaliado", "Enviado"):
+                    sub_st = assign.submission_status
+
                 m_assign = Assignment(
                     id=assign.id,
                     course_id=assign.course_id,
@@ -291,11 +295,11 @@ class MoodleDaemon:
                     due_date=assign.due_date,
                     due_date_str=assign.due_date_str,
                     time_remaining=assign.time_remaining or "",
-                    status="submitted" if assign.is_submitted else "pending",
+                    submission_status=sub_st,
+                    grade_value=assign.grade_value,
                     activity_type=assign.activity_type
                 )
                 m_assign.platform = "canvas"
-                m_assign.is_submitted = bool(assign.is_submitted)
                 await self._process_assignment(m_assign)
 
             console.print(f"[green]✔ Canvas sincronizado: {len(c_courses)} cursos, {len(c_assignments)} tarefas, {len(c_announcements)} avisos.[/green]")

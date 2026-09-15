@@ -64,8 +64,10 @@ class DaemonState:
             # 3. Ignora se o prazo já expirou no passado
             if any(term in time_rem for term in ["atrasad", "expirad", "encerrad", "fechad"]):
                 continue
-            if due_dt and due_dt < datetime.now():
-                continue
+            if due_dt:
+                now = datetime.now(due_dt.tzinfo) if due_dt.tzinfo else datetime.now()
+                if due_dt < now:
+                    continue
 
             # 4. Reconstrói o Assignment para uso no Notion sync e outros fluxos
             assign = Assignment(
@@ -118,6 +120,11 @@ class DaemonState:
             self.data["assignments"] = {}
 
         existing = self.data["assignments"].get(assignment.id, {})
+        current_status = existing.get("status", "pending_review")
+        # Se a tarefa não está submetida no LMS, nunca deve permanecer com status 'submitted'
+        if not assignment.is_submitted and current_status == "submitted":
+            current_status = "pending_review"
+
         existing.update({
             "id": assignment.id,
             "title": assignment.title,
@@ -134,7 +141,7 @@ class DaemonState:
             "course_id": getattr(assignment, "course_id", ""),
             "description": getattr(assignment, "description", ""),
             "draft_path": draft_path or existing.get("draft_path"),
-            "status": existing.get("status", "pending_review"),
+            "status": current_status,
             "alert_15m_sent": existing.get("alert_15m_sent", False),
             "alert_5m_sent": existing.get("alert_5m_sent", False),
             "alert_2m_sent": existing.get("alert_2m_sent", False),

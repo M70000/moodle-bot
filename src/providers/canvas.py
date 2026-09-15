@@ -82,7 +82,7 @@ def parse_link_header(link_header: str) -> Dict[str, str]:
 
 
 def parse_canvas_datetime(dt_str: Optional[str]) -> Optional[datetime]:
-    """Converte strings ISO 8601 da API do Canvas em objetos datetime com timezone."""
+    """Converte strings ISO 8601 da API do Canvas em objetos datetime no fuso horário local."""
     if not dt_str:
         return None
     try:
@@ -90,7 +90,9 @@ def parse_canvas_datetime(dt_str: Optional[str]) -> Optional[datetime]:
         clean = dt_str.strip()
         if clean.endswith("Z"):
             clean = clean[:-1] + "+00:00"
-        return datetime.fromisoformat(clean)
+        dt = datetime.fromisoformat(clean)
+        # Converte para o fuso horário local do usuário (ex: America/Sao_Paulo / UTC-3)
+        return dt.astimezone()
     except Exception:
         return None
 
@@ -390,16 +392,17 @@ class CanvasAdapter(BaseLMSProvider):
             courses_to_query = await self.get_courses()
 
         all_assignments: List[LMSAssignment] = []
-        now = datetime.now(timezone.utc)
+        now = datetime.now().astimezone()
         cutoff = now + timedelta(days=days, hours=23, minutes=59) if days > 0 else None
 
         for course in courses_to_query:
             endpoint = f"/api/v1/courses/{course.id}/assignments"
             try:
+                # Inclui explicitamente o objeto 'submission' do estudante
                 raw_assignments = await self._get_paginated(
                     endpoint,
                     params={
-                        "bucket": "upcoming",
+                        "include[]": "submission",
                         "order_by": "due_at"
                     }
                 )
@@ -407,17 +410,54 @@ class CanvasAdapter(BaseLMSProvider):
                 for item in raw_assignments:
                     due_dt = parse_canvas_datetime(item.get("due_at"))
 
-                    # Filtra por janela de dias se especificado
+                    # Filtra por janela de dias se especificado (para tarefas futuras)
                     if cutoff and due_dt and due_dt > cutoff:
                         continue
 
-                    # Identifica se já foi submetido pelo aluno
-                    is_sub = bool(item.get("has_submitted_submissions", False))
+                    # Identifica se o estudante ATUAL já enviou a resolução
+                    # IMPORTANTE: 'has_submitted_submissions' indica se ALGUM aluno da turma enviou.
+                    # NUNCA use 'has_submitted_submissions' para a entrega individual do estudante!
                     sub_dict = item.get("submission") or {}
+                    is_sub = False
+                    sub_status = "Não enviado"
+                    grade_val = None
+
                     if isinstance(sub_dict, dict):
-                        sub_state = str(sub_dict.get("workflow_state", "")).lower()
-                        if sub_state in ("submitted", "graded"):
+                        wf_state = str(sub_dict.get("workflow_state", "")).lower()
+                        submitted_at = sub_dict.get("submitted_at")
+                        attempt = sub_dict.get("attempt")
+
+                        if sub_dict.get("grade") is not None:
+                            grade_val = str(sub_dict.get("grade"))
+                        elif sub_dict.get("score") is not None:
+                            grade_val = str(sub_dict.get("score"))
+
+                        # No Canvas, "unsubmitted" indica explicitamente que o aluno não enviou
+                        if wf_state == "unsubmitted" or (submitted_at is None and attempt is None and wf_state != "graded"):
+                            is_sub = False
+                            sub_status = "Não enviado"
+                        elif submitted_at is not None or wf_state in ("submitted", "graded", "pending_review"):
                             is_sub = True
+                            sub_status = "Avaliado" if wf_state == "graded" else "Enviado"
+
+                    # Calcula tempo restante formatado
+                    time_rem = None
+                    if due_dt:
+                        diff = due_dt - datetime.now(due_dt.tzinfo)
+                        if diff.total_seconds() < 0:
+                            time_rem = "Prazo expirado"
+                        else:
+                            d_days = diff.days
+                            d_hours, rem = divmod(diff.seconds, 3600)
+                            d_mins, _ = divmod(rem, 60)
+                            parts = []
+                            if d_days > 0:
+                                parts.append(f"{d_days} dia{'s' if d_days > 1 else ''}")
+                            if d_hours > 0:
+                                parts.append(f"{d_hours} hora{'s' if d_hours > 1 else ''}")
+                            if d_mins > 0 or not parts:
+                                parts.append(f"{d_mins} minuto{'s' if d_mins > 1 else ''}")
+                            time_rem = " restante(s): " + " e ".join(parts)
 
                     assign_url = item.get("html_url") or f"{self.base_url}/courses/{course.id}/assignments/{item.get('id')}"
 
@@ -434,15 +474,17 @@ class CanvasAdapter(BaseLMSProvider):
                             platform="canvas",
                             activity_type="quiz" if item.get("is_quiz_assignment") or item.get("quiz_id") else "assign",
                             points_possible=item.get("points_possible"),
-                            submission_status="Enviado" if is_sub else "Pendente",
-                            due_date_str=due_dt.strftime("%d/%m/%Y %H:%M") if due_dt else None
+                            submission_status=sub_status,
+                            grade_value=grade_val,
+                            time_remaining=time_rem,
+                            due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if due_dt else None
                         )
                     )
             except Exception as e:
                 console.print(f"[yellow]⚠️ Erro ao consultar tarefas do curso {course.name} no Canvas: {e}[/yellow]")
                 continue
 
-        all_assignments.sort(key=lambda x: (x.due_date is None, x.due_date or datetime.max.replace(tzinfo=timezone.utc)))
+        all_assignments.sort(key=lambda x: (x.due_date is None, x.due_date or datetime.max.astimezone()))
         return all_assignments
 
     async def get_announcements(
@@ -526,15 +568,31 @@ class CanvasAdapter(BaseLMSProvider):
 
         endpoint = f"/api/v1/courses/{clean_course_id}/assignments/{clean_assign_id}"
         try:
-            resp = await self._request("GET", endpoint)
+            resp = await self._request("GET", endpoint, params={"include[]": "submission"})
             item = resp.json()
             due_dt = parse_canvas_datetime(item.get("due_at"))
-            is_sub = bool(item.get("has_submitted_submissions", False))
+
             sub_dict = item.get("submission") or {}
+            is_sub = False
+            sub_status = "Não enviado"
+            grade_val = None
+
             if isinstance(sub_dict, dict):
-                sub_state = str(sub_dict.get("workflow_state", "")).lower()
-                if sub_state in ("submitted", "graded"):
+                wf_state = str(sub_dict.get("workflow_state", "")).lower()
+                submitted_at = sub_dict.get("submitted_at")
+                attempt = sub_dict.get("attempt")
+
+                if sub_dict.get("grade") is not None:
+                    grade_val = str(sub_dict.get("grade"))
+                elif sub_dict.get("score") is not None:
+                    grade_val = str(sub_dict.get("score"))
+
+                if wf_state == "unsubmitted" or (submitted_at is None and attempt is None and wf_state != "graded"):
+                    is_sub = False
+                    sub_status = "Não enviado"
+                elif submitted_at is not None or wf_state in ("submitted", "graded", "pending_review"):
                     is_sub = True
+                    sub_status = "Avaliado" if wf_state == "graded" else "Enviado"
 
             assign_url = item.get("html_url") or f"{self.base_url}/courses/{clean_course_id}/assignments/{clean_assign_id}"
 
@@ -555,12 +613,50 @@ class CanvasAdapter(BaseLMSProvider):
                 platform="canvas",
                 activity_type="quiz" if item.get("is_quiz_assignment") or item.get("quiz_id") else "assign",
                 points_possible=item.get("points_possible"),
-                submission_status="Enviado" if is_sub else "Pendente",
-                due_date_str=due_dt.strftime("%d/%m/%Y %H:%M") if due_dt else None
+                submission_status=sub_status,
+                grade_value=grade_val,
+                due_date_str=due_dt.strftime("%d/%m/%Y às %H:%M") if due_dt else None
             )
         except Exception as e:
             console.print(f"[yellow]⚠️ Erro ao consultar atividade {clean_assign_id} no Canvas: {e}[/yellow]")
             return None
+
+    async def _download_canvas_file(self, download_url: str, dest: Path) -> bool:
+        """Baixa arquivo do Canvas com remoção segura de Authorization em redirecionamentos S3/CDN externos."""
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            is_canvas_domain = any(dom in download_url for dom in ["instructure.com", "canvas", "pucminas.br"])
+
+            headers = {"User-Agent": "LumiBot-CanvasAdapter/2.0"}
+            if is_canvas_domain and self.api_token:
+                headers["Authorization"] = f"Bearer {self.api_token}"
+
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=False) as dl_client:
+                curr_url = download_url
+                for _ in range(5):
+                    req_headers = dict(headers)
+                    # S3 e CloudFront rejeitam (HTTP 403) URLs pré-assinadas se houver cabeçalho Bearer Authorization
+                    if not any(dom in curr_url for dom in ["instructure.com", "canvas", "pucminas.br"]):
+                        req_headers.pop("Authorization", None)
+
+                    resp = await dl_client.get(curr_url, headers=req_headers)
+                    if resp.is_redirect:
+                        curr_url = resp.headers.get("Location")
+                        if not curr_url:
+                            break
+                        continue
+
+                    if resp.status_code == 200:
+                        dest.write_bytes(resp.content)
+                        return True
+                    else:
+                        console.print(f"[yellow]⚠️ Falha HTTP {resp.status_code} ao baixar {dest.name}[/yellow]")
+                        return False
+        except Exception as dl_err:
+            console.print(f"[yellow]⚠️ Erro no download de {dest.name}: {dl_err}[/yellow]")
+            return False
+
+        return False
 
     async def sync_course_materials(self, course: LMSCourse) -> List[Path]:
         """Sincroniza e baixa arquivos e materiais da disciplina do Canvas para storage/materials/."""
@@ -571,29 +667,70 @@ class CanvasAdapter(BaseLMSProvider):
         if not self.is_configured:
             return downloaded
 
-        # Consulta API /api/v1/courses/:id/files e baixa os arquivos
+        from src.core.models import sanitize_filename
+        files_to_download: Dict[str, Dict[str, Any]] = {}
+
+        # 1. Consulta arquivos diretos da disciplina (/courses/:id/files)
         try:
             raw_files = await self._get_paginated(f"/api/v1/courses/{course.id}/files")
-            client = self._get_client()
-            for f_info in raw_files:
-                dl_url = f_info.get("url")
-                fname = f_info.get("display_name") or f_info.get("filename") or f"arquivo_{f_info.get('id')}"
-                if not dl_url:
-                    continue
-
-                dest = mat_dir / fname
-                if not dest.exists():
-                    try:
-                        resp = await client.get(dl_url, follow_redirects=True)
-                        if resp.status_code == 200:
-                            dest.write_bytes(resp.content)
-                            downloaded.append(dest)
-                    except Exception as err:
-                        console.print(f"[yellow]⚠️ Erro ao baixar {fname} do Canvas: {err}[/yellow]")
-                else:
-                    downloaded.append(dest)
+            for f in raw_files:
+                f_id = str(f.get("id"))
+                if f_id and f.get("url"):
+                    files_to_download[f_id] = f
+        except CanvasAPIError as ce:
+            if ce.status_code in (401, 403):
+                console.print(f"[dim]Aba Arquivos restrita pelo professor em '{course.name}'. Buscando materiais via Módulos...[/dim]")
+            else:
+                console.print(f"[yellow]Aviso ao listar arquivos de '{course.name}': {ce}[/yellow]")
         except Exception as e:
-            console.print(f"[yellow]⚠️ Erro ao consultar materiais do curso {course.name} no Canvas: {e}[/yellow]")
+            console.print(f"[yellow]Aviso ao listar arquivos de '{course.name}': {e}[/yellow]")
+
+        # 2. Busca materiais organizados em Módulos (/courses/:id/modules?include[]=items)
+        try:
+            raw_modules = await self._get_paginated(
+                f"/api/v1/courses/{course.id}/modules",
+                params={"include[]": "items"}
+            )
+            for mod in raw_modules:
+                items = mod.get("items") or []
+                for m_item in items:
+                    if m_item.get("type") == "File":
+                        content_id = str(m_item.get("content_id") or "")
+                        if content_id and content_id not in files_to_download:
+                            item_url = m_item.get("url")
+                            file_details = None
+                            if item_url:
+                                try:
+                                    resp = await self._request("GET", item_url)
+                                    file_details = resp.json()
+                                except Exception:
+                                    pass
+                            if not file_details:
+                                try:
+                                    resp = await self._request("GET", f"/api/v1/courses/{course.id}/files/{content_id}")
+                                    file_details = resp.json()
+                                except Exception:
+                                    pass
+                            if file_details and file_details.get("url"):
+                                files_to_download[content_id] = file_details
+        except Exception as mod_err:
+            console.print(f"[yellow]Aviso ao consultar módulos de '{course.name}': {mod_err}[/yellow]")
+
+        # 3. Executa o download com nomes sanitizados e proteção contra erros de diretório
+        for f_id, f_info in files_to_download.items():
+            dl_url = f_info.get("url")
+            raw_name = f_info.get("display_name") or f_info.get("filename") or f"arquivo_{f_id}"
+            clean_name = sanitize_filename(raw_name)
+            if not clean_name.strip():
+                clean_name = f"arquivo_{f_id}"
+
+            dest = mat_dir / clean_name
+            if not dest.exists():
+                success = await self._download_canvas_file(dl_url, dest)
+                if success:
+                    downloaded.append(dest)
+            else:
+                downloaded.append(dest)
 
         return downloaded
 

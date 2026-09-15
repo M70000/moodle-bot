@@ -509,6 +509,7 @@ async def pending_task_autocomplete(
             course_raw = str(item.get("course") or "").strip()
             course_clean = clean_display_course(course_raw)
             due_str = str(item.get("due_date") or "").strip()
+            due = f" ({due_str})" if due_str else ""
             platform = item.get("platform")
             plat_badge = "[Canvas] " if platform == "canvas" else ""
             label = f"{plat_badge}{title} - {course_clean}{due}" if course_clean else f"{plat_badge}{title}{due}"
