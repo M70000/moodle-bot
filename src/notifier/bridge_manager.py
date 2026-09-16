@@ -241,6 +241,11 @@ class CloudBridgeManager:
                 task["success"] = success
                 task["result_message"] = message
                 task["completed_at"] = time.time()
+                self._completed_tasks[task_id] = task
+                if len(self._completed_tasks) > 500:
+                    for old_k in list(self._completed_tasks.keys())[:100]:
+                        self._completed_tasks.pop(old_k, None)
+
                 if success:
                     aid = str(task.get("assignment_id") or "").strip()
                     cid = str(task.get("channel_id") or "").strip()
@@ -260,9 +265,21 @@ class CloudBridgeManager:
                 if event:
                     event.set()
                 return task
-            elif event:
-                event.set()
-            return None
+            else:
+                task = {
+                    "task_id": task_id,
+                    "status": "completed" if success else "failed",
+                    "success": success,
+                    "result_message": message,
+                    "completed_at": time.time(),
+                }
+                self._completed_tasks[task_id] = task
+                if len(self._completed_tasks) > 500:
+                    for old_k in list(self._completed_tasks.keys())[:100]:
+                        self._completed_tasks.pop(old_k, None)
+                if event:
+                    event.set()
+                return task
 
     async def wait_for_task(self, task_id: str, timeout: float = 300.0) -> Optional[Dict[str, Any]]:
         """Aguarda até que o desktop runner conclua a tarefa ou estoure o timeout."""
@@ -277,7 +294,8 @@ class CloudBridgeManager:
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
             async with self._lock:
-                return dict(self._completed_tasks.get(task_id, {}))
+                res = self._completed_tasks.get(task_id)
+                return dict(res) if res is not None else None
         except asyncio.TimeoutError:
             return None
 

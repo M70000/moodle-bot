@@ -47,6 +47,35 @@ class TestCloudBridge(unittest.IsolatedAsyncioTestCase):
         pending_after = await manager.get_pending_tasks(channel_id="998877")
         self.assertEqual(len(pending_after), 0)
 
+        # Verifica se wait_for_task retorna a tarefa concluída com sucesso
+        res = await manager.wait_for_task(task_id, timeout=2.0)
+        self.assertIsNotNone(res)
+        self.assertTrue(res.get("success"))
+        self.assertEqual(res.get("result_message"), "Enviado com sucesso no Moodle!")
+
+    async def test_wait_for_task_concurrent_completion(self):
+        """Testa o desbloqueio assíncrono do wait_for_task quando a tarefa é completada em background."""
+        manager = CloudBridgeManager()
+        task_id = await manager.dispatch_action(
+            action="solve_task",
+            assignment_id="777",
+            assignment_url="https://canvas/777",
+            channel_id="998877",
+            message_id="",
+            requester="Aluno",
+            title="Tarefa Concorrente"
+        )
+
+        async def _finish_later():
+            await asyncio.sleep(0.05)
+            await manager.complete_task(task_id, success=True, message="Concluído com sucesso no Canvas!")
+
+        asyncio.create_task(_finish_later())
+        res = await manager.wait_for_task(task_id, timeout=2.0)
+        self.assertIsNotNone(res)
+        self.assertTrue(res.get("success"))
+        self.assertEqual(res.get("result_message"), "Concluído com sucesso no Canvas!")
+
     @patch("src.scheduler.bridge_runner.urllib.request.urlopen")
     async def test_bridge_runner_poll_and_execute(self, mock_urlopen):
         """Testa o polling e execução pelo BridgeRunner."""
