@@ -643,12 +643,13 @@ class GeminiSolver:
 
             formatted_questions = []
             for q in questions_data:
-                q_txt = q.get("fullTextWithTokens", "").strip()
+                q_txt = (q.get("fullTextWithTokens") or q.get("prompt") or q.get("text") or "").strip()
                 if q_txt:
+                    q_num_text = q.get("qNumberText") or q.get("name") or f"Questão {q.get('number', '')}".strip()
                     if q.get("isInfoOnly"):
                         formatted_questions.append(f"[TEXTO DE CONTEXTO / LEITURA]\n{q_txt}")
                     else:
-                        formatted_questions.append(f"### {q.get('qNumberText', 'Questão')}\n{q_txt}")
+                        formatted_questions.append(f"### {q_num_text}\n{q_txt}")
 
             questions_body = "\n\n".join(formatted_questions)
 

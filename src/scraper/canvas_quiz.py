@@ -171,20 +171,19 @@ class CanvasQuizAutomator:
             # Extração estruturada do DOM do Canvas
             questions_data = await page.evaluate(r'''() => {
                 const questions = [];
-                // Canvas classic quizzes usam .question ou .display_question
-                let qNodes = Array.from(document.querySelectorAll(".question.display_question, .question, .quiz_sortable .question_holder"));
+                // Identifica apenas os contêineres reais de questão
+                let qNodes = Array.from(document.querySelectorAll(".question.display_question"));
                 if (qNodes.length === 0) {
-                    qNodes = Array.from(document.querySelectorAll("div[id^='question_']"));
+                    qNodes = Array.from(document.querySelectorAll("#questions .question, .quiz_sortable .question_holder .question"));
                 }
                 
                 let globalInputIdx = 1;
 
                 qNodes.forEach((q, qIndex) => {
                     const idAttr = q.getAttribute("id") || `question_${qIndex + 1}`;
-                    const qIdMatch = idAttr.match(/question_(\d+)/);
-                    const qCanvasId = qIdMatch ? qIdMatch[1] : `${qIndex + 1}`;
+                    const qCanvasId = idAttr.replace("question_", "");
 
-                    // Título / Número
+                    // Título / Número da questão
                     const nameEl = q.querySelector(".question_name, .name, .header .name");
                     const nameText = nameEl ? nameEl.innerText.trim() : `Questão ${qIndex + 1}`;
 
@@ -192,103 +191,156 @@ class CanvasQuizAutomator:
                     const pointsEl = q.querySelector(".question_points, .points, .header .points");
                     const pointsText = pointsEl ? pointsEl.innerText.trim() : "";
 
-                    // Enunciado e códigos
-                    const textEl = q.querySelector(".question_text, .text") || q;
-                    const clone = textEl.cloneNode(true);
+                    // Identificação do tipo da questão
+                    const isMatching = q.classList.contains("matching_question");
+                    const isMultipleAnswers = q.classList.contains("multiple_answers_question");
+                    const isMultipleChoice = q.classList.contains("multiple_choice_question") || q.querySelectorAll("input[type='radio']").length > 0;
+                    const isFillBlank = q.classList.contains("fill_in_multiple_blanks_question") || q.classList.contains("short_answer_question");
+                    const isEssay = q.classList.contains("essay_question");
 
-                    // Limpa elementos de ruído
-                    clone.querySelectorAll(".screenreader-only, .accessibility_warning, .answers, .answers_wrapper, button, input[type='submit']").forEach(e => e.remove());
+                    let qType = "other";
+                    if (isMatching) qType = "matching_question";
+                    else if (isMultipleAnswers) qType = "multiple_answers";
+                    else if (isMultipleChoice) qType = "multiple_choice";
+                    else if (isFillBlank) qType = "fill_in_the_blank";
+                    else if (isEssay) qType = "essay";
 
-                    // Preserva formatação de código pre/code
-                    clone.querySelectorAll("pre, code").forEach(codeBlock => {
-                        const codeText = codeBlock.innerText;
-                        const marker = `\n\`\`\`\n${codeText}\n\`\`\`\n`;
-                        codeBlock.replaceWith(document.createTextNode(marker));
-                    });
+                    // Enunciado limpo da questão (exclui especificamente blocos de edição do professor)
+                    const textEl = q.querySelector(".question_text");
+                    let promptText = "";
+                    if (textEl) {
+                        const clone = textEl.cloneNode(true);
+                        clone.querySelectorAll(".screenreader-only, .accessibility_warning, .original_question_text, button, style, script").forEach(e => e.remove());
+                        
+                        // Preserva formatação de blocos de código
+                        clone.querySelectorAll("pre, code").forEach(cb => {
+                            cb.replaceWith(document.createTextNode(`\n\`\`\`\n${cb.innerText}\n\`\`\`\n`));
+                        });
+                        promptText = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
+                    }
 
-                    // Inputs de preencher (Fill in the Blank / Short Answer)
+                    let fullText = promptText;
                     const inputMap = [];
-                    const textInputs = clone.querySelectorAll("input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), textarea");
-                    textInputs.forEach(inp => {
-                        const token = `[[CAMPO_${globalInputIdx}]]`;
-                        inputMap.push({
-                            token: token,
-                            key: `CAMPO_${globalInputIdx}`,
-                            name: inp.getAttribute("name"),
-                            id: inp.getAttribute("id"),
-                            index: globalInputIdx,
-                            type: inp.tagName.toLowerCase() === "textarea" ? "textarea" : "text"
-                        });
-                        inp.replaceWith(document.createTextNode(` ${token} `));
-                        globalInputIdx++;
-                    });
-
-                    // Dropdowns / Selects
-                    const selects = clone.querySelectorAll("select");
-                    selects.forEach(sel => {
-                        const token = `[[CAMPO_${globalInputIdx}]]`;
-                        const opts = Array.from(sel.options).map(o => o.text.trim()).filter(t => t && !t.toLowerCase().includes("choose") && !t.toLowerCase().includes("selecion"));
-                        inputMap.push({
-                            token: token,
-                            key: `CAMPO_${globalInputIdx}`,
-                            name: sel.getAttribute("name"),
-                            id: sel.getAttribute("id"),
-                            index: globalInputIdx,
-                            type: "select",
-                            options: opts
-                        });
-                        const optsStr = opts.length > 0 ? ` (Opções: ${opts.join(" | ")})` : "";
-                        sel.replaceWith(document.createTextNode(` ${token}${optsStr} `));
-                        globalInputIdx++;
-                    });
-
-                    const cleanQuestionText = clone.innerText.replace(/\n{3,}/g, '\n\n').trim();
-
-                    // Múltipla escolha (Radios)
                     const radioOptions = [];
-                    const answerNodes = q.querySelectorAll(".answers .answer, .answer");
-                    answerNodes.forEach((ansNode, aIdx) => {
-                        const radioInp = ansNode.querySelector("input[type='radio']");
-                        if (radioInp) {
-                            const labelEl = ansNode.querySelector("label, .answer_label, .answer_text");
-                            const optText = labelEl ? labelEl.innerText.trim() : ansNode.innerText.trim();
-                            radioOptions.push({
-                                id: radioInp.getAttribute("id"),
-                                name: radioInp.getAttribute("name"),
-                                value: radioInp.getAttribute("value"),
-                                text: optText || `Opção ${aIdx + 1}`,
-                                checked: radioInp.checked
-                            });
-                        }
-                    });
-
-                    // Caixas de seleção (Checkboxes)
                     const checkboxOptions = [];
-                    answerNodes.forEach((ansNode, aIdx) => {
-                        const checkInp = ansNode.querySelector("input[type='checkbox']");
-                        if (checkInp) {
-                            const labelEl = ansNode.querySelector("label, .answer_label, .answer_text");
-                            const optText = labelEl ? labelEl.innerText.trim() : ansNode.innerText.trim();
-                            checkboxOptions.push({
-                                id: checkInp.getAttribute("id"),
-                                name: checkInp.getAttribute("name"),
-                                value: checkInp.getAttribute("value"),
-                                text: optText || `Opção ${aIdx + 1}`,
-                                checked: checkInp.checked
+
+                    // 1. Múltipla Escolha (Radios)
+                    const radioNodes = Array.from(q.querySelectorAll(".answers .answer input[type='radio']"));
+                    if (radioNodes.length > 0) {
+                        fullText += "\n\nAlternativas:";
+                        radioNodes.forEach((r, rIdx) => {
+                            const rId = r.getAttribute("id");
+                            const row = r.closest(".answer") || q;
+                            const labelEl = row.querySelector(".answer_label, .answer_text, label");
+                            const optText = labelEl ? labelEl.innerText.trim() : (row.innerText.trim() || `Opção ${rIdx + 1}`);
+                            const letter = String.fromCharCode(97 + rIdx); // a, b, c, d
+                            
+                            radioOptions.push({
+                                id: rId,
+                                name: r.getAttribute("name"),
+                                value: r.getAttribute("value"),
+                                letter: letter,
+                                text: optText,
+                                checked: r.checked
                             });
+                            fullText += `\n${letter}) ${optText}`;
+                        });
+                    }
+
+                    // 2. Caixas de Seleção (Checkboxes)
+                    const checkNodes = Array.from(q.querySelectorAll(".answers .answer input[type='checkbox']"));
+                    if (checkNodes.length > 0) {
+                        fullText += "\n\nOpções (marque todas as corretas):";
+                        checkNodes.forEach((c, cIdx) => {
+                            const cId = c.getAttribute("id");
+                            const row = c.closest(".answer") || q;
+                            const labelEl = row.querySelector(".answer_label, .answer_text, label");
+                            const optText = labelEl ? labelEl.innerText.trim() : (row.innerText.trim() || `Opção ${cIdx + 1}`);
+                            const letter = String.fromCharCode(97 + cIdx);
+
+                            checkboxOptions.push({
+                                id: cId,
+                                name: c.getAttribute("name"),
+                                value: c.getAttribute("value"),
+                                letter: letter,
+                                text: optText,
+                                checked: c.checked
+                            });
+                            fullText += `\n[ ] ${optText}`;
+                        });
+                    }
+
+                    // 3. Correspondência / Associação (Matching Question com selects)
+                    if (isMatching) {
+                        const answerRows = Array.from(q.querySelectorAll(".answers .answer"));
+                        const items = [];
+                        const allOptions = [];
+
+                        answerRows.forEach(row => {
+                            const labelEl = row.querySelector("label");
+                            const selectEl = row.querySelector("select");
+                            if (labelEl && selectEl) {
+                                const term = labelEl.innerText.trim();
+                                const token = `[[CAMPO_${globalInputIdx}]]`;
+                                inputMap.push({
+                                    token: token,
+                                    key: `CAMPO_${globalInputIdx}`,
+                                    select_name: selectEl.getAttribute("name"),
+                                    select_id: selectEl.getAttribute("id"),
+                                    term: term,
+                                    type: "select"
+                                });
+                                items.push(`- ${term}: ${token}`);
+                                globalInputIdx++;
+
+                                Array.from(selectEl.options).forEach(opt => {
+                                    const optT = opt.innerText.trim();
+                                    if (optT && !optT.includes("[ Choose ]") && !optT.includes("[ Escolha ]") && !allOptions.includes(optT)) {
+                                        allOptions.push(optT);
+                                    }
+                                });
+                            }
+                        });
+
+                        if (items.length > 0) {
+                            fullText += "\n\nAssociações / Correspondência:\n" + items.join("\n");
                         }
-                    });
+                        if (allOptions.length > 0) {
+                            fullText += "\n\nOpções disponíveis para associação:\n" + allOptions.map(o => `- ${o}`).join("\n");
+                        }
+                    }
+
+                    // 4. Lacunas / Preenchimento de texto (Inputs visíveis, ignorando editores ocultos)
+                    if (isFillBlank || isEssay) {
+                        const visibleInputs = Array.from(q.querySelectorAll(".answers input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), .answers textarea, .question_text input:not([type='hidden']), .question_text textarea"));
+                        visibleInputs.forEach(inp => {
+                            if (inp.offsetParent === null) return; // ignora elementos invisíveis
+                            const token = `[[CAMPO_${globalInputIdx}]]`;
+                            inputMap.push({
+                                token: token,
+                                key: `CAMPO_${globalInputIdx}`,
+                                name: inp.getAttribute("name"),
+                                id: inp.getAttribute("id"),
+                                type: inp.tagName.toLowerCase() === "textarea" ? "textarea" : "text"
+                            });
+                            fullText += `\nCampo: ${token}`;
+                            globalInputIdx++;
+                        });
+                    }
 
                     questions.push({
                         canvas_id: qCanvasId,
                         number: qIndex + 1,
+                        qNumberText: nameText,
                         name: nameText,
                         points: pointsText,
-                        prompt: cleanQuestionText,
+                        prompt: promptText,
+                        fullTextWithTokens: fullText,
+                        text: fullText,
                         inputs: inputMap,
                         radio_options: radioOptions,
                         checkbox_options: checkboxOptions,
-                        question_type: radioOptions.length > 0 ? "multiple_choice" : (checkboxOptions.length > 0 ? "multiple_answers" : (inputMap.length > 0 ? "fill_in_the_blank" : "text_only"))
+                        question_type: qType
                     });
                 });
 
@@ -363,21 +415,24 @@ class CanvasQuizAutomator:
 
             await _emit_log(on_log, "Iniciando preenchimento humanizado das questões no Canvas...")
 
-            # Mapeia questões na tela
-            q_locators = page.locator(".question.display_question, .question, div[id^='question_']")
-            q_count = await q_locators.count()
+            # Mapeia apenas os contêineres reais de questões na tela
+            q_locators = page.locator(".question.display_question")
+            if await q_locators.count() == 0:
+                q_locators = page.locator("#questions .question, .quiz_sortable .question_holder .question")
 
+            q_count = await q_locators.count()
             total_filled = 0
+            campo_counter = 1
+
             for idx in range(q_count):
                 q_el = q_locators.nth(idx)
                 q_num = idx + 1
                 q_name = f"Q{q_num}"
 
                 # 1. Rádios (Múltipla escolha)
-                radios = q_el.locator("input[type='radio']")
+                radios = q_el.locator(".answers .answer input[type='radio']")
                 r_count = await radios.count()
                 if r_count > 0:
-                    # Busca resposta correspondente a esta questão
                     target_val = (
                         answers_dict.get(q_name)
                         or answers_dict.get(f"QUESTAO_{q_num}")
@@ -389,58 +444,55 @@ class CanvasQuizAutomator:
                     chosen = False
                     if target_val:
                         norm_target = target_val.lower().strip()
-                        # Procura por correspondência exata ou parcial de texto na label
                         for r_idx in range(r_count):
                             r_input = radios.nth(r_idx)
                             r_id = await r_input.get_attribute("id")
                             lbl_text = ""
                             if r_id:
-                                lbl = q_el.locator(f"label[for='{r_id}']")
+                                lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
                                 if await lbl.count() > 0:
                                     lbl_text = (await lbl.first.inner_text()).lower().strip()
                             if not lbl_text:
                                 ans_wrap = r_input.locator("..")
                                 lbl_text = (await ans_wrap.inner_text()).lower().strip()
 
-                            # Match de texto ou letra (A, B, C, D...)
-                            opt_letter = chr(65 + r_idx).lower()  # 'a', 'b', 'c', 'd'
+                            opt_letter = chr(97 + r_idx)  # 'a', 'b', 'c', 'd'
                             if (norm_target == lbl_text
                                 or (len(norm_target) > 2 and norm_target in lbl_text)
                                 or (len(lbl_text) > 2 and lbl_text in norm_target)
                                 or norm_target.startswith(f"{opt_letter})")
                                 or norm_target.startswith(f"{opt_letter}.")
                                 or norm_target == opt_letter):
-                                await r_input.scroll_into_view_if_needed()
-                                await asyncio.sleep(0.3)
                                 await r_input.check(force=True)
                                 chosen = True
                                 total_filled += 1
                                 await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
                                 break
 
-                    # Se não encontrou por target_val, tenta buscar por token CAMPO_X
+                    # Se não encontrou pelo nome da questão, tenta casar com o texto de qualquer resposta
                     if not chosen:
                         for k, v in answers_dict.items():
-                            if k.startswith("CAMPO_") and v:
-                                norm_v = v.lower().strip()
+                            if v:
+                                norm_v = str(v).lower().strip()
                                 for r_idx in range(r_count):
                                     r_input = radios.nth(r_idx)
                                     r_id = await r_input.get_attribute("id")
                                     lbl_text = ""
                                     if r_id:
-                                        lbl = q_el.locator(f"label[for='{r_id}']")
+                                        lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
                                         if await lbl.count() > 0:
                                             lbl_text = (await lbl.first.inner_text()).lower().strip()
-                                    if norm_v and (norm_v in lbl_text or lbl_text in norm_v):
+                                    if norm_v and (norm_v == lbl_text or (len(norm_v) > 3 and norm_v in lbl_text)):
                                         await r_input.check(force=True)
                                         chosen = True
                                         total_filled += 1
+                                        await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
                                         break
                             if chosen:
                                 break
 
                 # 2. Checkboxes (Múltiplas respostas)
-                checks = q_el.locator("input[type='checkbox']")
+                checks = q_el.locator(".answers .answer input[type='checkbox']")
                 c_count = await checks.count()
                 if c_count > 0:
                     target_val = answers_dict.get(q_name) or answers_dict.get(str(q_num)) or ""
@@ -451,50 +503,79 @@ class CanvasQuizAutomator:
                             c_id = await c_input.get_attribute("id")
                             lbl_text = ""
                             if c_id:
-                                lbl = q_el.locator(f"label[for='{c_id}']")
+                                lbl = q_el.locator(f"#{c_id}_label, label[for='{c_id}']")
                                 if await lbl.count() > 0:
                                     lbl_text = (await lbl.first.inner_text()).lower().strip()
                             if lbl_text and (lbl_text in norm_target or norm_target in lbl_text):
                                 await c_input.check(force=True)
                                 total_filled += 1
 
-                # 3. Inputs de texto e lacunas
-                text_inps = q_el.locator("input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), textarea")
-                t_count = await text_inps.count()
-                for t_idx in range(t_count):
-                    t_input = text_inps.nth(t_idx)
-                    val_to_type = None
-                    # Procura por chaves CAMPO_X ou QX
-                    for k, v in answers_dict.items():
-                        if k in (f"CAMPO_{total_filled+1}", q_name, f"Q{q_num}_{t_idx+1}"):
-                            val_to_type = v
-                            break
-                    if val_to_type:
-                        await t_input.scroll_into_view_if_needed()
-                        await t_input.fill(val_to_type)
-                        total_filled += 1
-                        await asyncio.sleep(0.4)
-
-                # 4. Selects / Comboboxes
-                selects = q_el.locator("select")
+                # 3. Dropdowns / Selects (Questões de Correspondência / Matching)
+                selects = q_el.locator(".answers select, select.question_input")
                 s_count = await selects.count()
                 for s_idx in range(s_count):
                     sel = selects.nth(s_idx)
-                    val_to_select = None
-                    for k, v in answers_dict.items():
-                        if k in (f"CAMPO_{total_filled+1}", q_name):
-                            val_to_select = v
-                            break
+                    term = await sel.evaluate("el => { const row = el.closest('.answer'); const lbl = row ? row.querySelector('label') : null; return lbl ? lbl.innerText.trim() : ''; }")
+
+                    val_to_select = (
+                        answers_dict.get(f"CAMPO_{campo_counter}")
+                        or (answers_dict.get(term.upper()) if term else None)
+                        or answers_dict.get(f"Q{q_num}_{s_idx+1}")
+                    )
+                    campo_counter += 1
+
                     if val_to_select:
                         try:
-                            await sel.select_option(label=val_to_select)
+                            norm_target = str(val_to_select).lower().strip()
+                            opts = await sel.evaluate(
+                                "el => Array.from(el.options).map(o => ({val: o.value, text: o.text.trim()}))"
+                            )
+                            best_val = None
+                            for opt in opts:
+                                if not opt.get("val") or "[ choose ]" in opt["text"].lower() or "[ escolha ]" in opt["text"].lower():
+                                    continue
+                                norm_opt = opt["text"].lower().strip()
+                                if norm_target == norm_opt or norm_target in norm_opt or norm_opt in norm_target:
+                                    best_val = opt["val"]
+                                    break
+                            if best_val:
+                                await sel.select_option(value=best_val)
+                                total_filled += 1
+                                await _emit_log(on_log, f"✔ Questão {q_num} ({term or f'Item {s_idx+1}'}): Opção associada com sucesso!")
+                        except Exception as s_err:
+                            console.print(f"[yellow]Aviso ao selecionar opção no Canvas: {s_err}[/yellow]")
+
+                # 4. Inputs de texto e lacunas (Apenas elementos visíveis e habilitados)
+                text_inps = q_el.locator(".answers input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), .answers textarea, .question_text input:not([type='hidden']), .question_text textarea")
+                t_count = await text_inps.count()
+                for t_idx in range(t_count):
+                    t_input = text_inps.nth(t_idx)
+                    try:
+                        # Ignora elementos ocultos (ex: textareas de edição interna do professor)
+                        if not await t_input.is_visible() or await t_input.is_disabled():
+                            continue
+                    except Exception:
+                        continue
+
+                    val_to_type = (
+                        answers_dict.get(f"CAMPO_{campo_counter}")
+                        or answers_dict.get(q_name)
+                        or answers_dict.get(f"Q{q_num}_{t_idx+1}")
+                    )
+                    campo_counter += 1
+
+                    if val_to_type:
+                        try:
+                            await t_input.scroll_into_view_if_needed()
+                            await t_input.fill(str(val_to_type))
                             total_filled += 1
+                            await asyncio.sleep(0.3)
                         except Exception:
                             pass
 
             await _emit_log(on_log, f"📝 Preenchimento finalizado ({total_filled} respostas inseridas).")
 
-            # Aguarda 2 segundos para o Canvas disparar autosave
+            # Aguarda 2 segundos para o Canvas salvar as alterações
             await asyncio.sleep(2.0)
 
             if not auto_submit:
@@ -505,6 +586,10 @@ class CanvasQuizAutomator:
 
             # Modo finalizar: submete o questionário
             await _emit_log(on_log, "🚀 Submetendo questionário em definitivo no Canvas...")
+            
+            # Aceita automaticamente diálogos de confirmação de envio do Canvas
+            page.on("dialog", lambda d: asyncio.create_task(d.accept()))
+
             submit_selectors = [
                 "#submit_quiz_button",
                 "button#submit_quiz_button",
@@ -523,6 +608,11 @@ class CanvasQuizAutomator:
                     try:
                         if await btn.first.is_visible():
                             await btn.first.click()
+                            try:
+                                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                            except Exception:
+                                pass
+                            await asyncio.sleep(2.0)
                             submitted = True
                             break
                     except Exception:
@@ -546,7 +636,7 @@ class CanvasQuizAutomator:
 
                 await asyncio.sleep(2.0)
 
-                msg = f"Questionário finalizado e entregue com sucesso no Canvas! ({total_filled} respostas)"
+                msg = f"Questionário finalizado e entregue com sucesso no Canvas! ({total_filled} respostas enviadas)"
                 await _emit_log(on_log, f"✔ {msg}")
                 return True, msg
 
