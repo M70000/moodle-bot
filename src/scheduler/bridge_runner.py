@@ -259,6 +259,17 @@ class BridgeRunner:
                 if snap_url and str(snap_url).startswith("http"):
                     return await CanvasSubmitter().submit_url(course_id=c_id or "101", assignment_id=a_id or str(task.get("assignment_id")), url=str(snap_url))
 
+                # Suporte a submissão de texto online (online_text_entry)
+                text_to_submit = task.get("text_to_submit") or task.get("prepared_response") or task.get("body")
+                sub_types = task.get("submission_types") or []
+                if text_to_submit and ("online_text_entry" in sub_types or not task.get("file_to_submit")):
+                    return await CanvasSubmitter().submit_text(
+                        course_id=c_id or "101",
+                        assignment_id=a_id or str(task.get("assignment_id")),
+                        body=str(text_to_submit),
+                        comment="Submetido via LumiBot",
+                    )
+
             file_path_str = task.get("file_to_submit")
             if not file_path_str or not Path(file_path_str).exists():
                 # Busca na pasta submissions se não tiver o caminho completo

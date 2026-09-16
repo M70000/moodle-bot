@@ -30,13 +30,13 @@ async def _emit_log(callback: Optional[Any], msg: str):
         pass
 
 
-def extract_python_code_from_text(text: str) -> str:
-    """Extrai blocos de código Python limpos de textos gerados pela IA ou markdown."""
+def extract_code_from_text(text: str) -> str:
+    """Extrai blocos de código limpos de textos gerados pela IA ou markdown."""
     if not text:
         return ""
 
-    # Procura blocos ```python ... ```
-    m = re.search(r"```(?:python|py)?\s*\n(.*?)\n```", text, re.DOTALL | re.IGNORECASE)
+    # Procura qualquer bloco fenced code ```lang ... ```
+    m = re.search(r"```(?:\w+)?\s*\n(.*?)\n```", text, re.DOTALL)
     if m:
         return m.group(1).strip()
 
@@ -50,13 +50,16 @@ def extract_python_code_from_text(text: str) -> str:
             continue
         if in_code:
             code_lines.append(line)
-        elif line.strip().startswith(("print(", "def ", "import ", "for ", "if ", "#", "while ", "return ")):
+        elif line.strip().startswith(("print(", "def ", "import ", "for ", "if ", "#", "while ", "return ", "function ", "const ", "let ", "var ")):
             code_lines.append(line)
 
     if code_lines:
         return "\n".join(code_lines).strip()
 
     return text.strip()
+
+
+extract_python_code_from_text = extract_code_from_text
 
 
 class CanvasCodingAutomator:

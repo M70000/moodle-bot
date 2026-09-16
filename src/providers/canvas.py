@@ -820,6 +820,22 @@ def extract_canvas_ids(url_or_id: str, course_id: Optional[str] = None) -> Tuple
 # Motor de Submissão Oficial na API REST do Canvas
 # =====================================================================
 
+def format_text_for_canvas(text: str) -> str:
+    """Formata texto/markdown para envio ao Canvas LMS (online_text_entry)."""
+    if not text:
+        return ""
+    # Se já contiver tags HTML ricas, mantém
+    if any(tag in text for tag in ["<p>", "<div>", "<br", "<ul>", "<ol>", "<h3>"]):
+        return text
+    # Converte quebras de parágrafos em tags HTML <p>
+    paragraphs = [p.strip() for p in text.strip().split("\n\n") if p.strip()]
+    html_parts = []
+    for p in paragraphs:
+        escaped_p = p.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br/>")
+        html_parts.append(f"<p>{escaped_p}</p>")
+    return "".join(html_parts) if html_parts else text
+
+
 class CanvasSubmitter:
     """Motor oficial de submissão de atividades na API REST do Canvas LMS (Instructure)."""
 
@@ -1014,10 +1030,11 @@ class CanvasSubmitter:
         if on_log:
             await _emit_log(on_log, "📡 Submetendo texto online no Canvas...")
 
+        formatted_body = format_text_for_canvas(body)
         endpoint = f"/api/v1/courses/{clean_course_id}/assignments/{clean_assign_id}/submissions"
         params: Dict[str, Any] = {
             "submission[submission_type]": "online_text_entry",
-            "submission[body]": body,
+            "submission[body]": formatted_body,
         }
         if comment:
             params["comment[text_comment]"] = comment

@@ -395,63 +395,37 @@ class GeminiSolver:
                 except Exception as up_err:
                     console.print(f"  [yellow]Falha ao carregar {file_path.name} para o Gemini: {up_err}[/yellow]")
 
-            # Montagem do Prompt Acadêmico Rigoroso
-            is_coding = (
-                getattr(assignment, "is_coding_task", False)
-                or any(k in (assignment.title or "").lower() for k in ["coding task", "programação", "código", "python"])
-                or "snapshot to url" in (assignment.description or "").lower()
-                or "snapshot" in (assignment.description or "").lower()
-            )
-
-            if is_coding:
-                system_instruction = (
-                    "Você é um desenvolvedor de software e estudante resolvendo uma tarefa prática de programação (Coding Task).\n"
-                    "Seu foco principal é fornecer EXCLUSIVAMENTE o código correto, limpo e executável para rodar no editor interativo e gerar a saída esperada.\n\n"
-                    "DIRETRIZES OBRIGATÓRIAS:\n"
-                    "1. DIRETO AO PONTO: É ESTRITAMENTE PROIBIDO escrever relatórios teóricos longos, introduções acadêmicas, tutoriais ou explicações desnecessárias sobre a sintaxe.\n"
-                    "2. CÓDIGO EXECUTÁVEL: Forneça a solução completa, funcional e limpa dentro de um bloco de código markdown:\n"
-                    "```python\n"
-                    "[código funcional aqui]\n"
-                    "```\n"
-                    "3. No máximo 1 ou 2 linhas objetivas indicando o que o código faz, sem rodeios.\n"
-                    "4. NUNCA invente blocos de texto prolixos de IA."
-                )
-            else:
-                system_instruction = (
-                    "Você é um estudante universitário da UFMG realizando esta atividade acadêmica.\n"
-                    "Escreva a resolução EXATAMENTE como um aluno humano real entrega para o professor:\n\n"
+            # Montagem do Prompt Acadêmico / Prático Versátil
+            system_instruction = (
+                "Você é um estudante universitário dedicado e excelente realizando esta atividade acadêmica/prática.\n"
+                "Sua missão é fornecer a resolução EXATA, DIRETA e COMPLETA que deve ser entregue para o professor no portal acadêmico.\n\n"
                 "DIRETRIZES OBRIGATÓRIAS:\n"
-                "1. REGRA DE OURO - PRIORIDADE ABSOLUTA DO GABARITO / MATERIAL DE REFERÊNCIA:\n"
-                "   - Se houver materiais de apoio, gabaritos ou anotações fornecidos contendo resoluções ou respostas para esta atividade, "
+                "1. ADAPTABILIDADE E VERSATILIDADE TOTAL (LEIA AS INSTRUÇÕES/STEPS COM MÁXIMA ATENÇÃO):\n"
+                "   - Adapte o formato da sua resposta rigorosamente ao que a atividade e o enunciado solicitam:\n"
+                "   • Se o enunciado pedir para escrever, corrigir ou implementar CÓDIGO (ex: uma função, programa ou script):\n"
+                "     Forneça a solução funcional completa dentro de um bloco de código markdown na linguagem exigida pela tarefa (ex: ```python, ```javascript, ```c, etc.), com no máximo 1 ou 2 linhas objetivas de comentário se necessário.\n"
+                "   • Se o enunciado fornecer um simulador, jogo ou código para jogar/testar e pedir passos ou respostas (ex: 'type in the list of steps you took', 'play the game', 'descreva os passos para alcançar o objetivo'):\n"
+                "     Analise cuidadosamente a lógica do código/jogo fornecido, deduza a sequência exata de comandos/ações para vencer/completar o objetivo e forneça diretamente a lista clara e numerada dos passos solicitados para submissão.\n"
+                "   • Se o enunciado pedir respostas dissertativas, cálculos, relatórios, redações ou justificativas:\n"
+                "     Redija o texto de forma clara, fundamentada, acadêmica e objetiva.\n"
+                "   • Se o enunciado consistir em questões ou itens numerados (ex: Questão 1, 2, a, b, c):\n"
+                "     Responda item por item de forma clara e direta.\n\n"
+                "2. REGRA DE OURO - MATERIAIS DE APOIO E GABARITOS:\n"
+                "   - Se houver materiais de apoio, gabaritos, slides ou anotações fornecidos contendo resoluções ou respostas para esta atividade, "
                 "você DEVE seguir 100% as respostas, termos e sequências indicados neles.\n"
-                "   - É ESTRITAMENTE PROIBIDO divergir, recalcular ou tentar 're-resolver' qualquer questão que já possua resposta explicitada no material de referência/gabarito.\n"
-                "   - Mantenha com máxima fidelidade as sequências de Verdadeiro/Falso (ex: V-F-F-V) e listas de itens/associações (ex: C, B, D, A) dadas no gabarito.\n\n"
-                "2. FOCO TOTAL NA ATIVIDADE ESPECÍFICA:\n"
-                f"   - O título desta atividade é: '{assignment.title}'.\n"
-                "   - Resolva EXCLUSIVAMENTE as questões pertencentes a esta atividade específica. "
-                "Mesmo que os materiais de referência contenham gabaritos ou conteúdos de outras aulas, unidades ou módulos, "
-                "NÃO responda nada além do que foi pedido para esta aula/atividade específica.\n\n"
-                "3. PROIBIDO QUALQUER METATEXTO DE IA OU BOILERPLATE:\n"
-                "   - NUNCA inclua 'Resumo Executivo', 'Relatório de Resolução', 'Introdução' ou conclusões genéricas.\n"
-                "   - NUNCA mencione frases como 'todas as respostas foram rigorosamente extraídas do gabarito oficial', 'conforme o anexo', 'com base no material didático'. Escreva as respostas diretamente.\n"
-                "   - NUNCA inclua seções vazias de 'Códigos e Scripts' se a matéria ou atividade não exigir programação.\n"
-                "   - NUNCA invente seções de 'Referências Bibliográficas' a menos que solicitado expressamente no enunciado.\n\n"
-                "4. FORMATO LIMPO E DIRETO:\n"
-                "   - Comece diretamente com as questões:\n"
-                "     ### Questão 1\n"
-                "     [Sua resposta direta]\n\n"
-                "     ### Questão 2\n"
-                "     1. [Item 1]\n"
-                "     2. [Item 2]\n\n"
-                "5. DADOS ESTRUTURADOS PARA QUESTIONÁRIOS ONLINE (QUIZZES):\n"
-                "   - Ao final da sua resposta, adicione um bloco de código oculto contendo as respostas mapeadas por questão:\n"
+                "   - Mantenha com máxima fidelidade sequências de Verdadeiro/Falso e listas de itens/associações dadas no gabarito.\n\n"
+                "3. DIRETO AO PONTO (SEM METATEXTO DE IA OU BOILERPLATE):\n"
+                "   - NUNCA inclua enrolação, saudações ou metatexto de assistente (como 'Olá!', 'Certamente!', 'Como modelo de IA...', 'Resumo Executivo', 'Relatório de Resolução').\n"
+                "   - Entregue diretamente a resolução final pronta para entrega.\n\n"
+                "4. DADOS ESTRUTURADOS PARA QUESTIONÁRIOS ONLINE (QUIZZES):\n"
+                "   - Ao final da sua resposta, adicione um bloco de código oculto contendo as respostas mapeadas por questão (se aplicável):\n"
                 "   ```json:answers\n"
                 "   [\n"
-                "     {\"question\": 1, \"answers\": [\"resposta 1\", \"resposta 2\"]},\n"
-                "     {\"question\": 2, \"answers\": [\"resposta\"]}\n"
+                "     {\"question\": 1, \"answers\": [\"resposta 1\"]},\n"
+                "     {\"question\": 2, \"answers\": [\"resposta 2\"]}\n"
                 "   ]\n"
                 "   ```\n"
-                "   (Esse bloco json será usado pelo robô para preencher o formulário no Moodle e será removido do PDF)."
+                "   (Esse bloco json será usado pelo robô para preencher o formulário no LMS e será removido do PDF)."
             )
 
             prompt_content = [
@@ -582,6 +556,7 @@ class GeminiSolver:
                 used_model=successful_model,
                 structured_answers=structured_answers,
                 auto_triggered=auto_triggered,
+                prepared_response=clean_markdown,
             )
 
 
@@ -873,6 +848,7 @@ class GeminiSolver:
                 used_model=successful_model,
                 structured_answers=[{"key": k, "value": v} for k, v in structured_dict.items()] if structured_dict else None,
                 auto_triggered=auto_triggered,
+                prepared_response=clean_markdown,
             )
 
 
@@ -979,6 +955,7 @@ class GeminiSolver:
             auto_triggered=False,
             structured_answers=structured_answers,
             activity_type=getattr(draft, "activity_type", "assign"),
+            prepared_response=new_markdown,
         )
 
 
