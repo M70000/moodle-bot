@@ -1125,26 +1125,37 @@ class ReviewActionView(ui.View):
 
         if self.activity_type == "quiz":
             # Row 0: Ações principais do Quiz
-            btn_fill = ui.Button(
-                label="Apenas Preencher Quiz" if not draft_saved else "✔ Respostas Preenchidas",
-                style=discord.ButtonStyle.primary if not draft_saved else discord.ButtonStyle.secondary,
-                emoji="📝",
-                custom_id=f"btn_fill_{self.assignment_id}",
-                disabled=draft_saved,
-                row=0
-            )
-            btn_fill.callback = self.fill_quiz_button
-            self.add_item(btn_fill)
+            if self.platform == "canvas":
+                btn_finalize = ui.Button(
+                    label="Enviar Quiz no Canvas",
+                    style=discord.ButtonStyle.success,
+                    emoji="🚀",
+                    custom_id=f"btn_finalize_{self.assignment_id}",
+                    row=0
+                )
+                btn_finalize.callback = self.finalize_quiz_button
+                self.add_item(btn_finalize)
+            else:
+                btn_fill = ui.Button(
+                    label="Apenas Preencher Quiz" if not draft_saved else "✔ Respostas Preenchidas",
+                    style=discord.ButtonStyle.primary if not draft_saved else discord.ButtonStyle.secondary,
+                    emoji="📝",
+                    custom_id=f"btn_fill_{self.assignment_id}",
+                    disabled=draft_saved,
+                    row=0
+                )
+                btn_fill.callback = self.fill_quiz_button
+                self.add_item(btn_fill)
 
-            btn_finalize = ui.Button(
-                label="Enviar Tudo e Terminar",
-                style=discord.ButtonStyle.success,
-                emoji="🚀",
-                custom_id=f"btn_finalize_{self.assignment_id}",
-                row=0
-            )
-            btn_finalize.callback = self.finalize_quiz_button
-            self.add_item(btn_finalize)
+                btn_finalize = ui.Button(
+                    label="Enviar Tudo e Terminar",
+                    style=discord.ButtonStyle.success,
+                    emoji="🚀",
+                    custom_id=f"btn_finalize_{self.assignment_id}",
+                    row=0
+                )
+                btn_finalize.callback = self.finalize_quiz_button
+                self.add_item(btn_finalize)
 
             # Botão Modificar para o Quiz (sempre ativo antes da finalização)
             btn_revise = ui.Button(
@@ -1298,11 +1309,12 @@ class ReviewActionView(ui.View):
         for child in self.children:
             child.disabled = True
 
+        lms_label = "Canvas" if self.platform == "canvas" else "Moodle"
         embed = interaction.message.embeds[0] if interaction.message.embeds else None
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: ⏳ Na fila para preenchimento no Moodle por {interaction.user.name}..."
+                text=f"Status: ⏳ Na fila para preenchimento no {lms_label} por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -1313,8 +1325,15 @@ class ReviewActionView(ui.View):
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
 
-        # Verificação de Ponte Nuvem (Render sem cookies locais)
-        if not Path(settings.STORAGE_COOKIES_PATH).exists():
+        # Verificação de Ponte Nuvem (Render sem cookies locais ou relay mode)
+        is_canvas = (self.platform == "canvas")
+        if is_canvas:
+            canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
+            has_session = Path(canvas_cookies_file).exists() and Path(canvas_cookies_file).stat().st_size > 10 and not _is_relay_mode()
+        else:
+            has_session = Path(settings.STORAGE_COOKIES_PATH).exists() and Path(settings.STORAGE_COOKIES_PATH).stat().st_size > 10 and not _is_relay_mode()
+
+        if not has_session:
             ans_payload = self._extract_answers_payload()
             task_id = await cloud_bridge.dispatch_action(
                 action="fill_quiz",
@@ -1325,7 +1344,8 @@ class ReviewActionView(ui.View):
                 requester=interaction.user.name,
                 title=clean_title,
                 course=course_name,
-                structured_answers=ans_payload or self.structured_answers
+                structured_answers=ans_payload or self.structured_answers,
+                platform="canvas" if is_canvas else "moodle"
             )
             if embed:
                 embed.color = discord.Color.gold()
@@ -1336,7 +1356,7 @@ class ReviewActionView(ui.View):
             await interaction.followup.send(
                 f"📝 **Preenchimento de Quiz Despachado para o Desktop!** (ID: `{task_id}`)\n"
                 f"• Questionário: **{clean_title}**\n"
-                f"• O seu executor desktop local irá preencher as respostas no Moodle com sua sessão local da UFMG.",
+                f"• O seu executor desktop local irá preencher as respostas no {lms_label} com sua sessão local.",
                 ephemeral=False
             )
             return
@@ -1344,27 +1364,37 @@ class ReviewActionView(ui.View):
         async def _do_fill():
             console.print(
                 f"[bold cyan]Preenchimento de rascunho executado da fila para {self.assignment_id}![/bold cyan] "
-                f"Preenchendo campos no Moodle sem submeter..."
+                f"Preenchendo campos no {lms_label} sem submeter..."
             )
             status_msg = await interaction.followup.send(
-                content=f"⏳ **Preenchendo questionário no Moodle com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter.",
+                content=f"⏳ **Preenchendo questionário no {lms_label} com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter.",
                 ephemeral=False
             )
             reporter = DiscordLiveReporter(
                 status_msg,
-                f"⏳ **Preenchendo questionário no Moodle com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter."
+                f"⏳ **Preenchendo questionário no {lms_label} com cadência humana ({clean_title})...** As respostas serão digitadas e salvas na tentativa sem submeter."
             )
 
             ans_payload = self._extract_answers_payload()
-            submitter = MoodleSubmitter()
             current_time = datetime.now().strftime("%H:%M:%S")
 
-            success, message = await submitter.submit_quiz(
-                quiz_url=self.assignment_url,
-                answers=ans_payload or self.structured_answers,
-                auto_submit=False,
-                on_log=reporter.log
-            )
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter
+                submitter = CanvasSubmitter()
+                success, message = await submitter.submit_quiz(
+                    quiz_url=self.assignment_url,
+                    answers=ans_payload or self.structured_answers,
+                    auto_submit=False,
+                    on_log=reporter.log
+                )
+            else:
+                submitter = MoodleSubmitter()
+                success, message = await submitter.submit_quiz(
+                    quiz_url=self.assignment_url,
+                    answers=ans_payload or self.structured_answers,
+                    auto_submit=False,
+                    on_log=reporter.log
+                )
 
             if success:
                 self._is_draft_saved = True
@@ -1372,18 +1402,18 @@ class ReviewActionView(ui.View):
 
                 if embed:
                     embed.color = discord.Color.blue()
-                    embed.title = f"📝 Rascunho Salvo: {clean_title}"
+                    embed.title = f"📝 Rascunho Salvo no {lms_label}: {clean_title}"
                     embed.set_footer(
-                        text=f"Respostas salvas no Moodle às {current_time}. Aguardando sua conferência manual ou envio definitivo."
+                        text=f"Respostas salvas no {lms_label} às {current_time}. Aguardando sua conferência manual ou envio definitivo."
                     )
 
                 await interaction.message.edit(embed=embed, view=self)
-                moodle_link_md = f"👉 **[Clique aqui para abrir sua tentativa no Moodle]({self.assignment_url})**\n\n" if self.assignment_url else ""
+                portal_link_md = f"👉 **[Clique aqui para abrir sua tentativa no {lms_label}]({self.assignment_url})**\n\n" if self.assignment_url else ""
                 await reporter.finish(
-                    f"🎉 **Respostas salvas no Moodle com sucesso!**\n"
+                    f"🎉 **Respostas salvas no {lms_label} com sucesso!**\n"
                     f"{message}\n\n"
-                    f"{moodle_link_md}"
-                    f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar tudo e terminar'** diretamente no Moodle;\n"
+                    f"{portal_link_md}"
+                    f"• Quando terminar de conferir, você mesmo pode clicar em **'Enviar'** diretamente no {lms_label};\n"
                     f"• Ou, se preferir, pode clicar no botão **[🚀 Enviar Tudo e Terminar]** acima para o robô finalizar!"
                 )
             else:
@@ -1394,7 +1424,7 @@ class ReviewActionView(ui.View):
                         text=f"Falha ao preencher às {current_time}: {message[:100]}"
                     )
                 await interaction.message.edit(embed=embed, view=self)
-                await reporter.finish(f"⚠️ **Falha ao preencher questionário no Moodle:** {message}")
+                await reporter.finish(f"⚠️ **Falha ao preencher questionário no {lms_label}:** {message}")
 
             return success, message
 
@@ -1416,15 +1446,16 @@ class ReviewActionView(ui.View):
             )
 
     async def finalize_quiz_button(self, interaction: discord.Interaction):
-        """Finaliza e submete em definitivo o questionário no Moodle ('Enviar tudo e terminar'), passando pela fila."""
+        """Finaliza e submete em definitivo o questionário no LMS ('Enviar tudo e terminar'), passando pela fila."""
         for child in self.children:
             child.disabled = True
 
+        lms_label = "Canvas" if self.platform == "canvas" else "Moodle"
         embed = interaction.message.embeds[0] if interaction.message.embeds else None
         if embed:
             embed.color = discord.Color.gold()
             embed.set_footer(
-                text=f"Status: ⏳ Na fila para finalização no Moodle por {interaction.user.name}..."
+                text=f"Status: ⏳ Na fila para finalização no {lms_label} por {interaction.user.name}..."
             )
 
         await interaction.response.edit_message(embed=embed, view=self)
@@ -1435,8 +1466,15 @@ class ReviewActionView(ui.View):
         clean_title = title_raw.replace("📋 Revisão: ", "").replace("📋 Revisão de Atividade: ", "").replace("📝 Rascunho Salvo: ", "")
         course_name = clean_display_course(item_data.get("course", "Geral"))
 
-        # Verificação de Ponte Nuvem (Render sem cookies locais)
-        if not Path(settings.STORAGE_COOKIES_PATH).exists():
+        # Verificação de Ponte Nuvem (Render sem cookies locais ou relay mode)
+        is_canvas = (self.platform == "canvas")
+        if is_canvas:
+            canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
+            has_session = Path(canvas_cookies_file).exists() and Path(canvas_cookies_file).stat().st_size > 10 and not _is_relay_mode()
+        else:
+            has_session = Path(settings.STORAGE_COOKIES_PATH).exists() and Path(settings.STORAGE_COOKIES_PATH).stat().st_size > 10 and not _is_relay_mode()
+
+        if not has_session:
             ans_payload = self._extract_answers_payload()
             task_id = await cloud_bridge.dispatch_action(
                 action="finalize_quiz",
@@ -1447,7 +1485,8 @@ class ReviewActionView(ui.View):
                 requester=interaction.user.name,
                 title=clean_title,
                 course=course_name,
-                structured_answers=ans_payload or self.structured_answers
+                structured_answers=ans_payload or self.structured_answers,
+                platform="canvas" if is_canvas else "moodle"
             )
             if embed:
                 embed.color = discord.Color.gold()
@@ -1458,7 +1497,7 @@ class ReviewActionView(ui.View):
             await interaction.followup.send(
                 f"🚀 **Envio Definitivo Despachado para o Desktop!** (ID: `{task_id}`)\n"
                 f"• Questionário: **{clean_title}**\n"
-                f"• O seu executor desktop local irá confirmar 'Enviar tudo e terminar' no Moodle.",
+                f"• O seu executor desktop local irá finalizar o questionário no {lms_label}.",
                 ephemeral=False
             )
             return
@@ -1468,35 +1507,45 @@ class ReviewActionView(ui.View):
                 f"[bold cyan]Envio definitivo executado da fila para {self.assignment_id}![/bold cyan]"
             )
             status_msg = await interaction.followup.send(
-                content=f"🚀 **Finalizando questionário no Moodle ({clean_title})...** Confirmando 'Enviar tudo e terminar'.",
+                content=f"🚀 **Finalizando questionário no {lms_label} ({clean_title})...** Enviando respostas.",
                 ephemeral=False
             )
             reporter = DiscordLiveReporter(
                 status_msg,
-                f"🚀 **Finalizando questionário no Moodle ({clean_title})...** Confirmando 'Enviar tudo e terminar'."
+                f"🚀 **Finalizando questionário no {lms_label} ({clean_title})...** Enviando respostas."
             )
 
-            submitter = MoodleSubmitter()
             current_time = datetime.now().strftime("%H:%M:%S")
-
             ans_payload = self._extract_answers_payload()
-            if self._is_draft_saved:
-                success, message = await submitter.finalize_quiz(self.assignment_url, on_log=reporter.log)
-                if not success and "não foi encontrado" in message.lower():
-                    # Fallback: tenta preencher e enviar em um passo só
-                    success, message = await submitter.submit_quiz(
-                        quiz_url=self.assignment_url,
-                        answers=ans_payload or self.structured_answers,
-                        auto_submit=True,
-                        on_log=reporter.log
-                    )
-            else:
+
+            if is_canvas:
+                from src.providers.canvas import CanvasSubmitter
+                submitter = CanvasSubmitter()
                 success, message = await submitter.submit_quiz(
                     quiz_url=self.assignment_url,
                     answers=ans_payload or self.structured_answers,
                     auto_submit=True,
                     on_log=reporter.log
                 )
+            else:
+                submitter = MoodleSubmitter()
+                if self._is_draft_saved:
+                    success, message = await submitter.finalize_quiz(self.assignment_url, on_log=reporter.log)
+                    if not success and "não foi encontrado" in message.lower():
+                        # Fallback: tenta preencher e enviar em um passo só
+                        success, message = await submitter.submit_quiz(
+                            quiz_url=self.assignment_url,
+                            answers=ans_payload or self.structured_answers,
+                            auto_submit=True,
+                            on_log=reporter.log
+                        )
+                else:
+                    success, message = await submitter.submit_quiz(
+                        quiz_url=self.assignment_url,
+                        answers=ans_payload or self.structured_answers,
+                        auto_submit=True,
+                        on_log=reporter.log
+                    )
 
             if success:
                 st = DaemonState()
@@ -1504,12 +1553,12 @@ class ReviewActionView(ui.View):
 
                 if embed:
                     embed.color = discord.Color.green()
-                    embed.title = f"✅ Submetido com Sucesso: {clean_title}"
+                    embed.title = f"✅ Submetido com Sucesso no {lms_label}: {clean_title}"
                     embed.set_footer(
-                        text=f"Finalizado no Moodle às {current_time} por {interaction.user.name}"
+                        text=f"Finalizado no {lms_label} às {current_time} por {interaction.user.name}"
                     )
                 await interaction.message.edit(embed=embed, view=self)
-                await reporter.finish(f"🎉 **Confirmação de Envio no Moodle:** {message}")
+                await reporter.finish(f"🎉 **Confirmação de Envio no {lms_label}:** {message}")
                 if self.on_action:
                     await self.on_action(self.assignment_id, "approved", interaction)
             else:
@@ -1520,7 +1569,7 @@ class ReviewActionView(ui.View):
                         text=f"Falha na finalização às {current_time}: {message[:100]}"
                     )
                 await interaction.message.edit(embed=embed, view=self)
-                await reporter.finish(f"⚠️ **Falha ao finalizar questionário:** {message}")
+                await reporter.finish(f"⚠️ **Falha ao finalizar questionário no {lms_label}:** {message}")
 
             return success, message
 

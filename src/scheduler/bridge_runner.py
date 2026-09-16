@@ -244,11 +244,15 @@ class BridgeRunner:
         console.print(f"[bold green]📥 [Ponte Nuvem] Executando submissão aprovada no Discord: {title} ({action})[/bold green]")
         submitter = MoodleSubmitter()
 
+        url_str = str(assignment_url or "").lower()
+        canvas_base = (getattr(settings, "CANVAS_BASE_URL", "") or "").lower()
         is_canvas = (
-            "instructure.com" in str(assignment_url or "")
+            "instructure.com" in url_str
+            or "canvas" in url_str
             or task.get("platform") == "canvas"
             or str(task.get("assignment_id", "")).startswith(("canvas_", "c_"))
-            or "/quizzes/" in str(assignment_url or "")
+            or (canvas_base and canvas_base.split("//")[-1].split("/")[0] in url_str)
+            or (getattr(settings, "LMS_PROVIDER", "") == "canvas" and "moodle" not in url_str and "ufmg.br" not in url_str)
         )
 
         if action == "approve_assign":

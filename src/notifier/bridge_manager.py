@@ -183,9 +183,13 @@ class CloudBridgeManager:
         course: str = "",
         file_to_submit: Optional[str] = None,
         structured_answers: Optional[Dict[str, Any]] = None,
+        platform: Optional[str] = None,
+        **kwargs: Any,
     ) -> str:
         """Enfileira uma solicitação de submissão para ser consumida pelo desktop."""
         task_id = f"bridge_{uuid.uuid4().hex[:8]}"
+        url_str = str(assignment_url or "").lower()
+        detected_platform = platform or ("canvas" if "canvas" in url_str or "instructure.com" in url_str else "moodle")
         payload = {
             "task_id": task_id,
             "action": action,
@@ -198,9 +202,12 @@ class CloudBridgeManager:
             "course": course or "Geral",
             "file_to_submit": file_to_submit,
             "structured_answers": structured_answers or {},
+            "platform": detected_platform,
             "status": "pending",
             "created_at": time.time(),
         }
+        if kwargs:
+            payload.update(kwargs)
         event = asyncio.Event()
         async with self._lock:
             self._pending_tasks[task_id] = payload

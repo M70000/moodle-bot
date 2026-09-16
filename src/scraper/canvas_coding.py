@@ -204,6 +204,33 @@ class CanvasCodingAutomator:
                 except Exception:
                     pass
 
+    async def _safe_click_button(self, locator, context_or_frame, fallback_js: Optional[str] = None) -> bool:
+        """Executa clique de forma robusta e à prova de timeouts em botões de editores interativos."""
+        try:
+            await locator.scroll_into_view_if_needed(timeout=1500)
+        except Exception:
+            pass
+
+        try:
+            await locator.click(force=True, timeout=2500)
+            return True
+        except Exception:
+            pass
+
+        try:
+            await locator.dispatch_event("click")
+            return True
+        except Exception:
+            pass
+
+        if fallback_js and context_or_frame:
+            try:
+                await context_or_frame.evaluate(fallback_js)
+                return True
+            except Exception:
+                pass
+        return False
+
     async def solve_and_snapshot(
         self,
         assignment_url: str,
@@ -317,25 +344,38 @@ class CanvasCodingAutomator:
                 # Fallback: clica no editor e digita
                 editor_box = target_context.locator(".ace_editor, .CodeMirror, textarea").first
                 if await editor_box.count() > 0:
-                    await editor_box.click()
+                    try:
+                        await editor_box.click(force=True, timeout=2500)
+                    except Exception:
+                        pass
                     await page.keyboard.press("Control+A")
                     await page.keyboard.press("Backspace")
                     await page.keyboard.insert_text(clean_code)
 
             await asyncio.sleep(1.0)
 
-            # Clica no botão Run
+            # Clica no botão Run de forma robusta e imediata
             run_btn = target_context.locator("#runButton, button:has-text('Run'), a:has-text('Run'), [title*='Run']").first
             if await run_btn.count() > 0:
                 await _emit_log(on_log, "⚡ Executando código corrigido no console ('Run')...")
-                await run_btn.click()
+                run_fallback = """() => {
+                    const b = document.querySelector("#runButton, button[onclick*='run']");
+                    if (b) b.click();
+                    if (typeof runSkulpt === "function") runSkulpt(false);
+                }"""
+                await self._safe_click_button(run_btn, target_context, run_fallback)
                 await asyncio.sleep(2.5)
 
-            # Clica no botão Snapshot to URL
+            # Clica no botão Snapshot to URL de forma robusta e imediata
             snapshot_btn = target_context.locator("#codestoreURL, button:has-text('Snapshot to URL'), button:has-text('Snapshot'), a:has-text('Snapshot to URL'), [title*='Snapshot']").first
             if await snapshot_btn.count() > 0:
                 await _emit_log(on_log, "🔗 Gerando link público ('Snapshot to URL')...")
-                await snapshot_btn.click()
+                snap_fallback = """() => {
+                    const b = document.querySelector("#codestoreURL, button[onclick*='getCodestoreURL'], button:has-text('Snapshot')");
+                    if (b) b.click();
+                    if (typeof getCodestoreURL === "function") getCodestoreURL();
+                }"""
+                await self._safe_click_button(snapshot_btn, target_context, snap_fallback)
                 await asyncio.sleep(2.0)
 
             # Tenta capturar a URL gerada na tela caso não tenha vindo por diálogo
