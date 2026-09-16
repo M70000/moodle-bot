@@ -568,18 +568,62 @@ async def course_autocomplete(
         return []
 
 
-def _is_task_completed(item: Dict[str, Any]) -> bool:
+def _is_task_completed(item: Dict[str, Any], aid: Optional[str] = None) -> bool:
     """Verifica se uma tarefa no catálogo está com status de concluída/submetida."""
-    if item.get("is_submitted"):
+    # 1. Flag booleana explícita
+    if item.get("is_submitted") is True:
         return True
-    if item.get("status") in ["submitted", "cancelled"]:
+
+    # 2. Status de ciclo de vida
+    status = str(item.get("status", "")).lower().strip()
+    if status in ["submitted", "cancelled", "completed", "finalized"]:
         return True
-    sub_status = str(item.get("submission_status", "")).lower()
-    if any(t in sub_status for t in ["concluído", "concluido", "enviado para avaliação", "feito", "finalizada"]):
+
+    # 3. Nota já atribuída (apenas nota real válida)
+    grade = str(item.get("grade_value", "") or "").strip()
+    if grade and grade.lower() not in ("none", "null", "-", "") and "não" not in grade.lower() and "nao" not in grade.lower():
         return True
+
+    # 4. Status de submissão do LMS (Moodle ou Canvas)
+    sub_status = str(item.get("submission_status", "")).lower().strip()
+    is_neg = not sub_status or any(neg in sub_status for neg in ["não", "nao", "not", "unsubmitted", "sem envio", "nenhum envio", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:enviad|submetid|avaliad)", sub_status))
+    if not is_neg:
+        if any(term in sub_status for term in [
+            "enviado", "submetido", "submitted", "avaliado", "graded",
+            "concluído", "concluido", "feito", "finalizada", "finalizado", "entregue"
+        ]):
+            return True
+
+    # 5. Tempo restante indicando envio antecipado
     time_rem = str(item.get("time_remaining", "")).lower()
     if "enviada" in time_rem and "adiantado" in time_rem:
         return True
+
+    # 6. Verificação cruzada com o estado persistente local (DaemonState)
+    task_id = str(aid or item.get("id") or "").strip()
+    if task_id and task_id != "__offline__":
+        try:
+            from src.scheduler.state import DaemonState
+            st = DaemonState()
+            raw_id = task_id.replace("canvas_", "").replace("c_", "")
+            for check_id in (task_id, raw_id, f"canvas_{raw_id}"):
+                stored = st.get_assignment(check_id)
+                if stored and isinstance(stored, dict):
+                    if stored.get("is_submitted") is True:
+                        return True
+                    if str(stored.get("status", "")).lower().strip() in ("submitted", "cancelled", "completed", "finalized"):
+                        return True
+                    st_sub = str(stored.get("submission_status", "")).lower().strip()
+                    st_neg = not st_sub or any(neg in st_sub for neg in ["não", "nao", "not", "unsubmitted", "sem envio", "nenhum envio", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:enviad|submetid|avaliad)", st_sub))
+                    if not st_neg:
+                        if any(t in st_sub for t in [
+                            "enviado", "submetido", "submitted", "avaliado", "graded",
+                            "concluído", "concluido", "feito", "finalizada", "finalizado", "entregue"
+                        ]):
+                            return True
+        except Exception:
+            pass
+
     return False
 
 
@@ -604,7 +648,7 @@ async def pending_task_autocomplete(
         norm_curr = normalize_text(current)
         candidates = []
         for aid, item in assignments.items():
-            if _is_task_completed(item):
+            if _is_task_completed(item, aid=str(aid)):
                 continue  # Oculta tarefas já concluídas para manter /resolver focado em pendências
 
             title = str(item.get("title") or aid).strip()
@@ -650,7 +694,7 @@ async def completed_task_autocomplete(
         norm_curr = normalize_text(current)
         candidates = []
         for aid, item in assignments.items():
-            if not _is_task_completed(item):
+            if not _is_task_completed(item, aid=str(aid)):
                 continue  # Exibe apenas itens já concluídos/entregues para serem refeitos
 
             title = str(item.get("title") or aid).strip()
@@ -2743,7 +2787,7 @@ async def build_canvas_embed(consulta: str = "tarefas", dias: int = 7, interacti
                 url = a.get("url", "")
                 link_part = f"[{title}]({url})" if url else title
                 line = f"• **{link_part}**\n  🏫 {c_name} | ⏰ {due_str}"
-                if a.get("is_submitted") or a.get("status") == "submitted":
+                if _is_task_completed(a, aid=str(a.get("id", ""))):
                     entregues.append(f"{line} *(Entregue)*")
                 else:
                     pendentes.append(line)

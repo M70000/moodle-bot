@@ -241,7 +241,22 @@ class CloudBridgeManager:
                 task["success"] = success
                 task["result_message"] = message
                 task["completed_at"] = time.time()
-                self._completed_tasks[task_id] = task
+                if success:
+                    aid = str(task.get("assignment_id") or "").strip()
+                    cid = str(task.get("channel_id") or "").strip()
+                    raw_id = aid.replace("canvas_", "").replace("c_", "")
+                    dicts_to_update = []
+                    if cid and cid in self._published_assignments_by_channel:
+                        dicts_to_update.append(self._published_assignments_by_channel[cid])
+                    dicts_to_update.append(self._published_assignments)
+
+                    for d in dicts_to_update:
+                        for k in (aid, raw_id, f"canvas_{raw_id}"):
+                            if k and k in d and isinstance(d[k], dict):
+                                d[k]["status"] = "submitted"
+                                d[k]["is_submitted"] = True
+                                d[k]["submission_status"] = "Enviado"
+
                 if event:
                     event.set()
                 return task

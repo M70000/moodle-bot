@@ -69,6 +69,18 @@ class BridgeRunner:
             await self._report_complete(task_id, success, message, url_base)
             executed += 1
 
+            # Se foi uma submissão concluída com sucesso, marca no estado local e sincroniza com o Hub
+            if success:
+                act = task.get("action")
+                aid = str(task.get("assignment_id") or "").strip()
+                if aid and (act in ("approve_assign", "finalize_quiz", "finalize_assignment") or task.get("modo") == "finalizar"):
+                    try:
+                        from src.scheduler.state import DaemonState
+                        DaemonState().mark_submitted(aid)
+                        await self.publish_courses_to_hub(url_base)
+                    except Exception as st_err:
+                        console.print(f"[yellow]Aviso ao atualizar estado pós-submissão: {st_err}[/yellow]")
+
         # Publica lista de cursos e sincroniza materiais periodicamente (heartbeat de presença)
         import time
         now = time.time()

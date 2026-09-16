@@ -197,24 +197,36 @@ class Assignment(BaseModel):
     @property
     def has_grade(self) -> bool:
         """Verifica se o professor já publicou uma nota para a tarefa."""
-        if self.grade_value and self.grade_value.strip() and "não" not in self.grade_value.lower():
+        if self.grade_value and str(self.grade_value).strip() and str(self.grade_value).strip().lower() not in ("none", "null", "-") and "não" not in str(self.grade_value).lower() and "nao" not in str(self.grade_value).lower():
             return True
-        if self.grading_status and any(g in self.grading_status.lower() for g in ["avaliado", "graded"]):
-            return True
+        g_lower = (self.grading_status or "").lower().strip()
+        is_neg = not g_lower or any(neg in g_lower for neg in ["não", "nao", "not", "sem nota", "nenhuma nota", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:avaliad|graded)", g_lower))
+        if not is_neg:
+            if any(g in g_lower for g in ["avaliado", "graded"]):
+                return True
         return False
 
     @property
     def is_submitted(self) -> bool:
         """Verifica se a atividade já foi submetida ou concluída pelo aluno."""
-        status_lower = self.submission_status.lower()
+        extra = getattr(self, "__pydantic_extra__", {}) or {}
+        if extra.get("is_submitted") is True:
+            return True
+
+        if self.has_grade:
+            return True
+
+        status_lower = (self.submission_status or "").lower().strip()
         time_lower = (self.time_remaining or "").lower()
 
-        if self.activity_type == "quiz":
-            return any(term in status_lower for term in ["concluído", "concluido", "feito", "finalizada"])
+        is_neg = not status_lower or any(neg in status_lower for neg in ["não", "nao", "not", "unsubmitted", "sem envio", "nenhum envio", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:enviad|submetid|avaliad)", status_lower))
+        if not is_neg:
+            if any(term in status_lower for term in [
+                "enviado", "submetido", "submitted", "avaliado", "graded",
+                "concluído", "concluido", "feito", "finalizada", "finalizado", "entregue"
+            ]):
+                return True
 
-        # Indicadores fortes de submissão concluída
-        if any(term in status_lower for term in ["enviado para avaliação", "submetido", "submitted", "concluído", "finalizada"]):
-            return True
         if "enviada" in time_lower and "adiantado" in time_lower:
             return True
         if len(self.submitted_files) > 0:

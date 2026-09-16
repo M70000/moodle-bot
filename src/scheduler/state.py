@@ -5,6 +5,7 @@ adiamentos, cancelamentos e confirmações de envio.
 """
 
 import json
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -44,14 +45,22 @@ class DaemonState:
                 continue
 
             # 1. Ignora se já estiver submetida ou cancelada
-            if item.get("is_submitted"):
+            if item.get("is_submitted") is True:
                 continue
-            if item.get("status") in ["submitted", "cancelled"]:
+            if item.get("status") in ["submitted", "cancelled", "completed", "finalized"]:
+                continue
+            grade = str(item.get("grade_value", "") or "").strip()
+            if grade and grade.lower() not in ("none", "null", "-", "") and "não" not in grade.lower() and "nao" not in grade.lower():
                 continue
 
-            sub_status = str(item.get("submission_status", "")).lower()
-            if any(term in sub_status for term in ["concluído", "concluido", "enviado para avaliação", "submetido", "feito", "finalizada"]):
-                continue
+            sub_status = str(item.get("submission_status", "")).lower().strip()
+            is_neg = not sub_status or any(neg in sub_status for neg in ["não", "nao", "not", "unsubmitted", "sem envio", "nenhum envio", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:enviad|submetid|avaliad)", sub_status))
+            if not is_neg:
+                if any(term in sub_status for term in [
+                    "enviado", "submetido", "submitted", "avaliado", "graded",
+                    "concluído", "concluido", "feito", "finalizada", "finalizado", "entregue"
+                ]):
+                    continue
 
             time_rem = str(item.get("time_remaining", "")).lower()
             if "enviada" in time_rem and "adiantado" in time_rem:
@@ -123,9 +132,19 @@ class DaemonState:
 
         existing = self.data["assignments"].get(assignment.id, {})
         current_status = existing.get("status", "pending_review")
-        # Se a tarefa não está submetida no LMS, nunca deve permanecer com status 'submitted'
-        if not assignment.is_submitted and current_status == "submitted":
-            current_status = "pending_review"
+        # Se a tarefa foi marcada ou identificada como submetida, preserva o status
+        if assignment.is_submitted:
+            current_status = "submitted"
+        elif current_status == "submitted":
+            sub_st = str(getattr(assignment, "submission_status", "")).lower().strip()
+            is_neg = not sub_st or any(neg in sub_st for neg in ["não", "nao", "not", "unsubmitted", "sem envio", "nenhum envio", "\ufffd"]) or bool(re.search(r"\bn[aã\W_]*o\s*(?:enviad|submetid|avaliad)", sub_st))
+            if is_neg:
+                current_status = "pending_review"
+
+        final_is_sub = bool(assignment.is_submitted or (current_status == "submitted"))
+        final_sub_status = getattr(assignment, "submission_status", "Não enviado")
+        if final_is_sub and str(final_sub_status).lower().startswith(("não", "nao", "unsubmitted")):
+            final_sub_status = "Enviado"
 
         existing.update({
             "id": assignment.id,
@@ -135,10 +154,10 @@ class DaemonState:
             "due_date": assignment.due_date_str,
             "time_remaining": assignment.time_remaining,
             "activity_type": getattr(assignment, "activity_type", "assign"),
-            "submission_status": getattr(assignment, "submission_status", "Não enviado"),
+            "submission_status": final_sub_status,
             "grade_value": getattr(assignment, "grade_value", None),
-            "has_grade": getattr(assignment, "has_grade", False),
-            "is_submitted": assignment.is_submitted,
+            "has_grade": getattr(assignment, "has_grade", False) or bool(assignment.grade_value),
+            "is_submitted": final_is_sub,
             "platform": platform or getattr(assignment, "platform", "moodle"),
             "submission_types": getattr(assignment, "submission_types", []) or existing.get("submission_types", []),
             "course_id": getattr(assignment, "course_id", ""),
@@ -176,13 +195,25 @@ class DaemonState:
         self.save()
 
     def mark_submitted(self, assign_id: str):
-        """Registra a submissão concluída no Moodle."""
+        """Registra a submissão concluída no Moodle ou Canvas."""
         if "assignments" not in self.data:
             self.data["assignments"] = {}
-        item = self.data["assignments"].setdefault(assign_id, {})
-        item["status"] = "submitted"
-        item["is_submitted"] = True
-        item["updated_at"] = datetime.now().isoformat()
+
+        now_iso = datetime.now().isoformat()
+        raw_id = str(assign_id).replace("canvas_", "").replace("c_", "").strip()
+        keys_to_update = {str(assign_id).strip(), raw_id, f"canvas_{raw_id}"}
+
+        for k in keys_to_update:
+            if not k:
+                continue
+            if k in self.data["assignments"] or k == str(assign_id).strip():
+                item = self.data["assignments"].setdefault(k, {})
+                item["status"] = "submitted"
+                item["is_submitted"] = True
+                if str(item.get("submission_status", "")).lower().startswith(("não", "nao", "unsubmitted", "not")):
+                    item["submission_status"] = "Enviado"
+                item["updated_at"] = now_iso
+
         self.save()
 
     def mark_failed(self, assign_id: str, error: str = ""):
