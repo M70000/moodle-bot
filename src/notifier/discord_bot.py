@@ -1125,37 +1125,27 @@ class ReviewActionView(ui.View):
 
         if self.activity_type == "quiz":
             # Row 0: Ações principais do Quiz
-            if self.platform == "canvas":
-                btn_finalize = ui.Button(
-                    label="Enviar Quiz no Canvas",
-                    style=discord.ButtonStyle.success,
-                    emoji="🚀",
-                    custom_id=f"btn_finalize_{self.assignment_id}",
-                    row=0
-                )
-                btn_finalize.callback = self.finalize_quiz_button
-                self.add_item(btn_finalize)
-            else:
-                btn_fill = ui.Button(
-                    label="Apenas Preencher Quiz" if not draft_saved else "✔ Respostas Preenchidas",
-                    style=discord.ButtonStyle.primary if not draft_saved else discord.ButtonStyle.secondary,
-                    emoji="📝",
-                    custom_id=f"btn_fill_{self.assignment_id}",
-                    disabled=draft_saved,
-                    row=0
-                )
-                btn_fill.callback = self.fill_quiz_button
-                self.add_item(btn_fill)
+            finalize_label = "Enviar Quiz no Canvas" if self.platform == "canvas" else "Enviar Tudo e Terminar"
+            btn_fill = ui.Button(
+                label="Apenas Preencher Quiz" if not draft_saved else "✔ Respostas Preenchidas",
+                style=discord.ButtonStyle.primary if not draft_saved else discord.ButtonStyle.secondary,
+                emoji="📝",
+                custom_id=f"btn_fill_{self.assignment_id}",
+                disabled=draft_saved,
+                row=0
+            )
+            btn_fill.callback = self.fill_quiz_button
+            self.add_item(btn_fill)
 
-                btn_finalize = ui.Button(
-                    label="Enviar Tudo e Terminar",
-                    style=discord.ButtonStyle.success,
-                    emoji="🚀",
-                    custom_id=f"btn_finalize_{self.assignment_id}",
-                    row=0
-                )
-                btn_finalize.callback = self.finalize_quiz_button
-                self.add_item(btn_finalize)
+            btn_finalize = ui.Button(
+                label=finalize_label,
+                style=discord.ButtonStyle.success,
+                emoji="🚀",
+                custom_id=f"btn_finalize_{self.assignment_id}",
+                row=0
+            )
+            btn_finalize.callback = self.finalize_quiz_button
+            self.add_item(btn_finalize)
 
             # Botão Modificar para o Quiz (sempre ativo antes da finalização)
             btn_revise = ui.Button(

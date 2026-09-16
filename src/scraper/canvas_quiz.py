@@ -73,21 +73,27 @@ class CanvasQuizAutomator:
         start_button_selectors = [
             "#take_quiz_link",
             "a#take_quiz_link",
-            "a.take_quiz_button",
-            "a:has-text('Take the Quiz')",
-            "a:has-text('Fazer o teste')",
-            "a:has-text('Responder ao questionário')",
-            "a:has-text('Resume Quiz')",
-            "a:has-text('Retomar teste')",
-            "a:has-text('Continuar teste')",
-            "a:has-text('Take the Quiz Again')",
-            "a:has-text('Fazer o teste novamente')",
-            "button:has-text('Take the Quiz')",
-            "button:has-text('Fazer o teste')",
-            "button:has-text('Resume Quiz')",
-            "button:has-text('Retomar teste')",
             "button#take_quiz_link",
             ".take_quiz_button",
+            "a.take_quiz_button",
+            "a[href*='/take']",
+            "form#take_quiz_form button[type='submit']",
+            "form#take_quiz_form input[type='submit']",
+            "form[action*='/take'] button",
+            "a.btn-primary:has-text('Quiz')",
+            "button.btn-primary:has-text('Quiz')",
+            "a:has-text('Take the Quiz')",
+            "a:has-text('Resume Quiz')",
+            "a:has-text('Take the Quiz Again')",
+            "a:has-text('Fazer o teste')",
+            "a:has-text('Responder ao questionário')",
+            "a:has-text('Retomar teste')",
+            "a:has-text('Continuar teste')",
+            "a:has-text('Fazer o teste novamente')",
+            "button:has-text('Take the Quiz')",
+            "button:has-text('Resume Quiz')",
+            "button:has-text('Fazer o teste')",
+            "button:has-text('Retomar teste')",
         ]
 
         for sel in start_button_selectors:
@@ -107,25 +113,70 @@ class CanvasQuizAutomator:
                 except Exception:
                     continue
 
-        # Confirma modais de início se houverem
+        # Confirma modais de início / atenção se houverem (ex: dialog 'Attention!' com botão 'Begin')
+        # Prioriza seletores de estrutura DOM independentes de idioma, com fallbacks de texto
         modal_confirm_selectors = [
-            ".ui-dialog button:has-text('Take the Quiz')",
-            ".ui-dialog button:has-text('Fazer o teste')",
-            ".ui-dialog button:has-text('Iniciar')",
-            "div[role='dialog'] button.btn-primary",
+            ".ui-dialog:visible .ui-dialog-buttonset button",
+            ".ui-dialog:visible .ui-dialog-buttonpane button:not(.ui-dialog-titlebar-close)",
+            ".ui-dialog:visible button.btn-primary",
+            ".ui-dialog:visible button:not(.ui-dialog-titlebar-close)",
+            "div[role='dialog']:visible .ui-dialog-buttonset button",
+            "div[role='dialog']:visible button.btn-primary",
+            "div[role='dialog']:visible button:not(.ui-dialog-titlebar-close):not([aria-label*='Close'])",
+            "button:has-text('Begin')",
+            "button:has-text('Take the Quiz')",
+            "button:has-text('Resume Quiz')",
+            "button:has-text('Start')",
+            "button:has-text('Continue')",
+            "button:has-text('Fazer o teste')",
+            "button:has-text('Iniciar')",
+            "button:has-text('Começar')",
+            "button:has-text('Continuar')",
+            "button:has-text('Retomar')",
         ]
-        for m_sel in modal_confirm_selectors:
-            m_loc = page.locator(m_sel)
-            if await m_loc.count() > 0:
-                try:
-                    if await m_loc.first.is_visible():
-                        await m_loc.first.click()
-                        await asyncio.sleep(1.5)
-                        break
-                except Exception:
-                    continue
 
-        return "/take" in page.url or await page.locator("#submit_quiz_form, .question, .quiz_sortable").count() > 0
+        for _ in range(6):  # aguarda até 3 segundos caso o modal anime na tela
+            if "/take" in page.url or await page.locator("#submit_quiz_form, .question, .quiz_sortable, #questions, .display_question").count() > 0:
+                break
+
+            clicked_modal = False
+            for m_sel in modal_confirm_selectors:
+                m_loc = page.locator(m_sel)
+                if await m_loc.count() > 0:
+                    for idx in range(await m_loc.count()):
+                        btn = m_loc.nth(idx)
+                        try:
+                            if await btn.is_visible():
+                                b_text = (await btn.inner_text()).strip()
+                                console.print(f"[cyan]Confirmando modal do Canvas via '{m_sel}' ('{b_text}')...[/cyan]")
+                                await btn.click()
+                                try:
+                                    await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                                except Exception:
+                                    pass
+                                await asyncio.sleep(2.0)
+                                clicked_modal = True
+                                break
+                        except Exception:
+                            continue
+                if clicked_modal:
+                    break
+
+            if clicked_modal:
+                break
+            await asyncio.sleep(0.5)
+
+        take_indicators = [
+            "/take" in page.url,
+            await page.locator("#submit_quiz_form").count() > 0,
+            await page.locator(".question").count() > 0,
+            await page.locator("#questions").count() > 0,
+            await page.locator(".quiz_sortable").count() > 0,
+            await page.locator(".display_question").count() > 0,
+            await page.locator("#submit_quiz_button").count() > 0,
+            await page.locator("button.next-question").count() > 0,
+        ]
+        return any(take_indicators)
 
     async def inspect_and_extract_quiz(self, quiz_url: str, on_log: Optional[Any] = None) -> Dict[str, Any]:
         """Acessa a tentativa do Quiz no Canvas e extrai enunciados reais, códigos e alternativas."""
@@ -328,9 +379,15 @@ class CanvasQuizAutomator:
                         });
                     }
 
+                    let parsedNumber = qIndex + 1;
+                    const numMatch = nameText.match(/\d+/);
+                    if (numMatch) {
+                        parsedNumber = parseInt(numMatch[0], 10);
+                    }
+
                     questions.push({
                         canvas_id: qCanvasId,
-                        number: qIndex + 1,
+                        number: parsedNumber,
                         qNumberText: nameText,
                         name: nameText,
                         points: pointsText,
@@ -415,163 +472,194 @@ class CanvasQuizAutomator:
 
             await _emit_log(on_log, "Iniciando preenchimento humanizado das questões no Canvas...")
 
-            # Mapeia apenas os contêineres reais de questões na tela
-            q_locators = page.locator(".question.display_question")
-            if await q_locators.count() == 0:
-                q_locators = page.locator("#questions .question, .quiz_sortable .question_holder .question")
-
-            q_count = await q_locators.count()
             total_filled = 0
             campo_counter = 1
+            max_pages = 25
+            current_page = 0
 
-            for idx in range(q_count):
-                q_el = q_locators.nth(idx)
-                q_num = idx + 1
-                q_name = f"Q{q_num}"
+            while current_page < max_pages:
+                current_page += 1
 
-                # 1. Rádios (Múltipla escolha)
-                radios = q_el.locator(".answers .answer input[type='radio']")
-                r_count = await radios.count()
-                if r_count > 0:
-                    target_val = (
-                        answers_dict.get(q_name)
-                        or answers_dict.get(f"QUESTAO_{q_num}")
-                        or answers_dict.get(f"QUESTAO{q_num}")
-                        or answers_dict.get(str(q_num))
-                        or ""
-                    )
+                # Mapeia apenas os contêineres reais de questões na tela atual
+                q_locators = page.locator(".question.display_question")
+                if await q_locators.count() == 0:
+                    q_locators = page.locator("#questions .question, .quiz_sortable .question_holder .question")
 
-                    chosen = False
-                    if target_val:
-                        norm_target = target_val.lower().strip()
-                        for r_idx in range(r_count):
-                            r_input = radios.nth(r_idx)
-                            r_id = await r_input.get_attribute("id")
-                            lbl_text = ""
-                            if r_id:
-                                lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
-                                if await lbl.count() > 0:
-                                    lbl_text = (await lbl.first.inner_text()).lower().strip()
-                            if not lbl_text:
-                                ans_wrap = r_input.locator("..")
-                                lbl_text = (await ans_wrap.inner_text()).lower().strip()
+                q_count = await q_locators.count()
+                if q_count == 0:
+                    break
 
-                            opt_letter = chr(97 + r_idx)  # 'a', 'b', 'c', 'd'
-                            if (norm_target == lbl_text
-                                or (len(norm_target) > 2 and norm_target in lbl_text)
-                                or (len(lbl_text) > 2 and lbl_text in norm_target)
-                                or norm_target.startswith(f"{opt_letter})")
-                                or norm_target.startswith(f"{opt_letter}.")
-                                or norm_target == opt_letter):
-                                await r_input.check(force=True)
-                                chosen = True
-                                total_filled += 1
-                                await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
-                                break
-
-                    # Se não encontrou pelo nome da questão, tenta casar com o texto de qualquer resposta
-                    if not chosen:
-                        for k, v in answers_dict.items():
-                            if v:
-                                norm_v = str(v).lower().strip()
-                                for r_idx in range(r_count):
-                                    r_input = radios.nth(r_idx)
-                                    r_id = await r_input.get_attribute("id")
-                                    lbl_text = ""
-                                    if r_id:
-                                        lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
-                                        if await lbl.count() > 0:
-                                            lbl_text = (await lbl.first.inner_text()).lower().strip()
-                                    if norm_v and (norm_v == lbl_text or (len(norm_v) > 3 and norm_v in lbl_text)):
-                                        await r_input.check(force=True)
-                                        chosen = True
-                                        total_filled += 1
-                                        await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
-                                        break
-                            if chosen:
-                                break
-
-                # 2. Checkboxes (Múltiplas respostas)
-                checks = q_el.locator(".answers .answer input[type='checkbox']")
-                c_count = await checks.count()
-                if c_count > 0:
-                    target_val = answers_dict.get(q_name) or answers_dict.get(str(q_num)) or ""
-                    if target_val:
-                        norm_target = target_val.lower().strip()
-                        for c_idx in range(c_count):
-                            c_input = checks.nth(c_idx)
-                            c_id = await c_input.get_attribute("id")
-                            lbl_text = ""
-                            if c_id:
-                                lbl = q_el.locator(f"#{c_id}_label, label[for='{c_id}']")
-                                if await lbl.count() > 0:
-                                    lbl_text = (await lbl.first.inner_text()).lower().strip()
-                            if lbl_text and (lbl_text in norm_target or norm_target in lbl_text):
-                                await c_input.check(force=True)
-                                total_filled += 1
-
-                # 3. Dropdowns / Selects (Questões de Correspondência / Matching)
-                selects = q_el.locator(".answers select, select.question_input")
-                s_count = await selects.count()
-                for s_idx in range(s_count):
-                    sel = selects.nth(s_idx)
-                    term = await sel.evaluate("el => { const row = el.closest('.answer'); const lbl = row ? row.querySelector('label') : null; return lbl ? lbl.innerText.trim() : ''; }")
-
-                    val_to_select = (
-                        answers_dict.get(f"CAMPO_{campo_counter}")
-                        or (answers_dict.get(term.upper()) if term else None)
-                        or answers_dict.get(f"Q{q_num}_{s_idx+1}")
-                    )
-                    campo_counter += 1
-
-                    if val_to_select:
-                        try:
-                            norm_target = str(val_to_select).lower().strip()
-                            opts = await sel.evaluate(
-                                "el => Array.from(el.options).map(o => ({val: o.value, text: o.text.trim()}))"
-                            )
-                            best_val = None
-                            for opt in opts:
-                                if not opt.get("val") or "[ choose ]" in opt["text"].lower() or "[ escolha ]" in opt["text"].lower():
-                                    continue
-                                norm_opt = opt["text"].lower().strip()
-                                if norm_target == norm_opt or norm_target in norm_opt or norm_opt in norm_target:
-                                    best_val = opt["val"]
-                                    break
-                            if best_val:
-                                await sel.select_option(value=best_val)
-                                total_filled += 1
-                                await _emit_log(on_log, f"✔ Questão {q_num} ({term or f'Item {s_idx+1}'}): Opção associada com sucesso!")
-                        except Exception as s_err:
-                            console.print(f"[yellow]Aviso ao selecionar opção no Canvas: {s_err}[/yellow]")
-
-                # 4. Inputs de texto e lacunas (Apenas elementos visíveis e habilitados)
-                text_inps = q_el.locator(".answers input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), .answers textarea, .question_text input:not([type='hidden']), .question_text textarea")
-                t_count = await text_inps.count()
-                for t_idx in range(t_count):
-                    t_input = text_inps.nth(t_idx)
+                for idx in range(q_count):
+                    q_el = q_locators.nth(idx)
+                    q_num = idx + 1
                     try:
-                        # Ignora elementos ocultos (ex: textareas de edição interna do professor)
-                        if not await t_input.is_visible() or await t_input.is_disabled():
-                            continue
+                        name_el = q_el.locator(".question_name, .name, .header .name").first
+                        if await name_el.count() > 0:
+                            name_str = await name_el.inner_text()
+                            m = re.search(r'\d+', name_str)
+                            if m:
+                                q_num = int(m.group(0))
                     except Exception:
-                        continue
+                        pass
+                    q_name = f"Q{q_num}"
 
-                    val_to_type = (
-                        answers_dict.get(f"CAMPO_{campo_counter}")
-                        or answers_dict.get(q_name)
-                        or answers_dict.get(f"Q{q_num}_{t_idx+1}")
-                    )
-                    campo_counter += 1
+                    # 1. Rádios (Múltipla escolha)
+                    radios = q_el.locator(".answers .answer input[type='radio']")
+                    r_count = await radios.count()
+                    if r_count > 0:
+                        target_val = (
+                            answers_dict.get(q_name)
+                            or answers_dict.get(f"QUESTAO_{q_num}")
+                            or answers_dict.get(f"QUESTAO{q_num}")
+                            or answers_dict.get(str(q_num))
+                            or ""
+                        )
 
-                    if val_to_type:
+                        chosen = False
+                        if target_val:
+                            norm_target = target_val.lower().strip()
+                            for r_idx in range(r_count):
+                                r_input = radios.nth(r_idx)
+                                r_id = await r_input.get_attribute("id")
+                                lbl_text = ""
+                                if r_id:
+                                    lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
+                                    if await lbl.count() > 0:
+                                        lbl_text = (await lbl.first.inner_text()).lower().strip()
+                                if not lbl_text:
+                                    ans_wrap = r_input.locator("..")
+                                    lbl_text = (await ans_wrap.inner_text()).lower().strip()
+
+                                opt_letter = chr(97 + r_idx)  # 'a', 'b', 'c', 'd'
+                                if (norm_target == lbl_text
+                                    or (len(norm_target) > 2 and norm_target in lbl_text)
+                                    or (len(lbl_text) > 2 and lbl_text in norm_target)
+                                    or norm_target.startswith(f"{opt_letter})")
+                                    or norm_target.startswith(f"{opt_letter}.")
+                                    or norm_target == opt_letter):
+                                    await r_input.check(force=True)
+                                    chosen = True
+                                    total_filled += 1
+                                    await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
+                                    break
+
+                        # Se não encontrou pelo nome da questão, tenta casar com o texto de qualquer resposta
+                        if not chosen:
+                            for k, v in answers_dict.items():
+                                if v:
+                                    norm_v = str(v).lower().strip()
+                                    for r_idx in range(r_count):
+                                        r_input = radios.nth(r_idx)
+                                        r_id = await r_input.get_attribute("id")
+                                        lbl_text = ""
+                                        if r_id:
+                                            lbl = q_el.locator(f"#{r_id}_label, label[for='{r_id}']")
+                                            if await lbl.count() > 0:
+                                                lbl_text = (await lbl.first.inner_text()).lower().strip()
+                                        if norm_v and (norm_v == lbl_text or (len(norm_v) > 3 and norm_v in lbl_text)):
+                                            await r_input.check(force=True)
+                                            chosen = True
+                                            total_filled += 1
+                                            await _emit_log(on_log, f"✔ Questão {q_num}: Alternativa selecionada ({lbl_text[:35]}...)")
+                                            break
+                                if chosen:
+                                    break
+
+                    # 2. Checkboxes (Múltiplas respostas)
+                    checks = q_el.locator(".answers .answer input[type='checkbox']")
+                    c_count = await checks.count()
+                    if c_count > 0:
+                        target_val = answers_dict.get(q_name) or answers_dict.get(str(q_num)) or ""
+                        if target_val:
+                            norm_target = target_val.lower().strip()
+                            for c_idx in range(c_count):
+                                c_input = checks.nth(c_idx)
+                                c_id = await c_input.get_attribute("id")
+                                lbl_text = ""
+                                if c_id:
+                                    lbl = q_el.locator(f"#{c_id}_label, label[for='{c_id}']")
+                                    if await lbl.count() > 0:
+                                        lbl_text = (await lbl.first.inner_text()).lower().strip()
+                                if lbl_text and (lbl_text in norm_target or norm_target in lbl_text):
+                                    await c_input.check(force=True)
+                                    total_filled += 1
+
+                    # 3. Dropdowns / Selects (Questões de Correspondência / Matching)
+                    selects = q_el.locator(".answers select, select.question_input")
+                    s_count = await selects.count()
+                    for s_idx in range(s_count):
+                        sel = selects.nth(s_idx)
+                        term = await sel.evaluate("el => { const row = el.closest('.answer'); const lbl = row ? row.querySelector('label') : null; return lbl ? lbl.innerText.trim() : ''; }")
+
+                        val_to_select = (
+                            answers_dict.get(f"CAMPO_{campo_counter}")
+                            or (answers_dict.get(term.upper()) if term else None)
+                            or answers_dict.get(f"Q{q_num}_{s_idx+1}")
+                        )
+                        campo_counter += 1
+
+                        if val_to_select:
+                            try:
+                                norm_target = str(val_to_select).lower().strip()
+                                opts = await sel.evaluate(
+                                    "el => Array.from(el.options).map(o => ({val: o.value, text: o.text.trim()}))"
+                                )
+                                best_val = None
+                                for opt in opts:
+                                    if not opt.get("val") or "[ choose ]" in opt["text"].lower() or "[ escolha ]" in opt["text"].lower():
+                                        continue
+                                    norm_opt = opt["text"].lower().strip()
+                                    if norm_target == norm_opt or norm_target in norm_opt or norm_opt in norm_target:
+                                        best_val = opt["val"]
+                                        break
+                                if best_val:
+                                    await sel.select_option(value=best_val)
+                                    total_filled += 1
+                                    await _emit_log(on_log, f"✔ Questão {q_num} ({term or f'Item {s_idx+1}'}): Opção associada com sucesso!")
+                            except Exception as s_err:
+                                console.print(f"[yellow]Aviso ao selecionar opção no Canvas: {s_err}[/yellow]")
+
+                    # 4. Inputs de texto e lacunas (Apenas elementos visíveis e habilitados)
+                    text_inps = q_el.locator(".answers input:not([type='radio']):not([type='checkbox']):not([type='hidden']):not([type='submit']), .answers textarea, .question_text input:not([type='hidden']), .question_text textarea")
+                    t_count = await text_inps.count()
+                    for t_idx in range(t_count):
+                        t_input = text_inps.nth(t_idx)
                         try:
-                            await t_input.scroll_into_view_if_needed()
-                            await t_input.fill(str(val_to_type))
-                            total_filled += 1
-                            await asyncio.sleep(0.3)
+                            # Ignora elementos ocultos (ex: textareas de edição interna do professor)
+                            if not await t_input.is_visible() or await t_input.is_disabled():
+                                continue
                         except Exception:
-                            pass
+                            continue
+
+                        val_to_type = (
+                            answers_dict.get(f"CAMPO_{campo_counter}")
+                            or answers_dict.get(q_name)
+                            or answers_dict.get(f"Q{q_num}_{t_idx+1}")
+                        )
+                        campo_counter += 1
+
+                        if val_to_type:
+                            try:
+                                await t_input.scroll_into_view_if_needed()
+                                await t_input.fill(str(val_to_type))
+                                total_filled += 1
+                                await asyncio.sleep(0.3)
+                            except Exception:
+                                pass
+
+                # Se houver botão de 'Next' (One Question at a Time), avança para a próxima questão
+                next_btn = page.locator("button.next-question, button#next-question, button[name='next'], a.next-question, button:has-text('Next'), button:has-text('Próxima')").first
+                if await next_btn.count() > 0 and await next_btn.is_visible():
+                    await _emit_log(on_log, "Avançando para a próxima questão do Canvas...")
+                    await next_btn.click()
+                    await asyncio.sleep(2.0)
+                    try:
+                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    except Exception:
+                        pass
+                    continue
+                else:
+                    break
 
             await _emit_log(on_log, f"📝 Preenchimento finalizado ({total_filled} respostas inseridas).")
 
@@ -594,11 +682,11 @@ class CanvasQuizAutomator:
                 "#submit_quiz_button",
                 "button#submit_quiz_button",
                 "input#submit_quiz_button",
+                ".submit_quiz_button",
                 "button:has-text('Submit Quiz')",
                 "button:has-text('Enviar teste')",
                 "button:has-text('Submeter teste')",
                 "button:has-text('Entregar teste')",
-                ".submit_quiz_button",
             ]
 
             submitted = False
@@ -619,9 +707,16 @@ class CanvasQuizAutomator:
                         continue
 
             if submitted:
-                # Trata modal de confirmação do Canvas se existir
+                # Trata modal de confirmação do Canvas se existir (ex: Submit Anyway)
                 await asyncio.sleep(1.0)
-                confirm_modal_btn = page.locator(".ui-dialog button:has-text('Submit'), div[role='dialog'] button:has-text('Submit'), div[role='dialog'] button.btn-primary")
+                confirm_modal_btn = page.locator(
+                    ".ui-dialog:visible .ui-dialog-buttonset button, "
+                    ".ui-dialog:visible button.btn-primary, "
+                    "div[role='dialog']:visible .ui-dialog-buttonset button, "
+                    "div[role='dialog']:visible button.btn-primary, "
+                    "button:has-text('Submit Anyway'), "
+                    "button:has-text('Enviar mesmo assim')"
+                )
                 if await confirm_modal_btn.count() > 0:
                     try:
                         if await confirm_modal_btn.first.is_visible():
