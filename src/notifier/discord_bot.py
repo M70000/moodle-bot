@@ -249,10 +249,90 @@ def find_assignment_by_query(query: Optional[str], assignments: Optional[Dict[st
     return None
 
 
-def get_available_courses() -> List[str]:
+def is_canvas_assignment_item(key: str, item: Dict[str, Any], state: Optional[Any] = None) -> bool:
+    """Identifica com alta precisão se um item do catálogo pertence ao Canvas LMS."""
+    if not isinstance(item, dict):
+        return False
+
+    plat = str(item.get("platform", "")).lower().strip()
+    if plat == "canvas":
+        return True
+    if plat == "moodle":
+        url = str(item.get("url", "")).lower()
+        if "instructure.com" in url or ("/courses/" in url and "/assignments/" in url):
+            return True
+        return False
+
+    str_k = str(key).lower().strip()
+    if str_k.startswith(("canvas_", "c_")):
+        return True
+
+    url = str(item.get("url", "")).lower()
+    if "instructure.com" in url or ("/courses/" in url and ("/assignments/" in url or "/quizzes/" in url)):
+        return True
+
+    canvas_base = (getattr(settings, "CANVAS_BASE_URL", "") or "").lower().strip()
+    if canvas_base:
+        domain = canvas_base.split("//")[-1].split("/")[0]
+        if domain and domain in url:
+            return True
+
+    # Checagem por nome da disciplina se coincide com curso registrado do Canvas
+    c_name = normalize_text(item.get("course") or item.get("course_name") or "")
+    if c_name:
+        st = state
+        if not st:
+            try:
+                st = DaemonState()
+            except Exception:
+                pass
+        if st and hasattr(st, "data"):
+            canvas_courses = st.data.get("canvas_courses", [])
+            for cc in canvas_courses:
+                cc_name = cc.get("name") if isinstance(cc, dict) else str(cc)
+                if cc_name and normalize_text(cc_name) == c_name:
+                    return True
+
+    if item.get("is_coding_task"):
+        return True
+
+    return False
+
+
+def filter_assignments_by_provider(
+    assignments: Dict[str, Any],
+    provider: Optional[str] = None,
+    state: Optional[Any] = None
+) -> Dict[str, Any]:
+    """Filtra o catálogo de tarefas de acordo com o provedor educacional ('moodle', 'canvas' ou 'multi')."""
+    prov = (provider or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
+    if prov == "multi":
+        return dict(assignments)
+
+    st = state
+    if not st:
+        try:
+            st = DaemonState()
+        except Exception:
+            pass
+
+    filtered = {}
+    for k, v in assignments.items():
+        if not isinstance(v, dict):
+            continue
+        is_canvas = is_canvas_assignment_item(str(k), v, state=st)
+        if prov == "canvas" and not is_canvas:
+            continue
+        if prov == "moodle" and is_canvas:
+            continue
+        filtered[k] = v
+    return filtered
+
+
+def get_available_courses(provider: Optional[str] = None) -> List[str]:
     """Retorna os nomes das disciplinas ativas respeitando estritamente o LMS_PROVIDER configurado."""
+    prov = (provider or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
     courses_set: set = set()
-    provider = getattr(settings, "LMS_PROVIDER", "moodle").strip().lower()
 
     state = None
     try:
@@ -260,48 +340,65 @@ def get_available_courses() -> List[str]:
     except Exception:
         pass
 
-    # 1. Se Canvas ou Multi: inclui cursos do Canvas
-    if provider in ("canvas", "multi") and state:
-        canvas_courses = state.data.get("canvas_courses", [])
-        for cc in canvas_courses:
-            if isinstance(cc, dict) and cc.get("name"):
-                courses_set.add(cc["name"].strip())
-            elif isinstance(cc, str) and cc.strip():
-                courses_set.add(cc.strip())
+    canvas_course_names = set()
+    moodle_course_names = set()
 
-    # 2. Se Moodle ou Multi: inclui pastas em storage/materials/ e cursos Moodle registrados
-    if provider in ("moodle", "multi"):
+    if state:
+        for cc in state.data.get("canvas_courses", []):
+            cname = cc.get("name") if isinstance(cc, dict) else str(cc)
+            if cname and cname.strip():
+                canvas_course_names.add(cname.strip())
+
+        for mc in state.data.get("courses", []):
+            if isinstance(mc, str) and mc.strip():
+                moodle_course_names.add(mc.strip())
+
+        for item_id, item in state.data.get("assignments", {}).items():
+            if not isinstance(item, dict):
+                continue
+            c_item = (item.get("course") or item.get("course_name") or "").strip()
+            if not c_item:
+                continue
+            if is_canvas_assignment_item(str(item_id), item, state=state):
+                canvas_course_names.add(c_item)
+            else:
+                moodle_course_names.add(c_item)
+
+    norm_canvas_names = {normalize_text(cn) for cn in canvas_course_names if cn}
+    norm_moodle_names = {normalize_text(mn) for mn in moodle_course_names if mn}
+
+    # 1. Se Canvas ou Multi: inclui cursos do Canvas
+    if prov in ("canvas", "multi"):
+        courses_set.update(canvas_course_names)
+
+    # 2. Se Moodle ou Multi: inclui cursos do Moodle e pastas locais legítimas da UFMG
+    if prov in ("moodle", "multi"):
+        courses_set.update(moodle_course_names)
+
         mat_dir = settings.STORAGE_MATERIALS_DIR
         if mat_dir.exists():
             for p in mat_dir.iterdir():
                 if p.is_dir() and not p.name.startswith("."):
+                    p_norm = normalize_text(p.name)
+                    # CRÍTICO: No modo Moodle, NUNCA adiciona pasta que seja do Canvas
+                    if prov == "moodle" and p_norm in norm_canvas_names:
+                        continue
+                    # No modo Canvas, NUNCA adiciona pasta do Moodle
+                    if prov == "canvas" and p_norm in norm_moodle_names:
+                        continue
                     courses_set.add(p.name)
-        if state:
-            moodle_courses = state.data.get("courses", [])
-            for mc in moodle_courses:
-                if isinstance(mc, str) and mc.strip():
-                    courses_set.add(mc.strip())
 
-    # 3. Disciplinas das tarefas catalogadas no state.json (filtradas estritamente pelo provedor)
-    if state:
-        for item_id, item in state.data.get("assignments", {}).items():
-            if not isinstance(item, dict):
-                continue
-            item_plat = item.get("platform", "").lower()
-            item_url = item.get("url", "").lower()
-            is_canvas_item = (
-                item_plat == "canvas"
-                or str(item_id).startswith(("canvas_", "c_"))
-                or "instructure.com" in item_url
-            )
-            if provider == "canvas" and not is_canvas_item:
-                continue
-            if provider == "moodle" and is_canvas_item:
-                continue
-
-            course = (item.get("course") or item.get("course_name") or "").strip()
-            if course:
-                courses_set.add(course)
+    # Filtragem estrita final para garantir zero vazamento entre plataformas
+    if prov == "moodle":
+        courses_set = {
+            c for c in courses_set
+            if normalize_text(c) not in norm_canvas_names
+        }
+    elif prov == "canvas":
+        courses_set = {
+            c for c in courses_set
+            if normalize_text(c) not in norm_moodle_names
+        }
 
     return sorted(courses_set)
 
@@ -394,7 +491,7 @@ def resolve_interaction_student_channels(interaction: Optional[Any]) -> Dict[str
 
 
 async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
-    """Retorna o dicionário de tarefas ativas isoladas por aluno/canal (Moodle + Canvas)."""
+    """Retorna o dicionário de tarefas ativas isoladas por aluno/canal (Moodle + Canvas) e filtradas pelo LMS_PROVIDER."""
     ch_info = resolve_interaction_student_channels(interaction)
     target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
     my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
@@ -405,7 +502,8 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
             from src.notifier.bridge_manager import cloud_bridge
             rel_assign = await cloud_bridge.get_published_assignments(channel_id=target_channel)
             if rel_assign:
-                return rel_assign
+                rel_prov = cloud_bridge.get_published_provider(channel_id=target_channel) or getattr(settings, "LMS_PROVIDER", "moodle").lower()
+                return filter_assignments_by_provider(rel_assign, rel_prov)
         except Exception:
             pass
 
@@ -424,17 +522,7 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
             if local_assignments:
-                for k, v in local_assignments.items():
-                    if not isinstance(v, dict):
-                        continue
-                    plat = v.get("platform", "").lower()
-                    url = v.get("url", "").lower()
-                    is_canvas = plat == "canvas" or str(k).startswith(("canvas_", "c_")) or "instructure.com" in url
-                    if prov == "canvas" and not is_canvas:
-                        continue
-                    if prov == "moodle" and is_canvas:
-                        continue
-                    assignments[k] = v
+                assignments = filter_assignments_by_provider(local_assignments, prov, state=state)
         except Exception:
             pass
 
@@ -463,7 +551,8 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
                 resp = await client.get(f"{hub_url}/api/bridge/assignments", params={"channel_id": target_channel})
                 if resp.status_code == 200:
                     data = resp.json()
-                    return data.get("assignments", {})
+                    rel_prov = data.get("lms_provider") or getattr(settings, "LMS_PROVIDER", "moodle").lower()
+                    return filter_assignments_by_provider(data.get("assignments", {}), rel_prov)
         except Exception:
             pass
 
@@ -472,7 +561,7 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
 
 
 def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
-    """Retorna o catálogo de atividades para contextos síncronos isolado por aluno/canal."""
+    """Retorna o catálogo de atividades para contextos síncronos isolado por aluno/canal e filtrado por provedor."""
     ch_info = resolve_interaction_student_channels(interaction)
     target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
     my_channel = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "").strip()
@@ -483,7 +572,8 @@ def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
     try:
         from src.notifier.bridge_manager import cloud_bridge
         if target_channel and target_channel in cloud_bridge._published_assignments_by_channel:
-            return dict(cloud_bridge._published_assignments_by_channel[target_channel])
+            rel_prov = cloud_bridge.get_published_provider(channel_id=target_channel) or getattr(settings, "LMS_PROVIDER", "moodle").lower()
+            return filter_assignments_by_provider(cloud_bridge._published_assignments_by_channel[target_channel], rel_prov)
     except Exception:
         pass
 
@@ -494,17 +584,7 @@ def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
             if local_assignments:
-                for k, v in local_assignments.items():
-                    if not isinstance(v, dict):
-                        continue
-                    plat = v.get("platform", "").lower()
-                    url = v.get("url", "").lower()
-                    is_canvas = plat == "canvas" or str(k).startswith(("canvas_", "c_")) or "instructure.com" in url
-                    if prov == "canvas" and not is_canvas:
-                        continue
-                    if prov == "moodle" and is_canvas:
-                        continue
-                    assignments[k] = v
+                assignments = filter_assignments_by_provider(local_assignments, prov, state=state)
         except Exception:
             pass
         return assignments
@@ -517,7 +597,7 @@ async def course_autocomplete(
     interaction: discord.Interaction,
     current: Optional[str] = ""
 ) -> List[app_commands.Choice[str]]:
-    """Autocomplete interativo para seleção de disciplinas no Discord com isolamento por aluno."""
+    """Autocomplete interativo para seleção de disciplinas no Discord com isolamento por aluno e por provedor."""
     try:
         ch_info = resolve_interaction_student_channels(interaction)
         target_channel = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
@@ -526,18 +606,21 @@ async def course_autocomplete(
         courses: List[str] = []
         if _is_relay_mode():
             from src.notifier.bridge_manager import cloud_bridge
+            rel_prov = cloud_bridge.get_published_provider(channel_id=target_channel) or getattr(settings, "LMS_PROVIDER", "moodle").lower()
             courses = await cloud_bridge.get_published_courses(channel_id=target_channel)
             if not courses:
                 pub_assign = await cloud_bridge.get_published_assignments(channel_id=target_channel)
+                filtered_pub = filter_assignments_by_provider(pub_assign, rel_prov)
                 courses = sorted({
                     item.get("course", "").strip()
-                    for item in pub_assign.values()
+                    for item in filtered_pub.values()
                     if item.get("course")
                 })
         else:
             is_my_user = not target_channel or not my_channel or target_channel == my_channel
             if is_my_user:
-                courses = get_available_courses()
+                prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+                courses = get_available_courses(provider=prov)
             else:
                 hub_url = (getattr(settings, "RENDER_URL", "") or "").rstrip("/")
                 if hub_url and target_channel:
@@ -2368,8 +2451,20 @@ def build_tarefas_embed(
     - Visão Geral (disciplina=None): panorama das matérias com resumo de pendências, próximas entregas a vencer e estatísticas.
     - Visão Detalhada (disciplina=<nome>): lista minuciosa de trabalhos, questionários e tarefas concluídas com notas.
     """
+    prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+    if _is_relay_mode():
+        try:
+            from src.notifier.bridge_manager import cloud_bridge
+            ch_info = resolve_interaction_student_channels(interaction)
+            t_chan = ch_info.get("DISCORD_CHANNEL_ID", "").strip()
+            prov = cloud_bridge.get_published_provider(channel_id=t_chan) or prov
+        except Exception:
+            pass
+
     if assignments is None:
         assignments = _get_sync_assignments(interaction=interaction)
+    else:
+        assignments = filter_assignments_by_provider(assignments, prov)
 
     if not assignments:
         desc = "📋 Nenhuma atividade cadastrada no momento."
@@ -2481,6 +2576,15 @@ def build_tarefas_embed(
     course_groups: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
     all_pending: List[Dict[str, Any]] = []
     all_completed: List[Dict[str, Any]] = []
+
+    # Inicializa todas as matérias ativas do aluno para que disciplinas com 0 pendências também apareçam
+    try:
+        for c_avail in get_available_courses(provider=prov):
+            c_clean = clean_display_course(c_avail) or c_avail
+            if c_clean not in course_groups:
+                course_groups[c_clean] = {"assigns": [], "quizzes": [], "completed": []}
+    except Exception:
+        pass
 
     for assign_id, item in assignments.items():
         c_raw = (item.get("course") or "Disciplina Geral").strip()
@@ -3037,7 +3141,9 @@ async def _execute_solve_flow(
         title=target_item.get("title", tarefa),
         url=target_item.get("url", ""),
         description=target_item.get("description", ""),
-        activity_type=target_item.get("activity_type", "quiz" if ("mod/quiz" in target_item.get("url", "") or "/quizzes/" in target_item.get("url", "")) else "assign")
+        activity_type=target_item.get("activity_type", "quiz" if ("mod/quiz" in target_item.get("url", "") or "/quizzes/" in target_item.get("url", "")) else "assign"),
+        platform=platform,
+        submission_types=target_item.get("submission_types", []) or []
     )
 
     if platform == "canvas":
@@ -3198,7 +3304,7 @@ async def _execute_solve_flow(
                     is_coding = getattr(assign_obj, "is_coding_task", False) or "coding task" in assign_obj.title.lower() or "snapshot" in assign_obj.description.lower() or bool(direct_editor_url)
 
                     # Tarefas que não possuem entrega online no Canvas (ex: apenas instrucionais / none)
-                    if not assign_obj.has_online_submission or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
+                    if not getattr(assign_obj, "has_online_submission", True) or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
                         sent = await notifier.send_assignment_review(
                             assign_obj, draft, draft_saved=True, is_finalized=False,
                             final_status_message="Atividade informativa / instrucional (sem entrega online no Canvas). Rascunho salvo para seus estudos.",
@@ -3297,7 +3403,7 @@ async def _execute_solve_flow(
                     found_urls = re.findall(r"https?://[^\s\)\"\'<>]+", draft_text)
 
                     # Tarefas que não possuem entrega online no Canvas (ex: 1.00 com submission_types: ['none'] ou [])
-                    if not assign_obj.has_online_submission or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
+                    if not getattr(assign_obj, "has_online_submission", True) or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
                         submit_success = True
                         submit_msg = "Atividade concluída com sucesso! Esta tarefa é apenas instrucional / informativa e não aceita submissão no Canvas (tipo de envio: 'none'). A resolução foi salva para seus estudos."
                         DaemonState().mark_submitted(assign_obj.id)
@@ -3870,6 +3976,13 @@ class RevisionModal(ui.Modal):
 
             notifier = MoodleDiscordNotifier()
             act_type = getattr(self._draft, "activity_type", self._activity_type) or "assign"
+            platform = getattr(self._draft, "platform", None)
+            if not platform:
+                url_lower = (self._assignment_url or "").lower()
+                if "instructure.com" in url_lower or str(self._draft.assignment_id).startswith(("canvas_", "c_")):
+                    platform = "canvas"
+                else:
+                    platform = "moodle"
             assign_obj = Assignment(
                 id=self._draft.assignment_id,
                 course_id="",
@@ -3878,6 +3991,8 @@ class RevisionModal(ui.Modal):
                 url=self._assignment_url,
                 description="",
                 activity_type=act_type,
+                platform=platform,
+                submission_types=getattr(self._draft, "submission_types", []) or []
             )
 
             target_channel = interaction.channel

@@ -122,12 +122,14 @@ class BridgeRunner:
             return False
         loop = asyncio.get_running_loop()
         try:
-            from src.notifier.discord_bot import get_available_courses
+            from src.notifier.discord_bot import get_available_courses, filter_assignments_by_provider
             from src.scheduler.state import DaemonState
-            courses = get_available_courses()
+            provider = getattr(settings, "LMS_PROVIDER", "moodle").strip().lower()
+            courses = get_available_courses(provider=provider)
             try:
                 state = DaemonState()
-                assignments = state.data.get("assignments", {})
+                raw_assignments = state.data.get("assignments", {})
+                assignments = filter_assignments_by_provider(raw_assignments, provider=provider, state=state)
                 raw_materials = state.get_custom_materials()
                 custom_materials = [
                     m for m in raw_materials
@@ -141,6 +143,7 @@ class BridgeRunner:
             ch_id = str(getattr(settings, "DISCORD_CHANNEL_ID", "") or "")
             payload = json.dumps({
                 "channel_id": ch_id,
+                "lms_provider": provider,
                 "courses": courses,
                 "assignments": assignments,
                 "custom_materials": custom_materials
@@ -150,7 +153,7 @@ class BridgeRunner:
                 headers={"Content-Type": "application/json", "User-Agent": "MoodleDesktopRunner/1.0"}
             )
             await loop.run_in_executor(None, lambda: urllib.request.urlopen(req, timeout=8))
-            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas, {len(assignments)} tarefas e {len(custom_materials)} materiais sincronizados com o Hub.[/cyan]")
+            console.print(f"[cyan]🔗 [Ponte] {len(courses)} disciplinas, {len(assignments)} tarefas e {len(custom_materials)} materiais sincronizados com o Hub (LMS: {provider}).[/cyan]")
             return True
         except Exception as e:
             console.print(f"[yellow]Aviso ao publicar estado no Hub: {e}[/yellow]")

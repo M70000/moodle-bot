@@ -28,6 +28,7 @@ class CloudBridgeManager:
         self._published_courses: List[str] = []
         self._published_assignments: Dict[str, Dict[str, Any]] = {}
         self._custom_materials: List[Dict[str, Any]] = []
+        self._published_lms_provider: str = "moodle"
         self._desktop_last_seen: float = 0.0  # Unix timestamp
         self._DESKTOP_TIMEOUT_SECONDS = 300   # 5 min sem heartbeat → offline
 
@@ -35,6 +36,7 @@ class CloudBridgeManager:
         self._published_courses_by_channel: Dict[str, List[str]] = {}
         self._published_assignments_by_channel: Dict[str, Dict[str, Any]] = {}
         self._custom_materials_by_channel: Dict[str, List[Dict[str, Any]]] = {}
+        self._published_lms_providers_by_channel: Dict[str, str] = {}
         self._desktop_last_seen_by_channel: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
@@ -95,7 +97,8 @@ class CloudBridgeManager:
         courses: Optional[List[str]] = None,
         assignments: Optional[Dict[str, Any]] = None,
         custom_materials: Optional[List[Dict[str, Any]]] = None,
-        channel_id: Optional[str] = None
+        channel_id: Optional[str] = None,
+        lms_provider: Optional[str] = None,
     ) -> None:
         """Recebe e armazena disciplinas, catálogo de tarefas e materiais do desktop runner com isolamento por canal."""
         async with self._lock:
@@ -111,6 +114,8 @@ class CloudBridgeManager:
                     self._custom_materials_by_channel[cid] = [
                         dict(m) for m in custom_materials if self._is_valid_material(m)
                     ]
+                if lms_provider:
+                    self._published_lms_providers_by_channel[cid] = str(lms_provider).strip().lower()
                 self._desktop_last_seen_by_channel[cid] = now_ts
 
             if courses is not None:
@@ -123,6 +128,8 @@ class CloudBridgeManager:
                     if self._is_valid_material(mat):
                         clean_mats.append(dict(mat))
                 self._custom_materials = clean_mats
+            if lms_provider:
+                self._published_lms_provider = str(lms_provider).strip().lower()
             self._desktop_last_seen = now_ts
 
     async def publish_courses(self, courses: List[str], channel_id: Optional[str] = None) -> None:
@@ -142,6 +149,13 @@ class CloudBridgeManager:
             if channel_id and str(channel_id) in self._published_assignments_by_channel:
                 return dict(self._published_assignments_by_channel[str(channel_id)])
             return dict(self._published_assignments)
+
+    def get_published_provider(self, channel_id: Optional[str] = None) -> str:
+        """Retorna o provedor LMS publicado pelo desktop runner ('moodle', 'canvas' ou 'multi')."""
+        cid = str(channel_id).strip() if channel_id else None
+        if cid and cid in self._published_lms_providers_by_channel:
+            return self._published_lms_providers_by_channel[cid]
+        return self._published_lms_provider or "moodle"
 
     async def is_desktop_online(self, channel_id: Optional[str] = None) -> bool:
         """Retorna True se o desktop publicou presença nos últimos 5 minutos."""

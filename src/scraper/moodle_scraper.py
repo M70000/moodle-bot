@@ -245,11 +245,26 @@ class Assignment(BaseModel):
         return False
 
     @property
+    def has_online_submission(self) -> bool:
+        """Indica se a atividade aceita submissão online ou se é apenas leitura/em papel ('em branco')."""
+        if getattr(self, "activity_type", "") == "quiz":
+            return True
+        sub_types = getattr(self, "submission_types", None) or []
+        if not sub_types:
+            if getattr(self, "platform", "") == "canvas":
+                return False
+            return True
+        non_submittable = {"none", "on_paper", "not_graded"}
+        return not set(sub_types).issubset(non_submittable)
+
+    @property
     def is_actionable_pending(self) -> bool:
         """Indica se a tarefa é realmente pendente e precisa de resolução pela IA."""
         if self.is_submitted:
             return False
         if self.is_expired:
+            return False
+        if not self.has_online_submission:
             return False
         return True
 

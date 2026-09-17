@@ -35,7 +35,7 @@ class DaemonState:
     def get_assignment(self, assign_id: str) -> Optional[Dict[str, Any]]:
         return self.data.get("assignments", {}).get(assign_id)
 
-    def get_pending_assignments(self) -> List[Any]:
+    def get_pending_assignments(self, provider: Optional[str] = None) -> List[Any]:
         """Retorna a lista de tarefas pendentes de resolução e entrega no catálogo de estado."""
         from src.scraper.moodle_scraper import Assignment, parse_moodle_date
 
@@ -91,9 +91,19 @@ class DaemonState:
                 submission_status=item.get("submission_status", "Não enviado"),
                 activity_type=item.get("activity_type", "assign"),
                 grade_value=item.get("grade_value"),
-                can_submit=bool(item.get("can_submit", True))
+                can_submit=bool(item.get("can_submit", True)),
+                platform=item.get("platform", "moodle"),
+                submission_types=item.get("submission_types", []) or [],
+                description=item.get("description", "")
             )
             pending.append(assign)
+
+        if provider:
+            prov = provider.strip().lower()
+            if prov == "moodle":
+                pending = [a for a in pending if getattr(a, "platform", "moodle") != "canvas"]
+            elif prov == "canvas":
+                pending = [a for a in pending if getattr(a, "platform", "") == "canvas"]
 
         return pending
 

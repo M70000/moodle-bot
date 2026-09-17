@@ -118,6 +118,8 @@ class LMSAssignment(BaseModel):
     @property
     def has_online_submission(self) -> bool:
         """Indica se a atividade aceita submissão online ou se é apenas leitura/em papel ('em branco')."""
+        if getattr(self, "activity_type", "") == "quiz":
+            return True
         if not self.submission_types:
             if getattr(self, "platform", "") == "canvas":
                 return False

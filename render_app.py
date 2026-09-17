@@ -183,11 +183,13 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                     assignments = data.get("assignments")
                     custom_materials = data.get("custom_materials")
                     cid = data.get("channel_id") or channel_id
+                    lms_provider = data.get("lms_provider")
                     await cloud_bridge.publish_state(
                         courses=courses,
                         assignments=assignments,
                         custom_materials=custom_materials,
-                        channel_id=cid
+                        channel_id=cid,
+                        lms_provider=lms_provider
                     )
                     c_count = len(courses) if courses is not None else 0
                     a_count = len(assignments) if assignments is not None else 0
@@ -195,11 +197,12 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                     response_dict = {
                         "ok": True,
                         "channel_id": cid,
+                        "lms_provider": lms_provider or cloud_bridge.get_published_provider(channel_id=cid),
                         "courses_count": c_count,
                         "assignments_count": a_count,
                         "materials_count": m_count,
                     }
-                    print(f"[Bridge] Desktop ({cid or 'global'}) sincronizou {c_count} disciplinas, {a_count} tarefas e {m_count} materiais.")
+                    print(f"[Bridge] Desktop ({cid or 'global'}) sincronizou {c_count} disciplinas, {a_count} tarefas e {m_count} materiais (LMS: {lms_provider or 'moodle'}).")
                 except Exception as e:
                     status_code = "400 Bad Request"
                     response_dict = {"error": str(e)}
@@ -207,9 +210,11 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
                 # Autocomplete (relay mode) lê a lista publicada pelo desktop para aquele canal
                 courses = await cloud_bridge.get_published_courses(channel_id=channel_id)
                 online = await cloud_bridge.is_desktop_online(channel_id=channel_id)
+                provider = cloud_bridge.get_published_provider(channel_id=channel_id)
                 response_dict = {
                     "courses": courses,
                     "channel_id": channel_id,
+                    "lms_provider": provider,
                     "desktop_online": online,
                     "count": len(courses)
                 }
@@ -218,9 +223,11 @@ async def handle_http_request(reader: asyncio.StreamReader, writer: asyncio.Stre
             channel_id = query_params.get("channel_id", [""])[0] or None
             assignments = await cloud_bridge.get_published_assignments(channel_id=channel_id)
             online = await cloud_bridge.is_desktop_online(channel_id=channel_id)
+            provider = cloud_bridge.get_published_provider(channel_id=channel_id)
             response_dict = {
                 "assignments": assignments,
                 "channel_id": channel_id,
+                "lms_provider": provider,
                 "desktop_online": online,
                 "count": len(assignments)
             }
