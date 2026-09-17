@@ -1072,7 +1072,9 @@ class CanvasSubmitter:
         assignment_url: str,
         solution_code: str,
         auto_submit: bool = False,
-        on_log: Optional[Any] = None
+        on_log: Optional[Any] = None,
+        editor_url: Optional[str] = None,
+        assignment_description: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Executa a automação de tarefa de código no Canvas (Run -> Snapshot -> Web URL)."""
         from src.scraper.canvas_coding import CanvasCodingAutomator
@@ -1081,7 +1083,9 @@ class CanvasSubmitter:
             assignment_url=assignment_url,
             solution_code=solution_code,
             auto_submit=auto_submit,
-            on_log=on_log
+            on_log=on_log,
+            editor_url=editor_url,
+            assignment_description=assignment_description,
         )
 
 

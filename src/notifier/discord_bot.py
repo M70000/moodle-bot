@@ -3059,11 +3059,16 @@ async def _execute_solve_flow(
                     setattr(assign_obj, "submission_types", c_assign.submission_types)
 
             # Inspeciona se a página contém editor/simulador interativo no Canvas
+            from src.scraper.canvas_coding import CanvasCodingAutomator, extract_editor_url_from_html
+            direct_editor_url = extract_editor_url_from_html(assign_obj.description)
             canvas_cookies_file = getattr(settings, "CANVAS_COOKIES_PATH", None) or (getattr(settings, "PROJECT_ROOT", None) or PROJECT_ROOT) / "storage" / "cookies" / "canvas_session.json"
-            if assign_obj.activity_type != "quiz" and Path(canvas_cookies_file).exists() and not _is_relay_mode():
+            if assign_obj.activity_type != "quiz" and (Path(canvas_cookies_file).exists() or direct_editor_url) and not _is_relay_mode():
                 try:
-                    from src.scraper.canvas_coding import CanvasCodingAutomator
-                    coding_info = await CanvasCodingAutomator().inspect_coding_task(assign_obj.url)
+                    coding_info = await CanvasCodingAutomator().inspect_coding_task(
+                        assign_obj.url,
+                        editor_url=direct_editor_url,
+                        assignment_description=assign_obj.description
+                    )
                     if coding_info.get("has_coding_task"):
                         setattr(assign_obj, "has_editor", True)
                         if coding_info.get("initial_code"):
@@ -3187,10 +3192,24 @@ async def _execute_solve_flow(
                         return False, f"Falha ao preencher no Canvas: {submit_msg}"
                 else:
                     from src.providers.canvas import should_use_web_url
+                    from src.scraper.canvas_coding import extract_editor_url_from_html
                     sub_types = getattr(assign_obj, "submission_types", []) or []
-                    is_coding = getattr(assign_obj, "is_coding_task", False) or "coding task" in assign_obj.title.lower() or "snapshot" in assign_obj.description.lower()
+                    direct_editor_url = extract_editor_url_from_html(assign_obj.description)
+                    is_coding = getattr(assign_obj, "is_coding_task", False) or "coding task" in assign_obj.title.lower() or "snapshot" in assign_obj.description.lower() or bool(direct_editor_url)
 
-                    if is_coding and has_local_session:
+                    # Tarefas que não possuem entrega online no Canvas (ex: apenas instrucionais / none)
+                    if not assign_obj.has_online_submission or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
+                        sent = await notifier.send_assignment_review(
+                            assign_obj, draft, draft_saved=True, is_finalized=False,
+                            final_status_message="Atividade informativa / instrucional (sem entrega online no Canvas). Rascunho salvo para seus estudos.",
+                            channel=channel
+                        )
+                        await reporter.finish(
+                            f"✔ Resolução de **{assign_obj.title}** pronta! Esta atividade é informativa / instrucional e não requer envio no Canvas."
+                        )
+                        return True, f"Resolução gerada (atividade sem entrega online no Canvas: {assign_obj.title})"
+
+                    if is_coding and (has_local_session or direct_editor_url):
                         await reporter.log("⚡ Executando código corrigido no editor e gerando Snapshot to URL...")
                         from src.scraper.canvas_coding import CanvasCodingAutomator, extract_python_code_from_text
                         sol_code = extract_python_code_from_text(draft.full_markdown)
@@ -3198,7 +3217,9 @@ async def _execute_solve_flow(
                             assignment_url=assign_obj.url,
                             solution_code=sol_code,
                             auto_submit=False,
-                            on_log=reporter.log
+                            on_log=reporter.log,
+                            editor_url=direct_editor_url,
+                            assignment_description=assign_obj.description
                         )
                         sent = await notifier.send_assignment_review(
                             assign_obj, draft, draft_saved=c_ok, is_finalized=False, final_status_message=c_msg, channel=channel
@@ -3274,12 +3295,27 @@ async def _execute_solve_flow(
                     c_id, a_id = extract_canvas_ids(assign_obj.url or assign_obj.id, assign_obj.course_id)
                     draft_text = getattr(draft, "prepared_response", "") or getattr(draft, "full_markdown", "") or ""
                     found_urls = re.findall(r"https?://[^\s\)\"\'<>]+", draft_text)
+
+                    # Tarefas que não possuem entrega online no Canvas (ex: 1.00 com submission_types: ['none'] ou [])
+                    if not assign_obj.has_online_submission or not sub_types or set(sub_types).issubset({"none", "not_graded", "on_paper"}):
+                        submit_success = True
+                        submit_msg = "Atividade concluída com sucesso! Esta tarefa é apenas instrucional / informativa e não aceita submissão no Canvas (tipo de envio: 'none'). A resolução foi salva para seus estudos."
+                        DaemonState().mark_submitted(assign_obj.id)
+                        sent = await notifier.send_assignment_review(
+                            assign_obj, draft, draft_saved=True, is_finalized=True, final_status_message=submit_msg, channel=channel
+                        )
+                        await reporter.finish(f"🎉 **✅ {submit_msg}**")
+                        return True, f"Atividade instrucional concluída ({assign_obj.title})"
+
+                    from src.scraper.canvas_coding import extract_editor_url_from_html
+                    direct_editor_url = extract_editor_url_from_html(assign_obj.description)
                     is_snapshot_url_task = "online_url" in sub_types and (
                         should_use_web_url(assignment=assign_obj, submission_types=sub_types, title=assign_obj.title, description=assign_obj.description)
                         or getattr(assign_obj, "is_coding_task", False)
+                        or bool(direct_editor_url)
                     )
 
-                    if is_snapshot_url_task and has_local_session:
+                    if is_snapshot_url_task and (has_local_session or direct_editor_url):
                         await reporter.log("🚀 Executando código no editor, gerando Snapshot to URL e enviando no Canvas...")
                         from src.scraper.canvas_coding import CanvasCodingAutomator, extract_python_code_from_text
                         sol_code = extract_python_code_from_text(draft_text)
@@ -3287,13 +3323,29 @@ async def _execute_solve_flow(
                             assignment_url=assign_obj.url,
                             solution_code=sol_code,
                             auto_submit=True,
-                            on_log=reporter.log
+                            on_log=reporter.log,
+                            editor_url=direct_editor_url,
+                            assignment_description=assign_obj.description
                         )
                         if (not submit_success or "submetid" not in str(submit_msg).lower()) and snap_url:
                             submit_success, submit_msg = await submitter.submit_url(
                                 course_id=c_id or "101",
                                 assignment_id=a_id or assign_obj.id,
                                 url=snap_url,
+                                on_log=reporter.log
+                            )
+                        # Fallback automático: Se o snapshot falhar mas a tarefa aceitar online_upload, envia o arquivo!
+                        if not submit_success and "online_upload" in sub_types:
+                            await reporter.log("⚠️ Snapshot URL não concluiu. Realizando fallback automático para envio de arquivo no Canvas (online_upload)...")
+                            file_to_submit = (
+                                draft.docx_path if (draft.docx_path and draft.docx_path.exists())
+                                else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
+                                else draft.output_path
+                            )
+                            submit_success, submit_msg = await submitter.submit_assignment(
+                                course_id=c_id or "101",
+                                assignment_id=a_id or assign_obj.id,
+                                file_path=file_to_submit,
                                 on_log=reporter.log
                             )
                     elif is_snapshot_url_task:
@@ -3304,6 +3356,19 @@ async def _execute_solve_flow(
                                 course_id=c_id or "101",
                                 assignment_id=a_id or assign_obj.id,
                                 url=target_url,
+                                on_log=reporter.log
+                            )
+                        elif "online_upload" in sub_types:
+                            await reporter.log("📡 Nenhum link de snapshot localizado. Enviando documento gerado via online_upload...")
+                            file_to_submit = (
+                                draft.docx_path if (draft.docx_path and draft.docx_path.exists())
+                                else draft.pdf_path if (draft.pdf_path and draft.pdf_path.exists())
+                                else draft.output_path
+                            )
+                            submit_success, submit_msg = await submitter.submit_assignment(
+                                course_id=c_id or "101",
+                                assignment_id=a_id or assign_obj.id,
+                                file_path=file_to_submit,
                                 on_log=reporter.log
                             )
                         else:
@@ -3318,7 +3383,7 @@ async def _execute_solve_flow(
                             comment="Submetido via LumiBot",
                             on_log=reporter.log
                         )
-                    elif "online_upload" in sub_types or (draft.docx_path and draft.docx_path.exists()) or (draft.pdf_path and draft.pdf_path.exists()):
+                    elif "online_upload" in sub_types:
                         await reporter.log("🎓 Enviando documento para o Canvas da sua faculdade...")
                         file_to_submit = (
                             draft.docx_path if (draft.docx_path and draft.docx_path.exists())
@@ -4505,6 +4570,26 @@ async def cmd_login(
                         ephemeral=True
                     )
             else:
+                render_url = (settings.RENDER_URL or "").rstrip("/")
+                if _is_relay_mode() and render_url:
+                    from src.notifier.bridge_manager import cloud_bridge
+                    task_id = await cloud_bridge.dispatch_action(
+                        action="relogin_canvas",
+                        channel_id=str(interaction.channel_id),
+                        message_id="",
+                        requester=interaction.user.name,
+                        title="Renovação de Sessão Canvas LMS",
+                        course="Autenticação",
+                        structured_answers={"plataforma": "canvas"}
+                    )
+                    await interaction.followup.send(
+                        f"🚀 **Solicitação encaminhada ao seu Desktop Runner!** (ID: `{task_id}`)\n"
+                        "Uma janela do navegador será aberta no seu computador para autenticação no Canvas LMS.\n"
+                        "Basta preencher suas credenciais e a sessão será salva automaticamente no seu computador.",
+                        ephemeral=True
+                    )
+                    return
+
                 async def _bg_canvas_login():
                     success = await canvas_auth.interactive_login(headless=False)
                     if success:

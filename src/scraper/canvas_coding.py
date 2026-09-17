@@ -62,6 +62,31 @@ def extract_code_from_text(text: str) -> str:
 extract_python_code_from_text = extract_code_from_text
 
 
+def extract_editor_url_from_html(html: Optional[str]) -> Optional[str]:
+    """Extrai URL direta de editor de código interativo de HTML ou descrição do Canvas."""
+    if not html:
+        return None
+    # 1. Procura tag iframe com src apontando para editores conhecidos
+    m = re.search(
+        r'<iframe[^>]+src=["\']([^"\']*(?:csinschools|editor\.html|trinket|code4|repl\.it)[^"\']*)["\']',
+        html,
+        re.IGNORECASE,
+    )
+    if m:
+        return m.group(1).replace("&amp;", "&")
+
+    # 2. Procura links diretos no texto
+    m2 = re.search(
+        r'https?://(?:csinschools\.io/editor|trinket\.io|replit\.com)[^\s"\'<>]+',
+        html,
+        re.IGNORECASE,
+    )
+    if m2:
+        return m2.group(0).replace("&amp;", "&")
+
+    return None
+
+
 class CanvasCodingAutomator:
     """Automação especializada para atividades interativas com editor de código no Canvas."""
 
@@ -111,9 +136,17 @@ class CanvasCodingAutomator:
 
         return None, "none"
 
-    async def inspect_coding_task(self, assignment_url: str, on_log: Optional[Any] = None) -> Dict[str, Any]:
+    async def inspect_coding_task(
+        self,
+        assignment_url: str,
+        on_log: Optional[Any] = None,
+        editor_url: Optional[str] = None,
+        assignment_description: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Acessa a atividade e extrai instruções, requisitos e o código inicial com erro."""
-        if not self.auth.session_exists:
+        direct_url = editor_url or extract_editor_url_from_html(assignment_description) or extract_editor_url_from_html(assignment_url)
+
+        if not direct_url and not self.auth.session_exists:
             return {"has_coding_task": False, "error": "Sessão do Canvas não encontrada."}
 
         p = None
@@ -121,17 +154,34 @@ class CanvasCodingAutomator:
         try:
             p = await async_playwright().start()
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(storage_state=str(self.auth.cookies_path))
+            context_kwargs = {}
+            if self.auth.session_exists:
+                context_kwargs["storage_state"] = str(self.auth.cookies_path)
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
 
-            await page.goto(assignment_url, wait_until="domcontentloaded", timeout=30000)
+            target_url = direct_url or assignment_url
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2.0)
+
+            # Se navegou para o Canvas e caiu na tela de login, tenta editor direto se disponível
+            if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+                if direct_url and direct_url != target_url:
+                    await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2.0)
+                else:
+                    return {
+                        "has_coding_task": False,
+                        "error": "Sessão do Canvas expirada (tela de login detectada).",
+                    }
 
             # Extrai texto do enunciado e instruções
             desc_el = page.locator(".description, #assignment_show .description, .user_content")
             task_desc = ""
             if await desc_el.count() > 0:
                 task_desc = await desc_el.first.inner_text()
+            elif assignment_description:
+                task_desc = assignment_description
 
             # Procura editor
             target_context, frame_type = await self._find_editor_frame(page, max_wait_seconds=12)
@@ -186,7 +236,8 @@ class CanvasCodingAutomator:
                 "frame_type": frame_type,
                 "initial_code": initial_code.strip() if initial_code else "",
                 "task_description": task_desc.strip(),
-                "supports_snapshot": True
+                "supports_snapshot": True,
+                "editor_url": direct_url or target_url,
             }
 
         except Exception as e:
@@ -236,11 +287,15 @@ class CanvasCodingAutomator:
         assignment_url: str,
         solution_code: str,
         auto_submit: bool = False,
-        on_log: Optional[Any] = None
+        on_log: Optional[Any] = None,
+        editor_url: Optional[str] = None,
+        assignment_description: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """Injeta a solução no editor, clica em Run, captura o Snapshot to URL e preenche/submete na aba Web URL."""
-        if not self.auth.session_exists:
-            return False, "Sessão do Canvas não encontrada.", None
+        direct_url = editor_url or extract_editor_url_from_html(assignment_description) or extract_editor_url_from_html(assignment_url)
+
+        if not direct_url and not self.auth.session_exists:
+            return False, "Sessão do Canvas não encontrada em storage/cookies/canvas_session.json.", None
 
         clean_code = extract_python_code_from_text(solution_code)
         if not clean_code:
@@ -251,7 +306,10 @@ class CanvasCodingAutomator:
         try:
             p = await async_playwright().start()
             browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context(storage_state=str(self.auth.cookies_path))
+            context_kwargs = {}
+            if self.auth.session_exists:
+                context_kwargs["storage_state"] = str(self.auth.cookies_path)
+            context = await browser.new_context(**context_kwargs)
             page = await context.new_page()
 
             snapshot_captured_url = None
@@ -290,9 +348,26 @@ class CanvasCodingAutomator:
 
             page.on("response", lambda r: asyncio.create_task(_handle_response(r)))
 
-            await _emit_log(on_log, "Carregando atividade interativa no Canvas...")
-            await page.goto(assignment_url, wait_until="domcontentloaded", timeout=30000)
+            # Define se navegará diretamente para o editor ou para a página do Canvas
+            target_url = direct_url or assignment_url
+            target_label = "editor interativo direto" if direct_url else "atividade no Canvas LMS"
+            await _emit_log(on_log, f"Carregando {target_label}...")
+            await page.goto(target_url, wait_until="domcontentloaded", timeout=30000)
             await asyncio.sleep(2.0)
+
+            # Se caiu na tela de login do Canvas
+            if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+                if direct_url and direct_url != target_url:
+                    await _emit_log(on_log, "Conectando diretamente ao editor embutido da tarefa...")
+                    await page.goto(direct_url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(2.0)
+                else:
+                    return (
+                        False,
+                        "Sessão do Canvas LMS expirada (tela de login detectada). "
+                        "Renove sua sessão com o comando /login no Discord ou execute 'python -m src.auth.canvas_auth'.",
+                        None,
+                    )
 
             # Localiza contexto do editor (página ou iframe) com busca progressiva
             target_context, frame_type = await self._find_editor_frame(page, max_wait_seconds=15)

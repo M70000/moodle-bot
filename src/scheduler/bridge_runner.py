@@ -633,18 +633,43 @@ class BridgeRunner:
 
             return True, f"Sincronização com Notion concluída: {added} adicionados, {already} já existentes."
 
-        elif action == "relogin":
-            from src.auth.moodle_auth import MoodleAuth
-            auth = MoodleAuth()
-            console.print("[bold cyan]🔑 [Ponte Nuvem] Comando de login recebido: Abrindo navegador no desktop...[/bold cyan]")
-            success = await auth.interactive_login(headless=False)
-            if success:
-                valid, user = await auth.validate_session()
-                from src.notifier.discord_bot import MoodleDiscordNotifier
-                notifier = MoodleDiscordNotifier()
-                await notifier.send_session_renewed_notification(user_name=user)
-                return True, "Sessão renovada com sucesso via navegador interativo."
-            return False, "Navegador de login foi fechado sem autenticação concluída."
+        elif action in ("relogin", "login_canvas", "relogin_canvas"):
+            answers = task.get("structured_answers") or {}
+            target_plat = str(answers.get("plataforma") or task.get("platform") or task.get("course") or "").lower()
+            if "canvas" in target_plat or action in ("login_canvas", "relogin_canvas"):
+                from src.auth.canvas_auth import CanvasAuth
+                auth = CanvasAuth()
+                console.print("[bold cyan]🔑 [Ponte Nuvem] Comando de login Canvas recebido: Abrindo navegador no desktop...[/bold cyan]")
+                success = await auth.interactive_login(headless=False)
+                if success:
+                    valid, user = await auth.validate_session()
+                    from src.notifier.discord_bot import MoodleDiscordNotifier
+                    from src.ui.theme import LumiTheme, apply_lumi_footer
+                    import discord
+                    notifier = MoodleDiscordNotifier()
+                    ch = await notifier._resolve_channel(settings.DISCORD_ANNOUNCEMENTS_CHANNEL_ID)
+                    if ch:
+                        embed = discord.Embed(
+                            title="🎓 Sessão do Canvas LMS Renovada!",
+                            description=f"O aluno **{user or 'Autenticado'}** realizou login com sucesso no Canvas LMS.",
+                            color=LumiTheme.SUCCESS
+                        )
+                        apply_lumi_footer(embed, extra_info="Canvas LMS Auth")
+                        await ch.send(embed=embed)
+                    return True, f"Sessão do Canvas LMS renovada com sucesso para {user or 'Aluno'}."
+                return False, "Navegador de login do Canvas foi fechado sem autenticação concluída."
+            else:
+                from src.auth.moodle_auth import MoodleAuth
+                auth = MoodleAuth()
+                console.print("[bold cyan]🔑 [Ponte Nuvem] Comando de login Moodle recebido: Abrindo navegador no desktop...[/bold cyan]")
+                success = await auth.interactive_login(headless=False)
+                if success:
+                    valid, user = await auth.validate_session()
+                    from src.notifier.discord_bot import MoodleDiscordNotifier
+                    notifier = MoodleDiscordNotifier()
+                    await notifier.send_session_renewed_notification(user_name=user)
+                    return True, "Sessão renovada com sucesso via navegador interativo."
+                return False, "Navegador de login foi fechado sem autenticação concluída."
 
         return False, f"Ação desconhecida: {action}"
 

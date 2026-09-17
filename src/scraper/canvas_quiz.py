@@ -50,6 +50,18 @@ class CanvasQuizAutomator:
 
         await asyncio.sleep(1.5)
 
+        # Se for redirecionado para a página de login do Canvas
+        if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+            console.print("[yellow]⚠️ Redirecionado para tela de login do Canvas. Verificando credenciais salvas...[/yellow]")
+            if getattr(settings, "CANVAS_USERNAME", "") and getattr(settings, "CANVAS_PASSWORD", ""):
+                ok, _ = await self.auth.login_with_credentials(headless=True)
+                if ok:
+                    await page.goto(clean_url, wait_until="domcontentloaded", timeout=30000)
+                    await asyncio.sleep(1.5)
+            if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+                console.print("[red]❌ Sessão do Canvas LMS expirada e credenciais não configuradas ou inválidas.[/red]")
+                return False
+
         # Se for uma página de Assignment que aponta para um Quiz, procura o link direto
         if "/assignments/" in page.url and "/quizzes/" not in page.url:
             quiz_link = page.locator("a[href*='/quizzes/']").first
@@ -200,6 +212,17 @@ class CanvasQuizAutomator:
             await _emit_log(on_log, "Conectando ao Canvas LMS e abrindo questionário...")
             opened = await self._ensure_quiz_take_page(page, quiz_url)
             if not opened:
+                if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+                    err_msg = (
+                        "Sessão do Canvas LMS expirada (tela de login detectada). "
+                        "Renove sua sessão com o comando /login no Discord ou execute 'python -m src.auth.canvas_auth'."
+                    )
+                    await _emit_log(on_log, f"⚠️ {err_msg}")
+                    return {
+                        "success": False,
+                        "error": err_msg,
+                        "questions": []
+                    }
                 # Tenta verificar se o quiz já está submetido / finalizado
                 is_finished = await page.locator(".quiz_score, .quiz-submission, #quiz_summary, .submission-details").count() > 0
                 if is_finished:
@@ -468,6 +491,8 @@ class CanvasQuizAutomator:
             await _emit_log(on_log, "Acessando tentativa do questionário no Canvas...")
             opened = await self._ensure_quiz_take_page(page, quiz_url)
             if not opened:
+                if any(k in page.url.lower() for k in ["/login", "login.jsp", "sso", "saml"]):
+                    return False, "Sessão do Canvas LMS expirada (tela de login detectada). Renove sua sessão com o comando /login no Discord ou execute 'python -m src.auth.canvas_auth'."
                 return False, "Não foi possível abrir a tentativa de preenchimento do quiz no Canvas."
 
             await _emit_log(on_log, "Iniciando preenchimento humanizado das questões no Canvas...")

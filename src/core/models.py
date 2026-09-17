@@ -119,6 +119,8 @@ class LMSAssignment(BaseModel):
     def has_online_submission(self) -> bool:
         """Indica se a atividade aceita submissão online ou se é apenas leitura/em papel ('em branco')."""
         if not self.submission_types:
+            if getattr(self, "platform", "") == "canvas":
+                return False
             return True
         non_submittable = {"none", "on_paper", "not_graded"}
         return not set(self.submission_types).issubset(non_submittable)
