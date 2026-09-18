@@ -121,6 +121,18 @@
             </div>
             <p id="canvas-session-info" class="status-item-subtext">Aguardando...</p>
           </div>
+
+          <!-- Fila de Tarefas Status -->
+          <div class="status-item" id="sidebar-queue-item" title="Clique para gerenciar a fila de tarefas" onclick="switchTab('tab-scheduler')">
+            <div class="status-item-header">
+              <span class="status-item-name">
+                <span class="status-dot" id="queue-status-dot"></span>
+                Fila de Tarefas
+              </span>
+              <span id="sidebar-queue-badge" class="badge badge-sm badge-secondary">Ociosa</span>
+            </div>
+            <p id="sidebar-queue-info" class="status-item-subtext">0 aguardando</p>
+          </div>
         </div>
 
         <button id="btn-nav-lms" class="btn btn-sm btn-outline btn-full" title="Configurar Plataformas LMS">
@@ -940,6 +952,39 @@
 
       <!-- Tab 4: Prazos & Alertas -->
       <section id="tab-scheduler" class="tab-pane">
+        <!-- Card: Fila Centralizada de Tarefas -->
+        <div class="card" id="card-task-queue">
+          <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <h3>Fila de Execução de Tarefas</h3>
+              <p>Acompanhamento e controle de atividades de IA e envios automáticos.</p>
+            </div>
+            <span id="queue-status-badge" class="badge badge-success">Ociosa</span>
+          </div>
+          <div class="card-body">
+            <div style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; background: var(--bg-well, rgba(255,255,255,0.03)); padding: 14px; border-radius: 8px; border: 1px solid var(--border-subtle, rgba(255,255,255,0.08));">
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="min-width: 110px;">Em Execução:</strong>
+                <span id="queue-running-text" style="color: var(--text-secondary, #9ca3af);">Nenhuma tarefa em execução no momento.</span>
+              </div>
+              <div style="display: flex; align-items: center; gap: 8px;">
+                <strong style="min-width: 110px;">Fila de Espera:</strong>
+                <span id="queue-waiting-text" style="color: var(--text-secondary, #9ca3af);">0 tarefas aguardando.</span>
+              </div>
+            </div>
+
+            <div class="queue-actions" style="display: flex; gap: 12px; align-items: center; flex-wrap: wrap;">
+              <button type="button" id="btn-cancel-queue" class="btn btn-danger" style="background-color: #ef4444; color: #ffffff; border: none; font-weight: 600; display: inline-flex; align-items: center; gap: 8px; padding: 9px 18px; border-radius: 6px; cursor: pointer;">
+                <span>🛑 Cancelar Fila de Tarefas</span>
+              </button>
+              <button type="button" id="btn-refresh-queue" class="btn btn-secondary">
+                🔄 Atualizar Fila
+              </button>
+            </div>
+            <div id="queue-cancel-feedback" class="test-feedback" style="margin-top: 12px;"></div>
+          </div>
+        </div>
+
         <div class="card">
           <div class="card-header">
             <div>

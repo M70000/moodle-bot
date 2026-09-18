@@ -29,7 +29,7 @@ from rich.console import Console
 from config.settings import PROJECT_ROOT, settings
 from src.ui.theme import LumiTheme, create_lumi_embed, apply_lumi_footer
 from src.auth.moodle_auth import MoodleAuth
-from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus
+from src.scheduler.queue_manager import queue_manager, QueueItem, QueueTaskType, QueueTaskStatus, QueueDashboardView
 from src.scheduler.state import DaemonState
 from src.scraper.moodle_scraper import Assignment, CourseMaterial, sanitize_filename, parse_moodle_date
 from src.scraper.moodle_submitter import MoodleSubmitter
@@ -299,13 +299,27 @@ def is_canvas_assignment_item(key: str, item: Dict[str, Any], state: Optional[An
     return False
 
 
+def get_current_lms_provider() -> str:
+    """Retorna o provedor educacional ativo ('moodle', 'canvas' ou 'multi') priorizando o .env em tempo de execução."""
+    try:
+        from dotenv import dotenv_values
+        env_vals = dotenv_values(str(settings.PROJECT_ROOT / ".env"))
+        p = env_vals.get("LMS_PROVIDER")
+        if p and p.strip():
+            return p.strip().lower()
+    except Exception:
+        pass
+    import os as _os
+    return (_os.environ.get("LMS_PROVIDER") or getattr(settings, "LMS_PROVIDER", "moodle") or "moodle").strip().lower()
+
+
 def filter_assignments_by_provider(
     assignments: Dict[str, Any],
     provider: Optional[str] = None,
     state: Optional[Any] = None
 ) -> Dict[str, Any]:
     """Filtra o catálogo de tarefas de acordo com o provedor educacional ('moodle', 'canvas' ou 'multi')."""
-    prov = (provider or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
+    prov = (provider or get_current_lms_provider()).strip().lower()
     if prov == "multi":
         return dict(assignments)
 
@@ -331,7 +345,7 @@ def filter_assignments_by_provider(
 
 def get_available_courses(provider: Optional[str] = None) -> List[str]:
     """Retorna os nomes das disciplinas ativas respeitando estritamente o LMS_PROVIDER configurado."""
-    prov = (provider or getattr(settings, "LMS_PROVIDER", "moodle")).strip().lower()
+    prov = (provider or get_current_lms_provider()).strip().lower()
     courses_set: set = set()
 
     state = None
@@ -343,15 +357,14 @@ def get_available_courses(provider: Optional[str] = None) -> List[str]:
     canvas_course_names = set()
     moodle_course_names = set()
 
+    def _canon(s: Any) -> str:
+        return re.sub(r"[\W_]+", "", normalize_text(s))
+
     if state:
         for cc in state.data.get("canvas_courses", []):
             cname = cc.get("name") if isinstance(cc, dict) else str(cc)
             if cname and cname.strip():
                 canvas_course_names.add(cname.strip())
-
-        for mc in state.data.get("courses", []):
-            if isinstance(mc, str) and mc.strip():
-                moodle_course_names.add(mc.strip())
 
         for item_id, item in state.data.get("assignments", {}).items():
             if not isinstance(item, dict):
@@ -364,8 +377,17 @@ def get_available_courses(provider: Optional[str] = None) -> List[str]:
             else:
                 moodle_course_names.add(c_item)
 
-    norm_canvas_names = {normalize_text(cn) for cn in canvas_course_names if cn}
-    norm_moodle_names = {normalize_text(mn) for mn in moodle_course_names if mn}
+        canon_canvas = {_canon(cn) for cn in canvas_course_names if _canon(cn)}
+
+        for mc in state.data.get("courses", []):
+            if isinstance(mc, str) and mc.strip():
+                if _canon(mc) in canon_canvas:
+                    canvas_course_names.add(mc.strip())
+                else:
+                    moodle_course_names.add(mc.strip())
+
+    canon_canvas = {_canon(cn) for cn in canvas_course_names if _canon(cn)}
+    canon_moodle = {_canon(mn) for mn in moodle_course_names if _canon(mn)}
 
     # 1. Se Canvas ou Multi: inclui cursos do Canvas
     if prov in ("canvas", "multi"):
@@ -379,12 +401,15 @@ def get_available_courses(provider: Optional[str] = None) -> List[str]:
         if mat_dir.exists():
             for p in mat_dir.iterdir():
                 if p.is_dir() and not p.name.startswith("."):
-                    p_norm = normalize_text(p.name)
-                    # CRÍTICO: No modo Moodle, NUNCA adiciona pasta que seja do Canvas
-                    if prov == "moodle" and p_norm in norm_canvas_names:
+                    # Pastas numéricas (como IDs de tarefas/quizzes) nunca são nomes de disciplina
+                    if p.name.isdigit():
+                        continue
+                    p_c = _canon(p.name)
+                    # CRÍTICO: No modo Moodle, NUNCA adiciona pasta que coincida com o Canvas
+                    if prov == "moodle" and p_c in canon_canvas:
                         continue
                     # No modo Canvas, NUNCA adiciona pasta do Moodle
-                    if prov == "canvas" and p_norm in norm_moodle_names:
+                    if prov == "canvas" and p_c in canon_moodle:
                         continue
                     courses_set.add(p.name)
 
@@ -392,15 +417,29 @@ def get_available_courses(provider: Optional[str] = None) -> List[str]:
     if prov == "moodle":
         courses_set = {
             c for c in courses_set
-            if normalize_text(c) not in norm_canvas_names
+            if _canon(c) not in canon_canvas and not c.isdigit()
         }
     elif prov == "canvas":
         courses_set = {
             c for c in courses_set
-            if normalize_text(c) not in norm_moodle_names
+            if _canon(c) not in canon_moodle and not c.isdigit()
         }
 
-    return sorted(courses_set)
+    # Deduplicação canônica inteligente: se existir "Nome: Subtítulo" e "Nome_ Subtítulo",
+    # mantém a versão original com pontuação legível e sem underscore de sanitização
+    deduped: Dict[str, str] = {}
+    for c in courses_set:
+        ck = _canon(c)
+        if not ck:
+            continue
+        if ck not in deduped:
+            deduped[ck] = c
+        else:
+            existing = deduped[ck]
+            if (":" in c and ":" not in existing) or (existing.count("_") > c.count("_")):
+                deduped[ck] = c
+
+    return sorted(deduped.values())
 
 
 import os as _os
@@ -517,7 +556,7 @@ async def _get_current_assignments(interaction: Optional[Any] = None) -> Dict[st
 
     if is_my_user:
         assignments: Dict[str, Any] = {}
-        prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+        prov = get_current_lms_provider()
         try:
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
@@ -579,7 +618,7 @@ def _get_sync_assignments(interaction: Optional[Any] = None) -> Dict[str, Any]:
 
     if is_my_user:
         assignments: Dict[str, Any] = {}
-        prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+        prov = get_current_lms_provider()
         try:
             state = DaemonState()
             local_assignments = state.data.get("assignments", {})
@@ -619,7 +658,7 @@ async def course_autocomplete(
         else:
             is_my_user = not target_channel or not my_channel or target_channel == my_channel
             if is_my_user:
-                prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+                prov = get_current_lms_provider()
                 courses = get_available_courses(provider=prov)
             else:
                 hub_url = (getattr(settings, "RENDER_URL", "") or "").rstrip("/")
@@ -633,6 +672,40 @@ async def course_autocomplete(
                     except Exception:
                         pass
                 # Se não encontrou cursos para o outro aluno no Hub, mantém vazio (evita vazar disciplinas locais)
+
+        # Filtragem defensiva adicional por provedor ativo
+        active_prov = get_current_lms_provider()
+        if courses and active_prov in ("moodle", "canvas"):
+            try:
+                st = DaemonState()
+                canvas_c_canon = set()
+                moodle_c_canon = set()
+                for c in st.data.get("canvas_courses", []):
+                    cname = c.get("name") if isinstance(c, dict) else str(c)
+                    if cname and cname.strip():
+                        canvas_c_canon.add(re.sub(r"[\W_]+", "", normalize_text(cname)))
+                for item_id, item in st.data.get("assignments", {}).items():
+                    if isinstance(item, dict):
+                        c_item = (item.get("course") or item.get("course_name") or "").strip()
+                        if c_item:
+                            c_c = re.sub(r"[\W_]+", "", normalize_text(c_item))
+                            if is_canvas_assignment_item(str(item_id), item, state=st):
+                                canvas_c_canon.add(c_c)
+                            else:
+                                moodle_c_canon.add(c_c)
+
+                if active_prov == "moodle":
+                    courses = [
+                        c for c in courses
+                        if re.sub(r"[\W_]+", "", normalize_text(c)) not in canvas_c_canon and not c.isdigit()
+                    ]
+                elif active_prov == "canvas":
+                    courses = [
+                        c for c in courses
+                        if re.sub(r"[\W_]+", "", normalize_text(c)) not in moodle_c_canon and not c.isdigit()
+                    ]
+            except Exception:
+                pass
 
         if not courses:
             return [app_commands.Choice(
@@ -2069,6 +2142,7 @@ class LumiBotClient(commands.Bot):
             return
         try:
             self.add_view(SessionExpiredView())
+            self.add_view(QueueDashboardView(queue_manager))
         except Exception:
             pass
         console.print("[cyan]Sincronizando Slash Commands...[/cyan]")
@@ -2451,7 +2525,7 @@ def build_tarefas_embed(
     - Visão Geral (disciplina=None): panorama das matérias com resumo de pendências, próximas entregas a vencer e estatísticas.
     - Visão Detalhada (disciplina=<nome>): lista minuciosa de trabalhos, questionários e tarefas concluídas com notas.
     """
-    prov = getattr(settings, "LMS_PROVIDER", "moodle").lower()
+    prov = get_current_lms_provider()
     if _is_relay_mode():
         try:
             from src.notifier.bridge_manager import cloud_bridge
@@ -4621,6 +4695,29 @@ async def cmd_resolver_lote(
         requester=interaction.user.display_name if interaction.user else "Usuário"
     )
     embed = view.build_panel_embed()
+    await interaction.followup.send(embed=embed, view=view)
+
+
+@bot.tree.command(name="cancelar_fila", description="Cancela todas as tarefas pendentes na fila de execução do LumiBot")
+async def cmd_cancelar_fila(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    running, waiting, _ = queue_manager.get_snapshot()
+    if not running and not waiting:
+        await interaction.followup.send("ℹ️ A fila de tarefas já está vazia no momento. Nenhuma tarefa pendente para cancelar.")
+        return
+
+    cancelled = await queue_manager.cancel_queue(cancel_running=True)
+    user_name = interaction.user.display_name or interaction.user.name
+    await interaction.followup.send(
+        f"🛑 **Fila de Tarefas Cancelada!** `{cancelled}` tarefa(s) foram canceladas e descartadas da fila por {user_name}."
+    )
+
+
+@bot.tree.command(name="fila", description="Exibe o painel da fila de tarefas em tempo real com botão para cancelar")
+async def cmd_fila(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=False)
+    embed = queue_manager.build_dashboard_embed()
+    view = QueueDashboardView(queue_manager)
     await interaction.followup.send(embed=embed, view=view)
 
 

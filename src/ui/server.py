@@ -312,6 +312,20 @@ def save_config_to_env(new_values: Dict[str, Any]) -> None:
     ]
     ENV_PATH.write_text("\n".join(lines), encoding="utf-8")
 
+    # Sincroniza em tempo de execução as variáveis no os.environ e na instância settings
+    for k, v in new_values.items():
+        os.environ[k] = str(v).strip()
+    try:
+        from config.settings import settings
+        for k, v in new_values.items():
+            if hasattr(settings, k):
+                try:
+                    setattr(settings, k, v)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
 
 def get_system_status() -> Dict[str, Any]:
     """Retorna o status geral de autenticação, cookies e diretórios."""
@@ -350,6 +364,15 @@ def get_system_status() -> Dict[str, Any]:
     canvas_has_credentials = bool(canvas_user and cfg.get("CANVAS_PASSWORD", ""))
     canvas_has_token = bool(cfg.get("CANVAS_API_TOKEN", ""))
 
+    try:
+        from src.scheduler.queue_manager import queue_manager
+        running, waiting, _ = queue_manager.get_snapshot()
+        queue_busy = running is not None
+        queue_waiting_count = len(waiting)
+    except Exception:
+        queue_busy = False
+        queue_waiting_count = 0
+
     return {
         "lms_provider": cfg.get("LMS_PROVIDER", "multi").lower(),
         "session_exists": has_session,
@@ -365,6 +388,8 @@ def get_system_status() -> Dict[str, Any]:
         "canvas_has_credentials": canvas_has_credentials,
         "canvas_has_token": canvas_has_token,
         "canvas_user": canvas_user,
+        "queue_busy": queue_busy,
+        "queue_waiting_count": queue_waiting_count,
     }
 
 
@@ -813,6 +838,32 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
             self._send_json({"enabled": get_windows_startup_status()})
             return
 
+        if url_path == "/api/queue/status":
+            from src.scheduler.queue_manager import queue_manager
+            running, waiting, history = queue_manager.get_snapshot()
+            self._send_json({
+                "ok": True,
+                "is_busy": running is not None,
+                "running": {
+                    "id": running.id,
+                    "title": running.title,
+                    "course": running.course,
+                    "type": running.task_type.value,
+                    "elapsed_seconds": int(running.elapsed_seconds),
+                } if running else None,
+                "waiting_count": len(waiting),
+                "waiting": [
+                    {
+                        "id": w.id,
+                        "title": w.title,
+                        "course": w.course,
+                        "type": w.task_type.value,
+                    } for w in waiting[:10]
+                ],
+                "recent_count": len(history)
+            })
+            return
+
         # Rota padrão para SPA
         if url_path in ["", "/"]:
             self.path = "/index.html"
@@ -1029,6 +1080,24 @@ class ConfigAPIHandler(SimpleHTTPRequestHandler):
                     self._send_json({"ok": False, "error": user_or_err or "Falha na autenticação do Canvas."}, status=400)
             except Exception as e:
                 self._send_json({"ok": False, "error": f"Erro durante login no Canvas: {str(e)}"}, status=500)
+            return
+
+        if url_path == "/api/queue/cancel":
+            from src.scheduler.queue_manager import queue_manager
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                cancelled = loop.run_until_complete(queue_manager.cancel_queue(cancel_running=True))
+                self._send_json({
+                    "ok": True,
+                    "cancelled_count": cancelled,
+                    "message": f"Fila cancelada com sucesso! {cancelled} tarefa(s) foram canceladas e descartadas."
+                })
+            except Exception as e:
+                self._send_json({"ok": False, "error": f"Erro ao cancelar fila: {str(e)}"}, status=500)
+            finally:
+                loop.close()
             return
 
         if url_path == "/api/open-folder":

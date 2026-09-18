@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Callable, Coroutine, Dict, List, Optional
+import sys
 import uuid
 
 import discord
@@ -19,6 +20,15 @@ from rich.console import Console
 
 from config.settings import settings
 from src.ui.theme import LumiTheme, apply_lumi_footer
+
+if sys.platform == "win32":
+    try:
+        if sys.stdout and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8")
+        if sys.stderr and hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
 
 console = Console()
 
@@ -41,6 +51,7 @@ class QueueTaskStatus(str, Enum):
     RUNNING = "▶️ Em execução"
     COMPLETED = "✔ Concluído com sucesso"
     FAILED = "❌ Falha na execução"
+    CANCELLED = "🚫 Cancelada"
 
 
 @dataclass
@@ -87,6 +98,7 @@ class TaskQueueManager:
         self._queue: asyncio.Queue[QueueItem] = asyncio.Queue()
         self._waiting_list: List[QueueItem] = []
         self._running_item: Optional[QueueItem] = None
+        self._current_task: Optional[asyncio.Task] = None
         self._recent_history: List[QueueItem] = []
         self._lock = asyncio.Lock()
         self._worker_task: Optional[asyncio.Task] = None
@@ -143,10 +155,90 @@ class TaskQueueManager:
         asyncio.create_task(self.update_discord_dashboard())
         return position
 
+    async def cancel_queue(self, cancel_running: bool = True) -> int:
+        """Cancela todas as tarefas pendentes na fila de espera e, opcionalmente, interrompe a em execução.
+
+        Returns:
+            int: Quantidade de tarefas canceladas.
+        """
+        cancelled_count = 0
+        async with self._lock:
+            # 1. Cancela tarefas aguardando
+            items_to_cancel = list(self._waiting_list)
+            self._waiting_list.clear()
+
+            for it in items_to_cancel:
+                it.status = QueueTaskStatus.CANCELLED
+                it.finished_at = datetime.now()
+                it.result_message = "Cancelada na fila pelo usuário"
+                self._recent_history.append(it)
+                cancelled_count += 1
+                if it.on_finish:
+                    try:
+                        asyncio.create_task(it.on_finish(False, "Tarefa cancelada na fila pelo usuário."))
+                    except Exception:
+                        pass
+
+            # 2. Cancela tarefa em execução se solicitado
+            if cancel_running and self._running_item:
+                self._running_item.status = QueueTaskStatus.CANCELLED
+                self._running_item.result_message = "Interrompida pelo usuário"
+                if self._current_task and not self._current_task.done():
+                    self._current_task.cancel()
+                cancelled_count += 1
+
+            if len(self._recent_history) > 5:
+                self._recent_history = self._recent_history[-5:]
+
+        console.print(f"[bold yellow]🛑 [FILA] Cancelamento de fila executado: {cancelled_count} tarefa(s) cancelada(s).[/bold yellow]")
+        await self.update_discord_dashboard()
+        return cancelled_count
+
+    async def cancel_item(self, task_id: str) -> bool:
+        """Cancela uma tarefa específica pelo ID."""
+        task_id_upper = (task_id or "").strip().upper()
+        if not task_id_upper:
+            return False
+
+        async with self._lock:
+            for it in list(self._waiting_list):
+                if it.id.upper() == task_id_upper:
+                    self._waiting_list.remove(it)
+                    it.status = QueueTaskStatus.CANCELLED
+                    it.finished_at = datetime.now()
+                    it.result_message = "Cancelada pelo usuário"
+                    self._recent_history.append(it)
+                    if len(self._recent_history) > 5:
+                        self._recent_history = self._recent_history[-5:]
+                    if it.on_finish:
+                        try:
+                            asyncio.create_task(it.on_finish(False, "Tarefa cancelada na fila pelo usuário."))
+                        except Exception:
+                            pass
+                    console.print(f"[bold yellow]🛑 [FILA] Tarefa [{it.id}] cancelada pelo usuário.[/bold yellow]")
+                    await self.update_discord_dashboard()
+                    return True
+
+            if self._running_item and self._running_item.id.upper() == task_id_upper:
+                self._running_item.status = QueueTaskStatus.CANCELLED
+                self._running_item.result_message = "Interrompida pelo usuário"
+                if self._current_task and not self._current_task.done():
+                    self._current_task.cancel()
+                console.print(f"[bold yellow]🛑 [FILA] Tarefa em execução [{self._running_item.id}] cancelada pelo usuário.[/bold yellow]")
+                await self.update_discord_dashboard()
+                return True
+
+        return False
+
     async def _worker_loop(self):
         """Loop contínuo que processa cada tarefa da fila sequencialmente."""
         while True:
             item = await self._queue.get()
+
+            # Se a tarefa foi cancelada enquanto esperava na fila, apenas finaliza
+            if item.status == QueueTaskStatus.CANCELLED:
+                self._queue.task_done()
+                continue
 
             async with self._lock:
                 if item in self._waiting_list:
@@ -165,18 +257,28 @@ class TaskQueueManager:
             message = ""
             try:
                 if item.coro_func:
-                    res = await item.coro_func()
-                    if isinstance(res, tuple) and len(res) == 2:
-                        success, message = res
-                    else:
-                        success = True
-                        message = str(res) if res is not None else "Executado com sucesso"
+                    self._current_task = asyncio.create_task(item.coro_func())
+                    try:
+                        res = await self._current_task
+                        if isinstance(res, tuple) and len(res) == 2:
+                            success, message = res
+                        else:
+                            success = True
+                            message = str(res) if res is not None else "Executado com sucesso"
+                    except asyncio.CancelledError:
+                        item.status = QueueTaskStatus.CANCELLED
+                        item.result_message = "Execução interrompida pelo usuário"
+                        success = False
+                        message = "Interrompida pelo usuário"
+                    finally:
+                        self._current_task = None
                 else:
                     success = True
                     message = "Tarefa concluída (sem corrotina associada)"
 
-                item.status = QueueTaskStatus.COMPLETED
-                item.result_message = message
+                if item.status != QueueTaskStatus.CANCELLED:
+                    item.status = QueueTaskStatus.COMPLETED
+                    item.result_message = message
             except Exception as exc:
                 item.status = QueueTaskStatus.FAILED
                 item.error = str(exc)
@@ -186,7 +288,8 @@ class TaskQueueManager:
                 item.finished_at = datetime.now()
                 async with self._lock:
                     self._running_item = None
-                    self._recent_history.append(item)
+                    if item not in self._recent_history:
+                        self._recent_history.append(item)
                     if len(self._recent_history) > 5:
                         self._recent_history = self._recent_history[-5:]
 
@@ -290,7 +393,12 @@ class TaskQueueManager:
         if history:
             h_lines = []
             for item in reversed(history[-4:]):
-                icon = "✔" if item.status == QueueTaskStatus.COMPLETED else "❌"
+                if item.status == QueueTaskStatus.COMPLETED:
+                    icon = "✔"
+                elif item.status == QueueTaskStatus.CANCELLED:
+                    icon = "🚫"
+                else:
+                    icon = "❌"
                 fin_time = item.finished_at.strftime("%H:%M:%S") if item.finished_at else ""
                 dur = f"{int(item.elapsed_seconds)}s"
                 clean_h_title = (item.title[:35] + "...") if len(item.title) > 35 else item.title
@@ -369,19 +477,51 @@ class TaskQueueManager:
             return
 
         embed = self.build_dashboard_embed()
+        view = QueueDashboardView(self)
 
         try:
             if self._dashboard_message:
                 try:
-                    await self._dashboard_message.edit(embed=embed)
+                    await self._dashboard_message.edit(embed=embed, view=view)
                     return
                 except Exception:
                     self._dashboard_message = None
 
             # Envia nova mensagem caso não exista ou tenha sido apagada
-            self._dashboard_message = await channel.send(embed=embed)
+            self._dashboard_message = await channel.send(embed=embed, view=view)
         except Exception as exc:
             console.print(f"[yellow]Aviso ao atualizar painel da fila no Discord: {exc}[/yellow]")
+
+
+class QueueDashboardView(discord.ui.View):
+    """View interativa anexada ao painel da fila no Discord com botão de cancelar fila."""
+
+    def __init__(self, manager: Optional["TaskQueueManager"] = None):
+        super().__init__(timeout=None)
+        self.manager = manager or queue_manager
+
+    @discord.ui.button(
+        label="Cancelar Fila",
+        style=discord.ButtonStyle.danger,
+        emoji="🛑",
+        custom_id="btn_cancel_task_queue"
+    )
+    async def btn_cancel_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Interrompe tarefas em execução e limpa a fila de espera."""
+        running, waiting, _ = self.manager.get_snapshot()
+        if not running and not waiting:
+            await interaction.response.send_message(
+                "ℹ️ A fila de tarefas já está vazia no momento. Nenhuma tarefa para cancelar.",
+                ephemeral=True
+            )
+            return
+
+        cancelled = await self.manager.cancel_queue(cancel_running=True)
+        user_name = interaction.user.display_name or interaction.user.name
+        await interaction.response.send_message(
+            f"🛑 **Fila de Tarefas Cancelada!** `{cancelled}` tarefa(s) foram canceladas e removidas por {user_name}.",
+            ephemeral=False
+        )
 
 
 # Instância global do gerenciador

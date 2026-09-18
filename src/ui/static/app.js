@@ -142,6 +142,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-nav-lms')?.addEventListener('click', () => switchTab('tab-lms'));
   document.getElementById('sidebar-moodle-item')?.addEventListener('click', () => switchTab('tab-moodle'));
   document.getElementById('sidebar-canvas-item')?.addEventListener('click', () => switchTab('tab-canvas'));
+  document.getElementById('sidebar-queue-item')?.addEventListener('click', () => {
+    switchTab('tab-scheduler');
+    refreshQueueDetails();
+  });
+  document.getElementById('btn-cancel-queue')?.addEventListener('click', cancelQueue);
+  document.getElementById('btn-refresh-queue')?.addEventListener('click', refreshQueueDetails);
 
   // Alternância dinâmica de Modo de Autenticação (Cookies vs Credenciais)
   document.querySelectorAll('input[name="AUTH_MODE"]').forEach(radio => {
@@ -224,6 +230,10 @@ function setupNavigation() {
       if (meta) {
         document.getElementById('page-title').textContent = meta.title;
         document.getElementById('page-subtitle').textContent = meta.subtitle;
+      }
+
+      if (tabId === 'tab-scheduler') {
+        refreshQueueDetails();
       }
     });
   });
@@ -459,8 +469,110 @@ async function loadStatus() {
         canvasBoxDesc.textContent = 'Nenhum cookie de sessão salvo. Clique abaixo para fazer login no Canvas pelo navegador.';
       }
     }
+    // 3. Status da Fila de Tarefas (Sidebar e Tab Scheduler)
+    const queueDot = document.getElementById('queue-status-dot');
+    const queueSidebarBadge = document.getElementById('sidebar-queue-badge');
+    const queueSidebarInfo = document.getElementById('sidebar-queue-info');
+    const queueBadge = document.getElementById('queue-status-badge');
+    const queueWaitingText = document.getElementById('queue-waiting-text');
+
+    const isBusy = !!status.queue_busy;
+    const waitingCount = status.queue_waiting_count || 0;
+
+    if (queueDot) {
+      queueDot.className = isBusy ? 'status-dot dot-active' : (waitingCount > 0 ? 'status-dot dot-pending' : 'status-dot dot-off');
+    }
+    if (queueSidebarBadge) {
+      queueSidebarBadge.textContent = isBusy ? 'Executando' : (waitingCount > 0 ? `${waitingCount} na fila` : 'Ociosa');
+      queueSidebarBadge.className = isBusy ? 'badge badge-sm badge-warning' : (waitingCount > 0 ? 'badge badge-sm badge-info' : 'badge badge-sm badge-secondary');
+    }
+    if (queueSidebarInfo) {
+      queueSidebarInfo.textContent = isBusy ? 'Tarefa em andamento' : `${waitingCount} aguardando`;
+    }
+    if (queueBadge) {
+      queueBadge.textContent = isBusy ? '🟡 Em Execução' : (waitingCount > 0 ? `🔵 ${waitingCount} na Fila` : '🟢 Ociosa');
+      queueBadge.className = isBusy ? 'badge badge-warning' : (waitingCount > 0 ? 'badge badge-info' : 'badge badge-success');
+    }
+    if (queueWaitingText && !isBusy) {
+      queueWaitingText.textContent = `${waitingCount} tarefa(s) aguardando na fila.`;
+    }
   } catch (err) {
     console.error('Erro ao ler status:', err);
+  }
+}
+
+// Atualiza detalhes em tempo real da fila de tarefas
+async function refreshQueueDetails() {
+  const runningText = document.getElementById('queue-running-text');
+  const waitingText = document.getElementById('queue-waiting-text');
+  const badge = document.getElementById('queue-status-badge');
+  try {
+    const res = await fetch('/api/queue/status');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (runningText) {
+      if (data.running) {
+        runningText.innerHTML = `<span style="color: var(--color-primary, #38bdf8); font-weight: 600;">${data.running.title || 'Atividade'}</span> <span style="font-size: 0.85em; opacity: 0.8;">(${data.running.type} • ${data.running.elapsed_seconds}s decorridos)</span>`;
+      } else {
+        runningText.textContent = 'Nenhuma tarefa em execução no momento.';
+      }
+    }
+    if (waitingText) {
+      waitingText.textContent = `${data.waiting_count} tarefa(s) aguardando na fila.`;
+    }
+    if (badge) {
+      badge.textContent = data.is_busy ? '🟡 Em Execução' : (data.waiting_count > 0 ? `🔵 ${data.waiting_count} na Fila` : '🟢 Ociosa');
+      badge.className = data.is_busy ? 'badge badge-warning' : (data.waiting_count > 0 ? 'badge badge-info' : 'badge badge-success');
+    }
+  } catch (e) {
+    console.warn('Erro ao atualizar detalhes da fila:', e);
+  }
+}
+
+// Cancela todas as tarefas da fila via API
+async function cancelQueue() {
+  const btn = document.getElementById('btn-cancel-queue');
+  const feedback = document.getElementById('queue-cancel-feedback');
+
+  if (!confirm('Deseja realmente cancelar todas as tarefas na fila de execução?')) {
+    return;
+  }
+
+  if (btn) btn.disabled = true;
+  if (feedback) {
+    feedback.textContent = 'Cancelando tarefas da fila...';
+    feedback.className = 'test-feedback feedback-loading';
+  }
+
+  try {
+    const res = await fetch('/api/queue/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    });
+    const data = await res.json();
+    if (data.ok) {
+      if (feedback) {
+        feedback.textContent = data.message || 'Fila cancelada com sucesso!';
+        feedback.className = 'test-feedback feedback-success';
+      }
+      showToast(data.message || 'Fila de tarefas cancelada!', 'success');
+      await refreshQueueDetails();
+      await updateStatusUI();
+    } else {
+      if (feedback) {
+        feedback.textContent = data.error || 'Falha ao cancelar a fila.';
+        feedback.className = 'test-feedback feedback-error';
+      }
+      showToast(data.error || 'Erro ao cancelar fila', 'error');
+    }
+  } catch (err) {
+    if (feedback) {
+      feedback.textContent = `Erro de conexão: ${err.message}`;
+      feedback.className = 'test-feedback feedback-error';
+    }
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 

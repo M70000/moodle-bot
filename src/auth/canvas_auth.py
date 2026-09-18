@@ -273,7 +273,7 @@ class CanvasAuth:
     ) -> Tuple[bool, Optional[str]]:
         """Realiza login automático e silencioso via credenciais no Canvas LMS usando Playwright.
 
-        Navega até a tela de login do Canvas (/login/canvas), preenche os campos,
+        Navega até a tela de login do Canvas ou SSO institucional, preenche os campos,
         valida a resposta e persiste os cookies de sessão de forma totalmente autônoma.
 
         Args:
@@ -295,7 +295,6 @@ class CanvasAuth:
 
         self.cookies_path.parent.mkdir(parents=True, exist_ok=True)
         timeout_ms = (timeout_seconds or 45) * 1000
-        login_url = f"{self.base_url}/login/canvas"
 
         console.print(
             f"[bold cyan]🔐 Iniciando autenticação automática no Canvas para o usuário '[bold]{user}[/bold]' (headless={headless})...[/bold cyan]"
@@ -310,54 +309,169 @@ class CanvasAuth:
                 context = await browser.new_context(no_viewport=True)
                 page = await context.new_page()
 
+                # 1. Navegação inicial: tenta a base_url para seguir eventuais redirecionamentos de SSO
                 try:
-                    await page.goto(login_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    await page.goto(self.base_url, wait_until="domcontentloaded", timeout=timeout_ms)
                 except Exception as nav_err:
                     console.print(f"[yellow]Aviso na navegação inicial: {nav_err}[/yellow]")
 
                 # Se já estiver autenticado e redirecionou para o painel
                 current_url = page.url.lower()
-                if "login" not in current_url and ("dashboard" in current_url or "courses" in current_url):
-                    await context.storage_state(path=str(self.cookies_path))
-                    return True, user
+                if "login_success" in current_url or (
+                    "/login" not in current_url and ("dashboard" in current_url or "courses" in current_url)
+                ):
+                    for sel in AUTHENTICATED_CANVAS_SELECTORS:
+                        try:
+                            if await page.is_visible(sel):
+                                await context.storage_state(path=str(self.cookies_path))
+                                return True, user
+                        except Exception:
+                            pass
 
-                # Aguarda os seletores de login padrão do Canvas
-                user_selector = "#pseudonym_session_unique_id, input[name='pseudonym_session[unique_id]'], #username, input[type='text'], input[type='email']"
-                pwd_selector = "#pseudonym_session_password, input[name='pseudonym_session[password]'], #password, input[type='password']"
+                # 2. Verifica se caiu na página de descoberta (ex: iad.login.instructure.com/discovery/...)
+                if "discovery" in current_url:
+                    console.print("[cyan]Detectada página de descoberta de SSO institucional no Canvas...[/cyan]")
+                    try:
+                        await page.wait_for_selector(
+                            "a[href*='/login/microsoft/'], a[href*='/login/saml/'], a[href*='/login/sso/'], a:has-text('Aluno'), a:has-text('Professor'), button",
+                            timeout=10000,
+                        )
+                    except Exception:
+                        pass
 
-                try:
-                    await page.wait_for_selector(user_selector, timeout=20000)
-                except Exception:
-                    return False, f"Página de login do Canvas não carregou a tempo (URL atual: {page.url})"
+                    # Procura link de login de aluno/professor ou Microsoft
+                    sso_link = await page.query_selector(
+                        "a[href*='/login/microsoft/'], a[href*='/login/saml/'], a[href*='/login/sso/'], a:has-text('Aluno'), a:has-text('Professor'), a:has-text('Entrar')"
+                    )
+                    if sso_link:
+                        try:
+                            sso_href = await sso_link.get_attribute("href")
+                            if sso_href and sso_href.startswith("http"):
+                                await page.goto(sso_href, wait_until="domcontentloaded", timeout=15000)
+                            else:
+                                await sso_link.click()
+                                await page.wait_for_load_state("domcontentloaded", timeout=15000)
+                            current_url = page.url.lower()
+                        except Exception as sso_nav_err:
+                            console.print(f"[yellow]Aviso ao redirecionar para o SSO institucional: {sso_nav_err}[/yellow]")
 
-                await page.fill(user_selector, user)
-                await page.fill(pwd_selector, pwd)
+                # 3. Tratamento de SSO Microsoft Online (comum em universidades como a PUC Minas)
+                if "login.microsoftonline.com" in current_url:
+                    console.print("[cyan]Processando autenticação via SSO Institucional Microsoft...[/cyan]")
+                    try:
+                        ms_user_sel = "input[name='loginfmt'], #i0116, input[type='email']"
+                        await page.wait_for_selector(ms_user_sel, timeout=15000)
+                        await page.fill(ms_user_sel, user)
+                        await page.click("input[type='submit'], #idSIButton9")
+                        await asyncio.sleep(1.5)
 
-                submit_btn = await page.query_selector("button[type='submit'], input[type='submit'], .Button--login")
-                if submit_btn:
-                    await submit_btn.click()
-                else:
-                    await page.keyboard.press("Enter")
+                        # Verifica erro de usuário no Microsoft
+                        ms_user_err = await page.query_selector("#usernameError, #i0116Error, .alert-error")
+                        if ms_user_err:
+                            err_txt = (await ms_user_err.inner_text()).strip()
+                            if err_txt:
+                                return False, f"Usuário rejeitado no portal institucional: {err_txt}"
 
-                # Aguarda processamento e redirecionamento pós-login
+                        # Preenchimento de senha no Microsoft
+                        ms_pwd_sel = "input[name='passwd'], #i0118, input[type='password']"
+                        await page.wait_for_selector(ms_pwd_sel, timeout=15000)
+                        await page.fill(ms_pwd_sel, pwd)
+                        await page.click("input[type='submit'], #idSIButton9")
+                        await asyncio.sleep(2.0)
+
+                        # Verifica erro de senha no Microsoft
+                        ms_pwd_err = await page.query_selector("#passwordError, #i0118Error, .alert-error")
+                        if ms_pwd_err:
+                            err_txt = (await ms_pwd_err.inner_text()).strip()
+                            if err_txt:
+                                return False, f"Senha rejeitada no portal institucional: {err_txt}"
+
+                        # Verifica se 2FA (MFA) foi exigido
+                        mfa_elem = await page.query_selector(
+                            "#idDiv_SAOTCS_Title, #idRichContext_DisplaySign, #idA_SAASTO_Resend, "
+                            ".mfa-title, div[data-view-id*='TwoFactor'], #idDiv_SAOTCC_Title"
+                        )
+                        if mfa_elem:
+                            return False, (
+                                "Autenticação em Dois Fatores (2FA / Microsoft Authenticator) exigida pelo portal institucional. "
+                                "Como o login automático por credenciais é silencioso, utilize a opção 'Iniciar Login no Canvas (Navegador)' "
+                                "para concluir o 2FA interativamente ou utilize um Token de API do Canvas."
+                            )
+
+                        # Botão 'Manter conectado?' (Stay signed in)
+                        stay_in_btn = await page.query_selector("#idSIButton9, input[type='submit']")
+                        if stay_in_btn:
+                            try:
+                                await stay_in_btn.click()
+                            except Exception:
+                                pass
+                    except Exception as ms_err:
+                        console.print(f"[yellow]Nota no fluxo Microsoft SSO: {ms_err}[/yellow]")
+
+                # 4. Caso ainda esteja em tela de login não-SSO ou local Canvas
+                current_url = page.url.lower()
+                is_canvas_login = "login" in current_url or await page.query_selector("#pseudonym_session_unique_id") is not None
+
+                if not is_canvas_login and not any(k in current_url for k in ["instructure.com", "canvas"]):
+                    # Fallback para a rota direta /login/canvas
+                    try:
+                        login_url = f"{self.base_url}/login/canvas"
+                        await page.goto(login_url, wait_until="domcontentloaded", timeout=timeout_ms)
+                    except Exception:
+                        pass
+
+                # Preenche campos padrão do Canvas LMS caso estejam na tela
+                user_field = await page.query_selector("#pseudonym_session_unique_id, input[name='pseudonym_session[unique_id]']")
+                if user_field:
+                    await user_field.fill(user)
+                    pwd_field = await page.query_selector("#pseudonym_session_password, input[name='pseudonym_session[password]']")
+                    if pwd_field:
+                        await pwd_field.fill(pwd)
+                        submit_btn = await page.query_selector("input[type='submit'], button[type='submit'], .Button--login")
+                        if submit_btn:
+                            await submit_btn.click()
+                        else:
+                            await page.keyboard.press("Enter")
+
+                # 5. Monitora resultado da autenticação e redirecionamento pós-login
                 start_time = asyncio.get_event_loop().time()
                 timeout_time = start_time + (timeout_ms / 1000)
                 logged_in = False
                 detected_user = None
 
+                error_selectors = [
+                    ".ic-flash-error",
+                    ".ic-Flash-error",
+                    ".ic-flash-static",
+                    ".flash-error",
+                    ".error_text",
+                    "#flash_message_holder",
+                    "#usernameError",
+                    "#passwordError",
+                    "#i0116Error",
+                    "#i0118Error",
+                    ".alert-error",
+                ]
+
                 while asyncio.get_event_loop().time() < timeout_time:
                     cur_url = page.url.lower()
 
-                    # Verifica mensagem de erro exibida na página
-                    error_elem = await page.query_selector(".error_text, .ic-Flash-error, .flash-error")
-                    if error_elem:
-                        error_text = (await error_elem.inner_text()).strip()
-                        if error_text:
-                            console.print(f"[bold red]❌ Canvas rejeitou as credenciais: {error_text}[/bold red]")
-                            return False, f"Credenciais rejeitadas pelo Canvas: {error_text}"
+                    # Verifica imediatamente mensagens de erro exibidas na página
+                    for err_sel in error_selectors:
+                        try:
+                            error_elem = await page.query_selector(err_sel)
+                            if error_elem and await error_elem.is_visible():
+                                error_text = (await error_elem.inner_text()).strip()
+                                if error_text and len(error_text) > 3:
+                                    console.print(f"[bold red]❌ Falha na autenticação do Canvas: {error_text}[/bold red]")
+                                    return False, f"Credenciais rejeitadas pelo Canvas: {error_text}"
+                        except Exception:
+                            pass
 
                     # Verifica se o login foi concluído com sucesso
-                    if "login" not in cur_url:
+                    # login_success=1 é o parâmetro padrão retornado pelo Canvas ao autenticar
+                    is_login_path = any(p in urllib.parse.urlparse(cur_url).path for p in ["/login", "/discovery", "/sso"])
+                    if "login_success" in cur_url or not is_login_path:
                         for sel in AUTHENTICATED_CANVAS_SELECTORS:
                             try:
                                 if await page.is_visible(sel):
@@ -372,7 +486,7 @@ class CanvasAuth:
                         if logged_in:
                             try:
                                 name_elem = await page.query_selector(
-                                    ".ic-avatar + span, .user_name, #global_nav_profile_link"
+                                    ".ic-avatar + span, .user_name, #global_nav_profile_link, .avatar-wrapper"
                                 )
                                 if name_elem:
                                     detected_user = (await name_elem.inner_text()).strip()
@@ -380,12 +494,12 @@ class CanvasAuth:
                                 pass
                             break
 
-                    await asyncio.sleep(1.5)
+                    await asyncio.sleep(1.0)
 
                 if not logged_in:
-                    return False, "Tempo esgotado para o login automático no Canvas LMS."
+                    return False, "Tempo esgotado para o login automático no Canvas LMS. Verifique se o portal institucional exige 2FA ou utilize Sessão por Cookies / Token de API."
 
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.5)
                 await context.storage_state(path=str(self.cookies_path))
                 console.print(f"[bold green]✔ Sessão do Canvas gravada com sucesso para {detected_user or user}![/bold green]")
                 return True, detected_user or user
